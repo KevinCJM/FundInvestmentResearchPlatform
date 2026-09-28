@@ -11,7 +11,7 @@ I = types.Array(types.int64, 2, "A", readonly=True)
 D = types.Array(types.float64, 3, "A", readonly=True)
 F = types.float64
 N = types.int64
-VERSION = "mandate-funding-monthly-lognormal/1.3.0"
+VERSION = "mandate-funding-monthly-lognormal/1.5.0"
 _WARMED_PID = None
 
 
@@ -180,6 +180,32 @@ def funding_monthly_parameters_kernel(mean, volatility, fee, method, periods):
     return drift, scale
 
 
+@njit((F, F, N, N), cache=True, nogil=True)
+def funding_compound_return_kernel(mean, volatility, method, periods):
+    """Annual median-path growth before explicit fees, for hurdle comparison only."""
+    drift, _ = funding_monthly_parameters_kernel(mean, volatility, 0., method, periods)
+    value = np.expm1(12.0 * drift)
+    if not np.isfinite(value):
+        raise ValueError("FUNDING_DISTRIBUTION_OVERFLOW")
+    return value
+
+
+@njit((F, F, N, N), cache=True, nogil=True)
+def compound_required_mean_kernel(compound, volatility, method, periods):
+    """Invert the existing moment adapter at a given volatility, before fees."""
+    if (not np.isfinite(compound) or compound <= -1 or not np.isfinite(volatility)
+            or volatility < 0 or method not in (0, 1) or periods < 1 or periods > 366):
+        raise ValueError("RETURN_REQUIREMENT_INPUT")
+    frequency = periods if method == 1 else 1
+    variance = volatility * volatility / frequency
+    factor = np.exp(2.0 * np.log1p(compound) / frequency)
+    squared = (factor + np.sqrt(factor * factor + 4.0 * factor * variance)) / 2.0
+    value = frequency * (np.sqrt(squared) - 1.0)
+    if not np.isfinite(value):
+        raise ValueError("RETURN_REQUIREMENT_OVERFLOW")
+    return value
+
+
 @njit((D, F, F, F, V, V, F, F, F, F), cache=True, nogil=True)
 def funding_paths_from_monthly_kernel(draws, drift, scale, initial, inflows,
                                       outflows, target, required_probability, drawdown_alert, contribution_ratio):
@@ -289,7 +315,8 @@ def funding_paths_kernel(draws, annual_mean, annual_volatility, initial, inflows
 KERNELS = (funding_schedule_kernel, funding_pass_kernel, required_return_kernel,
            funding_summary_kernel, wilson_interval_kernel, capital_gate_kernel,
            funding_payment_kernel, funding_capital_successes_kernel,
-           funding_monthly_parameters_kernel, funding_paths_from_monthly_kernel, funding_paths_kernel)
+           funding_monthly_parameters_kernel, funding_compound_return_kernel, compound_required_mean_kernel,
+           funding_paths_from_monthly_kernel, funding_paths_kernel)
 for dispatcher in KERNELS:
     dispatcher.disable_compile()
 
@@ -317,6 +344,8 @@ def warm_goal_kernels():
     draws, _ = seeded_factor_draws_kernel(12, 8, 1, 42, 0, 5.)
     funding_paths_kernel(draws, 0.06, 0.15, 90., inflows, outflows, 120., 0.01, 0.8, 0.2, 1.0)
     drift, scale = funding_monthly_parameters_kernel(.06, .15, .01, 1, 252)
+    funding_compound_return_kernel(.06, .15, 1, 252)
+    compound_required_mean_kernel(.04, .15, 1, 252)
     funding_paths_from_monthly_kernel(draws, drift, scale, 90., inflows, outflows, 120., .8, 1., 1.)
     _WARMED_PID = os.getpid()
     if not execution_audit()["complete"]:

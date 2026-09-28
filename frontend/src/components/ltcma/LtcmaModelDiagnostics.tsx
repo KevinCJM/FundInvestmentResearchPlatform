@@ -8,16 +8,17 @@ const rate = (value: unknown) => typeof value === 'number' && Number.isFinite(va
 
 export default function LtcmaModelDiagnostics({ audit, assets, names }: { audit: Record<string, unknown>; assets: string[]; names: Map<string, string> }) {
   const { t } = useLtcmaText()
-  const sample = object(object(audit.evidence).sample_horizon)
+  const evidence = object(audit.evidence)
+  const sample = object(evidence.sample_window ?? evidence.sample_horizon) // Frozen older diagnostics remain readable.
   const transition = object(audit.transition_diagnostics)
   const states = array(audit.state_ids).filter((v): v is string => typeof v === 'string')
   const labels = object(object(audit.regime).state_labels)
   return <div className="min-w-0 space-y-4">
-    {Object.keys(sample).length > 0 && <section className="space-y-2 border-t border-slate-200 pt-4" aria-label={t('sampleHorizon')}>
-      <h3 className="text-sm font-semibold">{t('sampleHorizon')}</h3>
-      <p className="text-sm tabular-nums">{t('sampleHorizonSummary', { sample: number(sample.observation_years), horizon: typeof sample.forecast_years === 'number' ? sample.forecast_years : '—' })}</p>
+    {Object.keys(sample).length > 0 && <section className="space-y-2 border-t border-slate-200 pt-4" aria-label={t('sampleWindow')}>
+      <h3 className="text-sm font-semibold">{t('sampleWindow')}</h3>
+      <p className="text-sm tabular-nums">{t('sampleWindowSummary', { sample: number(sample.observation_years) })}</p>
       {sample.scope === 'incremental_evidence_batch' && <p className="text-xs leading-5 text-slate-600">{t('incrementalEvidence')}</p>}
-      <p className="text-xs leading-5 text-slate-600">{t('sampleHorizonHint')}</p>
+      <p className="text-xs leading-5 text-slate-600">{t('sampleWindowHint')}</p>
     </section>}
     {audit.diagnostics_version === 'bl-diagnostics/1.0' && <section className="min-w-0 space-y-3 border-t border-slate-200 pt-4" aria-label={t('blDiagnostics')}>
       <h3 className="text-sm font-semibold">{t('blDiagnostics')}</h3>

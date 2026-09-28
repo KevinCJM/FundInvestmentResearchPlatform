@@ -1292,3 +1292,77 @@ def test_legacy_flags_are_not_independent_graph_verdicts(
     expected = "NON_CAUSAL_REALTIME_GRAPH" if metadata.get("causal") is False else "REGIME_GRAPH_PREPARE_REQUIRED"
     assert exc.value.code == expected
     assert not v2_service._jobs
+
+
+@pytest.mark.parametrize("mode", ["realtime", "retrospective"])
+@pytest.mark.parametrize("node_only", [False, True])
+def test_preview_inherits_pit_before_worker_and_preserves_frozen_result(client, v2_service, mode, node_only):
+    from pit.settings import PitSettingsRepository
+    settings = PitSettingsRepository(v2_service.market_data_dir)
+    settings.update(None, "RESEARCH", as_of="2020-02-10")
+    definition = _definition()
+    target = {"node_id": "source", "port": "value"} if node_only else None
+    prepared = client.post("/api/historical-regimes/prepare", json={"definition": definition, "preview_target": target}).json()
+    response = client.post("/api/historical-regimes/preview-runs", json={
+        "definition": definition, "compile_token": prepared["compile_token"],
+        "mode": mode, "preview_target": target,
+    })
+    assert response.status_code == 202, response.text
+    assert response.json()["as_of"] == "2020-02-10"
+    # A later system setting must not change the queued job or its frozen results.
+    settings.update(None, "RESEARCH", as_of="2020-03-10")
+    finished = _wait_for_preview(client, response.json()["id"])
+    assert finished["status"] == "completed", finished
+    rows = client.get(f"/api/historical-regimes/preview-runs/{finished['id']}/series").json()["items"]
+    assert len(rows) == 40
+    assert rows[-1]["observation_date"] == "2020-02-09"
+    assert finished["as_of"] == "2020-02-10"
+    assert finished["result"]["diagnostics"]["request_time_compilation"] == 0
+    assert finished["result"]["diagnostics"]["python_fallback"] == 0
+
+
+@pytest.mark.parametrize("headers,stated,expected", [
+    ({}, None, "2020-02-10"),
+    ({"X-Pit-As-Of": "2020-02-15"}, None, "2020-02-15"),
+    ({"X-Pit-Off": "1"}, None, None),
+    ({"X-Pit-As-Of": "2020-02-15"}, "2020-03-01", "2020-03-01"),
+])
+@pytest.mark.parametrize("endpoint,method", [
+    ("preview-runs", "create_preview"),
+    ("run", "run_saved"),
+    ("research-versions", "enable_research_version"),
+    ("v2/experiments", "run_batch_experiment"),
+    ("formulas/prepare", "prepare_formula"),
+])
+def test_compute_routes_share_pit_defaults(client, v2_service, classic_service, monkeypatch, endpoint, method, headers, stated, expected):
+    from pit.settings import PitSettingsRepository
+    from services import pit_routes
+    settings = PitSettingsRepository(v2_service.market_data_dir)
+    settings.update(None, "RESEARCH", as_of="2020-02-10")
+    monkeypatch.setattr(pit_routes, "DATA_DIR", v2_service.market_data_dir)
+    client.app.add_middleware(pit_routes.PitViewOverrideMiddleware)
+    service = classic_service if method == "prepare_formula" else v2_service
+    def capture(*args, **kwargs):
+        return {"as_of": kwargs["as_of"] if "as_of" in kwargs else args[2]}
+    monkeypatch.setattr(service, method, capture)
+    payload = {"definition": {"schema_version": "2.0"}, "mode": "realtime"}
+    if method != "prepare_formula":
+        payload["compile_token"] = "token"
+    if stated is not None:
+        payload["as_of"] = stated
+    if method == "run_batch_experiment":
+        payload["parameter_grid"] = [{"node_id": "smooth", "parameter": "window", "values": [3, 5]}]
+    response = client.post("/api/historical-regimes/" + endpoint, json=payload, headers=headers)
+    assert response.status_code in (200, 201, 202), response.text
+    assert response.json()["as_of"] == expected
+
+
+def test_pit_settings_failure_never_falls_back_to_all_data(client, v2_service, monkeypatch):
+    from unittest.mock import Mock
+    (v2_service.market_data_dir / "pit_settings.json").write_text("invalid json")
+    compute = Mock()
+    monkeypatch.setattr(v2_service, "create_preview", compute)
+    response = client.post("/api/historical-regimes/preview-runs", json={"definition": _definition(), "compile_token": "token"})
+    assert response.status_code == 400
+    assert "PIT" in response.json()["detail"]
+    compute.assert_not_called()

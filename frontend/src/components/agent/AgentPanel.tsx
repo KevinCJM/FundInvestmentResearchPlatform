@@ -31,6 +31,7 @@ const AGENT_FLOATING_LAYER = 70
 // This is the existing server resume command, not a translated UI label.
 const RESUME_MESSAGE = '继续'
 const TOOL_LABELS: Record<string, string> = {
+  'regimes.lookup': 'agent.regime.lookup', 'regimes.template': 'agent.regime.template', 'regimes.validate': 'agent.regime.validate',
   'metrics.lookup': 'agent.tool.lookup', 'metrics.infer': 'agent.tool.infer', 'context.read': 'agent.tool.read',
   'page.read': 'agent.tool.read',
   'products.search': 'agent.tool.search', 'metrics.availability': 'agent.tool.availability', 'metrics.validate': 'agent.tool.validate',
@@ -39,6 +40,7 @@ const TOOL_LABELS: Record<string, string> = {
   'portfolios.context': 'agent.tool.portfolioContext', 'portfolios.eval': 'agent.tool.portfolioEval',
 }
 const PAGE_LABELS: Record<AgentPageContext['page'], string> = {
+  'regime-workbench': 'agent.regime.page',
   'indicator-studio': 'agent.page.indicator', 'product-detail': 'agent.page.research', 'product-research': 'agent.page.research',
   'product-compare': 'agent.page.compare', 'holding-diagnosis': 'agent.page.holding', 'evaluation-plan': 'agent.page.evaluation',
 }

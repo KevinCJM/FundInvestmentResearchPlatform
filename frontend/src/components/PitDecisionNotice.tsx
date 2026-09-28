@@ -1,3 +1,4 @@
+import { systemText, useI18n } from '../i18n/runtime'
 import type { PitAllocationLineage } from '../services/pit'
 
 /**
@@ -10,27 +11,28 @@ import type { PitAllocationLineage } from '../services/pit'
  * — but it must not look identical to one that has both.
  */
 export default function PitDecisionNotice({ lineage }: { lineage?: PitAllocationLineage | null }) {
+  useI18n()
   if (!lineage) return null
 
   const findings = lineage.universe?.findings ?? []
   const clean = !lineage.hindsight_series && lineage.availability_available && findings.length === 0
   const badges: { text: string; tone: string }[] = [
     lineage.availability_available
-      ? { text: '按公告时点切窗', tone: 'bg-emerald-100 text-emerald-800 border-emerald-200' }
-      : { text: '按净值日期切窗 · 含公告滞后穿越', tone: 'bg-amber-100 text-amber-900 border-amber-200' },
+      ? { text: systemText('preInvestment.pitDecisionNotice.windowByAnnouncementAvailability'), tone: 'bg-emerald-100 text-emerald-800 border-emerald-200' }
+      : { text: systemText('preInvestment.pitDecisionNotice.windowByNavDateIncludesAnnouncementLag'), tone: 'bg-amber-100 text-amber-900 border-amber-200' },
     lineage.hindsight_series
-      ? { text: '全历史口径序列', tone: 'bg-rose-100 text-rose-800 border-rose-200' }
+      ? { text: systemText('preInvestment.pitDecisionNotice.fullHistorySeries'), tone: 'bg-rose-100 text-rose-800 border-rose-200' }
       : {
-          text: `序列口径 ${lineage.series_as_of ?? '最新'}`,
+          text: systemText('preInvestment.pitDecisionNotice.seriesConvention', { p0: lineage.series_as_of ?? systemText('preInvestment.pitDecisionNotice.latest') }),
           tone: 'bg-slate-100 text-slate-700 border-slate-200',
         },
     // 产品池的研究日是配置的第二个时间声明，跟净值口径可以差好几年。
     lineage.universe?.snapshot_established_at
       ? {
-          text: `产品域研究日 ${lineage.universe.snapshot_established_at}`,
+          text: systemText('preInvestment.pitDecisionNotice.productUniverseResearchDate', { p0: lineage.universe.snapshot_established_at }),
           tone: 'bg-slate-100 text-slate-700 border-slate-200',
         }
-      : { text: '未记录产品域', tone: 'bg-amber-100 text-amber-900 border-amber-200' },
+      : { text: systemText('preInvestment.pitDecisionNotice.productUniverseNotRecorded'), tone: 'bg-amber-100 text-amber-900 border-amber-200' },
   ]
 
   return (
@@ -41,11 +43,11 @@ export default function PitDecisionNotice({ lineage }: { lineage?: PitAllocation
       data-testid="pit-decision-notice"
     >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="font-semibold">决策口径</span>
+        <span className="font-semibold">{systemText('preInvestment.pitDecisionNotice.decisionContext')}</span>
         {lineage.as_of ? (
-          <span className="tabular-nums">研究日 {lineage.as_of}</span>
+          <span className="tabular-nums">{systemText('preInvestment.pitDecisionNotice.researchDate') + " "}{lineage.as_of}</span>
         ) : (
-          <span>未设研究日</span>
+          <span>{systemText('preInvestment.pitDecisionNotice.researchDateNotSet')}</span>
         )}
         {badges.map((badge) => (
           <span key={badge.text} className={`rounded-lg border px-1.5 py-0.5 ${badge.tone}`}>
@@ -54,8 +56,7 @@ export default function PitDecisionNotice({ lineage }: { lineage?: PitAllocation
         ))}
         {lineage.rows_dropped_by_as_of > 0 && (
           <span className="tabular-nums text-slate-600">
-            剔除 {lineage.rows_dropped_by_as_of.toLocaleString()} 行当时尚未可得的净值
-          </span>
+            {systemText('preInvestment.pitDecisionNotice.excluded') + " "}{lineage.rows_dropped_by_as_of.toLocaleString()} {" " + systemText('preInvestment.pitDecisionNotice.navRowsNotYetAvailableAtThat')}</span>
         )}
       </div>
       {lineage.warnings.map((text) => (

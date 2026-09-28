@@ -72,7 +72,7 @@ def test_transition_counts_stationary_and_readonly_stride():
     owner=np.repeat(np.array([0,0,1,1,0,1,1,0],dtype=np.int64),2)
     states=owner[::2];states.flags.writeable=False
     before=owner.copy()
-    counts,p,duration,stationary,status=numeric.regime_transition_diagnostics_kernel(states,2)
+    counts,p,duration,stationary,status=numeric.regime_transition_diagnostics_kernel(states,2,np.ones(states.size,dtype=np.int64))
     np.testing.assert_array_equal(counts,[[1,2],[2,2]])
     np.testing.assert_allclose(stationary,[3/7,4/7],atol=1e-14)
     np.testing.assert_allclose(stationary @ p,stationary,atol=1e-14)
@@ -83,25 +83,38 @@ def test_transition_counts_stationary_and_readonly_stride():
 
 def test_unknown_labels_break_transitions_and_unidentified_rows_stay_missing():
     states=np.array([0,0,-1,1,1],dtype=np.int64)
-    counts,p,duration,stationary,status=numeric.regime_transition_diagnostics_kernel(states,2)
+    counts,p,duration,stationary,status=numeric.regime_transition_diagnostics_kernel(states,2,np.ones(states.size,dtype=np.int64))
     np.testing.assert_array_equal(counts,np.eye(2,dtype=np.int64))
     assert status==2 and np.isnan(stationary).all() and np.isnan(duration).all()
-    missing=numeric.regime_transition_diagnostics_kernel(states,3)
+    missing=numeric.regime_transition_diagnostics_kernel(states,3,np.ones(states.size,dtype=np.int64))
     assert missing[-1]==1 and np.isnan(missing[1][2]).all()
-    single=numeric.regime_transition_diagnostics_kernel(np.zeros(30,dtype=np.int64),1)
+    single=numeric.regime_transition_diagnostics_kernel(np.zeros(30,dtype=np.int64),1,np.ones(30,dtype=np.int64))
     assert single[-1]==0 and single[3].tolist()==[1.] and np.isnan(single[2][0])
-    with pytest.raises(ValueError):numeric.regime_transition_diagnostics_kernel(np.array([-2],dtype=np.int64),2)
+    with pytest.raises(ValueError):numeric.regime_transition_diagnostics_kernel(np.array([-2],dtype=np.int64),2,np.ones(1,dtype=np.int64))
 
 
 def test_short_window_is_visible_not_an_arbitrary_new_hard_gate(workspace):
     service,_=workspace
     result=service.preview_cma(request())
     audit=result["model_result"]["model_audit"]
-    assert audit["evidence"]["sample_horizon"]["short_window_review"]
-    assert audit["evidence"]["sample_horizon"]["observation_years"]==pytest.approx(160/252)
+    assert audit["evidence"]["sample_window"]["short_window_review"]
+    assert audit["evidence"]["sample_window"]["observation_years"]==pytest.approx(160/252)
     assert len(audit["mean_standard_error"])==2
     np.testing.assert_allclose(np.square(audit["mean_standard_error"]),np.diag(result["model_result"]["mean_estimation_covariance"]))
     assert any("不是统计有效性硬门槛" in warning for warning in result["warnings"])
+    assert "sample_horizon" not in audit["evidence"]
+    assert "forecast_years" not in audit["evidence"]["sample_window"]
+
+
+@pytest.mark.parametrize("observations", [0, 1, 755, 756, 757, 2520])
+def test_sample_window_fixed_kernel_keeps_coverage_boundary(observations):
+    years, short = numeric.sample_window_diagnostics_kernel(np.int64(observations))
+    assert years == pytest.approx(observations / 252)
+    assert short == (observations < 756)
+    assert numeric.sample_window_diagnostics_kernel.nopython_signatures
+    assert not numeric.sample_window_diagnostics_kernel._can_compile
+    with pytest.raises(ValueError, match="LTCMA_SAMPLE_WINDOW"):
+        numeric.sample_window_diagnostics_kernel(np.int64(-1))
 
 
 @pytest.mark.parametrize("future_field", [None,"recognized_at","available_at"])
@@ -129,3 +142,16 @@ def test_regime_service_persists_diagnostics_but_rejects_future_labels(workspace
         assert evidence["stationary_probabilities"]==[.5,.5]
         assert evidence["forecast_used"] is False
     assert path.read_bytes()==original
+
+
+def test_transition_gap_preserves_both_endpoint_labels_and_missing_rows():
+    states = np.array([0, 0, 1, 1, -1, 0, 1], dtype=np.int64)
+    contiguous = np.array([0, 1, 0, 1, 1, 1, 1], dtype=np.int64)
+    states.flags.writeable = contiguous.flags.writeable = False
+    counts, *_ = numeric.regime_transition_diagnostics_kernel(states, 2, contiguous)
+    # The gap removes only 0->1 between rows 1 and 2; row 2 still starts 1->1.
+    np.testing.assert_array_equal(counts, [[1, 1], [0, 1]])
+    empty = numeric.regime_transition_diagnostics_kernel(states, 2, np.zeros(states.size, dtype=np.int64))
+    assert not empty[0].any() and empty[-1] == 1 and np.isnan(empty[1]).all()
+    with pytest.raises(ValueError, match='LTCMA_STATE_AXIS'):
+        numeric.regime_transition_diagnostics_kernel(states, 2, contiguous[:-1])

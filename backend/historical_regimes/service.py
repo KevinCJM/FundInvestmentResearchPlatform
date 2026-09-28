@@ -762,8 +762,8 @@ class HistoricalRegimeService:
         run_payload["content_hash"] = _content_hash(run_payload)
         return self.runs.create(_json_safe(run_payload))
 
-    def list_runs(self, definition_id: Optional[str] = None) -> list[dict[str, Any]]:
-        return self.runs.list(definition_id)
+    def list_runs(self, definition_id: Optional[str] = None, summary: bool = False) -> list[dict[str, Any]]:
+        return self.runs.list(definition_id, summary=summary)
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         return self.runs.get(run_id)

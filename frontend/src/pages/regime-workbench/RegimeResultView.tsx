@@ -7,6 +7,7 @@ import RegimeEvidencePanel from './RegimeEvidencePanel'
 import RegimeEvaluationResults from './RegimeEvaluationResults'
 import RegimeNumericOutputs from './RegimeNumericOutputs'
 import RegimeManualEventResult from './RegimeManualEventResult'
+import { useResearchDay } from '../../app/ResearchContext'
 
 export interface RegimeResultViewProps {
   runId: string
@@ -18,6 +19,7 @@ const percent = (count: number, total: number) => total ? (count / total * 100).
 const frequencyLabel = (frequency: string | null | undefined) => ({ daily: '日频', weekly: '周频', monthly: '月频', quarterly: '季频', yearly: '年频', annual: '年频', irregular: '不定期' }[frequency || ''] || frequency || '未提供')
 
 export default function RegimeResultView({ runId, runKind = 'preview', stale = false }: RegimeResultViewProps) {
+  const researchDay = useResearchDay()
   const identity = runKind + ':' + runId
   const [state, setState] = useState<ResultState>({ key: identity, status: 'loading' })
   const [retry, setRetry] = useState(0)
@@ -51,11 +53,15 @@ export default function RegimeResultView({ runId, runKind = 'preview', stale = f
   if (state.status === 'error' || !state.data) return <section role="alert" className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-6"><p className="font-semibold text-amber-950">结果暂不可用</p><p className="text-sm text-amber-900">{state.error}</p><button type="button" onClick={() => setRetry(value => value + 1)} className="rounded-lg border border-amber-400 bg-white px-3 py-2 text-sm font-semibold">重新读取结果</button></section>
   const result = state.data
   const { overview } = result
-  if (overview.result_kind === 'manual_events') return <>{overview.temporal_capability && <RegimeTemporalPanel report={overview.temporal_capability} stale={stale} />}<RegimeManualEventResult result={result} stale={stale} /></>
+  const cutoffNotice = researchDay !== undefined && (overview.as_of || null) !== researchDay
+    ? <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">本结果的计算截至日：{overview.as_of || '未设置（使用当次全部可用数据）'}；当前 PIT：{researchDay || '未设置'}。图表保留原运行结果，不会随 PIT 自动重算。请重新运行以使用当前口径。</p>
+    : null
+  if (overview.result_kind === 'manual_events') return <>{cutoffNotice}{overview.temporal_capability && <RegimeTemporalPanel report={overview.temporal_capability} stale={stale} />}<RegimeManualEventResult result={result} stale={stale} /></>
   const interval = selected?.key === identity ? selected.interval : null
   const observationLabel = overview.frequency ? `${frequencyLabel(overview.frequency)}观测` : '观测点'
   const selectInterval = (interval: RegimeResultInterval) => { setSelected({ key: identity, interval }); setTab('evidence') }
   return <section aria-label="完整历史情景结果" className="min-w-0 space-y-4 p-3 sm:p-5" data-run-id={overview.run_id}>
+    {cutoffNotice}
     {overview.temporal_capability && <RegimeTemporalPanel report={overview.temporal_capability} stale={stale} />}
     <header className="flex flex-wrap items-start justify-between gap-3">
       <div><h2 className="text-lg font-bold text-slate-950">历史情景结果</h2><p className="mt-1 text-xs text-slate-600">{overview.date_range.start ?? '无样本'} 至 {overview.date_range.end ?? '无样本'} · 共 {overview.summary.total} 个{observationLabel}{overview.as_of ? ` · 截至 ${overview.as_of}` : ''} · {overview.created_at ? '运行于 ' + overview.created_at : '运行 ' + overview.run_id}</p></div>

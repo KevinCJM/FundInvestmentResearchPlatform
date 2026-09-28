@@ -1,15 +1,18 @@
+import { researchMessage } from '../i18n/researchMessages'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { Badge, Button, Card, EmptyState } from '../components/ui'
+import { Badge, Button, Card, EmptyState, ErrorPanel, LoadingPanel } from '../components/ui'
 import { Feedback, Field } from '../components/risk-models/ResearchUI'
 import CandidateFields, { initialCandidate } from '../components/implementation/CandidateFields'
 import ImplementationReportView from '../components/implementation/Report'
 import { control, linkClass, useImplementationText, useResearchTask } from '../components/implementation/shared'
+import { UpstreamLink, UsabilityNote, useVersionText } from '../components/versioning'
 import { implementation, operationKey, type ImplementationCandidate, type ImplementationCatalog, type ImplementationReport, type PackageView, type ResearchPackage } from '../services/implementation'
 
 type Mode = 'implementation' | 'synthesis' | 'validation' | 'approval'
 const routes: Record<Mode,string> = {implementation:'/pre-investment/product-allocation-timing', synthesis:'/pre-investment/portfolio-synthesis', validation:'/pre-investment/validation', approval:'/pre-investment/approval'}
 export default function PreInvestmentImplementation({mode='implementation'}: {mode?:Mode}) {
+  const version=useVersionText()
   const t=useImplementationText(), task=useResearchTask(), navigate=useNavigate(), [params,setParams]=useSearchParams()
   const [catalog,setCatalog]=useState<ImplementationCatalog|null>(null), [packages,setPackages]=useState<ResearchPackage[]>([])
   const [candidate,setCandidate]=useState<ImplementationCandidate|null>(null), [view,setView]=useState<PackageView|null>(null), [preview,setPreview]=useState<ImplementationReport|null>(null)
@@ -38,15 +41,18 @@ export default function PreInvestmentImplementation({mode='implementation'}: {mo
   const save=()=>candidate&&void task.run(signal=>implementation.save(candidate,current,key('save',[candidate,current?.revision,copiedFrom]),copiedFrom,signal),item=>open('validation',item.scheme_id))
   const validate=()=>current&&void task.run(signal=>implementation.validate(current,key('validate',[current.scheme_id,current.revision]),signal),()=>setReload(n=>n+1))
   const finalize=()=>current&&report&&void task.run(signal=>implementation.finalize(current,report,{reviewer,reason,review_due_at:reviewDate},key('finalize',[current.revision,report.content_hash,reviewer,reason,reviewDate]),signal),()=>setReload(n=>n+1))
+  const loadFailed=Boolean(task.error)&&!task.busy&&!catalog
   return <div className="min-w-0 space-y-4 text-slate-900">
     <header className="flex flex-col justify-between gap-3 sm:flex-row"><div><h1 className="text-2xl font-bold">{t(mode+'Title')}</h1><p className="mt-2 text-sm leading-6 text-slate-600">{t(mode+'Description')}</p></div><div className="flex flex-wrap gap-2">
       {mode!=='implementation'&&<Link className={linkClass} to={routes.implementation}>{t('newPackage')}</Link>}
       {mode==='implementation'&&<><Link className={linkClass} to="/pre-investment/product-allocation-timing/construction">{t('historicalConstruction')}</Link><Link className={linkClass} to="/pre-investment/product-allocation-timing/timing">{t('timingResearch')}</Link></>}
     </div></header>
     {current&&<nav aria-label={t('packageSteps')} className="flex flex-wrap gap-2">{(['implementation','synthesis','validation','approval'] as const).map(step=><Link key={step} className={`${linkClass} ${step===mode?'bg-accent-50':''}`} aria-current={step===mode?'step':undefined} to={`${routes[step]}?package=${encodeURIComponent(current.scheme_id)}`}>{t(step+'Short')}</Link>)}</nav>}
-    <Feedback error={task.error}/>{task.error&&<Button onClick={()=>setReload(n=>n+1)}>{t('reload')}</Button>}
-    {task.busy&&<div role="status" className="space-y-2"><p className="text-sm text-slate-600">{t('working')}</p><div className="h-20 animate-pulse rounded-xl bg-slate-200 motion-reduce:animate-none"/></div>}
-    {view?.current_eligibility.status==='needs_review'&&<div role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"><p className="font-medium">{t('needsReview')}</p>{view.current_eligibility.reasons.map(value=><p key={value} className="mt-2 break-words">{value}</p>)}</div>}
+    {/* 目录没读出来时整页没有可编辑的内容，换成错误态；保存、校验这类操作失败时方案还在屏幕上，仍是纯文字。 */}
+    {!loadFailed&&<><Feedback error={task.error}/>{task.error&&<Button onClick={()=>setReload(n=>n+1)}>{t('reload')}</Button>}</>}
+    {task.busy&&<LoadingPanel text={t('working')} />}
+    {loadFailed&&<ErrorPanel message={task.error} action={<Button onClick={()=>setReload(n=>n+1)}>{t('reload')}</Button>} />}
+    {view?.current_eligibility.status==='needs_review'&&<div role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"><p className="font-medium">{t('needsReview')}</p>{view.current_eligibility.reasons.map(value=><p key={value} className="mt-2 break-words">{researchMessage(value)}</p>)}</div>}
     {mode==='implementation'&&catalog&&current?.stage!=='finalized'&&<fieldset disabled={task.busy} className="min-w-0 space-y-4">
       <Field label={t('allocationSource')}><select className={control} value={candidate?.source.id??''} onChange={e=>{const s=catalog.sources.find(x=>x.id===e.target.value);if(s){setView(null);setCopiedFrom(null);update(initialCandidate(s,catalog.today));setParams({source:s.id})}}}>
         <option value="">{t('selectSource')}</option>{catalog.sources.map(s=><option key={s.id} value={s.id}>{t(s.kind)} · {s.name} · {s.as_of}</option>)}</select></Field>
@@ -74,6 +80,6 @@ export default function PreInvestmentImplementation({mode='implementation'}: {mo
       </fieldset></Card>}
     {current?.stage==='finalized'&&<p role="status" className="rounded-xl bg-slate-50 p-4 text-sm font-medium">{t('finalizedHelp')}</p>}
     {mode!=='implementation'&&report&&<ImplementationReportView report={report}/>}
-    {!current&&mode!=='implementation'&&!task.busy&&(packages.length?<Card><h2 className="mb-3 text-lg font-semibold">{t('selectPackage')}</h2><div className="divide-y divide-slate-200">{packages.map(item=><div key={item.scheme_id} className="flex flex-wrap items-center justify-between gap-3 py-3"><div><Link className={linkClass} to={`${routes[mode]}?package=${encodeURIComponent(item.scheme_id)}`}>{item.name}</Link><Badge>{t(item.stage)}</Badge></div><span className="text-xs text-slate-600">{t('revision',{count:item.revision})}</span></div>)}</div></Card>:<EmptyState mascot={false} title={t('noPackages')} hint={t('noPackagesHelp')} action={<Link className={linkClass} to={routes.implementation}>{t('newPackage')}</Link>}/>)}
+    {!current&&mode!=='implementation'&&!task.busy&&(packages.length?<Card><h2 className="mb-3 text-lg font-semibold">{t('selectPackage')}</h2><div className="divide-y divide-slate-200">{packages.map(item=><div key={item.scheme_id} className="flex flex-wrap items-center justify-between gap-3 py-3"><div><Link className={linkClass} to={`${routes[mode]}?package=${encodeURIComponent(item.scheme_id)}`}>{item.name}</Link><Badge>{t(item.stage)}</Badge>{item.upstream?.[0]&&<p className="mt-1 flex flex-wrap items-center gap-x-1 text-xs text-slate-600">{version.kind(item.upstream[0].kind)}：<UpstreamLink item={item.upstream[0]}/></p>}<UsabilityNote usable={item.usable}/></div><span className="text-xs text-slate-600">{t('revision',{count:item.revision})}</span></div>)}</div></Card>:<EmptyState mascot={false} title={t('noPackages')} hint={t('noPackagesHelp')} action={<Link className={linkClass} to={routes.implementation}>{t('newPackage')}</Link>}/>)}
   </div>
 }

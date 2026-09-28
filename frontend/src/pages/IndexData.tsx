@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import DataWorkspaceNav from '../components/data-sources/DataWorkspaceNav';
+import { DataTable, ErrorPanel } from '../components/ui';
 import { useDataRefresh } from '../components/dashboard/useDataRefresh';
 import type { DataQualityWarning, DataRefreshStatus, InstrumentAnalyticsResponse } from '../components/dashboard/types';
 import {
@@ -361,6 +362,8 @@ export default function DataQuality() {
   const affectedKnown = Boolean(qualityAvailable && summary && (summary.affected_products > 0 || checksComplete));
   const attentionTone: QualityTone = loading ? 'planned' : criticalIssueCount > 0 || deepQuality?.status === 'blocked' ? 'danger' : issues.length > 0 ? 'warning' : checksPassed ? 'good' : 'planned';
 
+  if (!loading && requestErrors.length && !deepQuality && !analytics && !indexSummary) return <ErrorPanel onRetry={reload} />
+
   return (
     <div className="mx-auto min-w-0 max-w-7xl space-y-6">
       <DataWorkspaceNav />
@@ -396,7 +399,24 @@ export default function DataQuality() {
 
       <section aria-labelledby="dataset-details-title" className="min-w-0 rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><h2 id="dataset-details-title" className="text-lg font-semibold text-slate-950">底层数据集明细</h2><p className="mt-1 text-sm text-slate-600">用于定位缺失、空文件和读取异常；深度规则结果以上方质量快照为准。</p></div><div className="flex flex-col gap-3 sm:flex-row sm:items-end"><label className="text-xs font-semibold text-slate-600">数据域<select aria-label="数据域" value={domainFilter} onChange={(event) => setDomainFilter(event.target.value as typeof domainFilter)} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500 sm:w-44"><option value="all">全部数据域</option><option value="base">基础与机构数据</option><option value="etf">ETF 产品数据</option><option value="fund">场外公募基金</option><option value="index">指数与情景数据</option><option value="snapshot">研究指标快照</option></select></label><button type="button" aria-pressed={issuesOnly} onClick={() => setIssuesOnly((current) => !current)} className={`min-h-11 rounded-lg border px-4 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-accent-500 ${issuesOnly ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}>只看需处理</button></div></div>
-        <div className="mt-5 max-w-full overflow-x-auto rounded-xl border border-slate-200" tabIndex={0} aria-label="核心数据集质量明细滚动区域"><table className="min-w-[900px] divide-y divide-slate-200 text-left text-sm"><caption className="sr-only">核心数据集质量明细</caption><thead className="bg-slate-50"><tr>{['数据集', '数据域', '检查结果', '行数', '日期覆盖', '文件更新时间'].map((label) => <th key={label} scope="col" className="whitespace-nowrap px-3 py-3 text-xs font-semibold text-slate-600">{label}</th>)}</tr></thead><tbody className="divide-y divide-slate-100">{filteredDatasets.map((dataset) => <tr key={dataset.key} className="hover:bg-slate-50"><td className="px-3 py-3"><div className="font-medium text-slate-800">{dataset.label}</div><div className="mt-0.5 text-xs text-slate-600">{dataset.file}</div></td><td className="px-3 py-3 text-slate-600">{domainLabels[dataset.domain]}</td><td className="px-3 py-3"><StatusBadge tone={dataset.tone} label={dataset.statusLabel} /></td><td className="px-3 py-3 text-right tabular-nums text-slate-600">{dataset.rows === null || dataset.rows === undefined ? '--' : integerFormatter.format(dataset.rows)}</td><td className="whitespace-nowrap px-3 py-3 tabular-nums text-slate-600">{dataset.earliestDate || dataset.latestDate ? `${dataset.earliestDate ?? '--'} ～ ${dataset.latestDate ?? '--'}` : '不适用'}</td><td className="whitespace-nowrap px-3 py-3 tabular-nums text-slate-600">{formatUpdatedAt(dataset.updatedAt)}</td></tr>)}{!loading && filteredDatasets.length === 0 && <tr><td colSpan={6} className="px-4 py-12 text-center text-slate-600">当前筛选范围没有需要展示的数据集。</td></tr>}{loading && datasets.length === 0 && <tr><td colSpan={6} className="px-4 py-12 text-center text-slate-600">正在检查底层数据集...</td></tr>}</tbody></table></div>
+        <div className="mt-5">
+          <DataTable
+            caption="核心数据集质量明细"
+            minWidth="900px"
+            columns={[
+              { header: '数据集', cell: (dataset) => <><span className="block font-medium text-slate-800">{dataset.label}</span><span className="mt-0.5 block text-xs text-slate-600">{dataset.file}</span></> },
+              { header: '数据域', cell: (dataset) => domainLabels[dataset.domain] },
+              { header: '检查结果', cell: (dataset) => <StatusBadge tone={dataset.tone} label={dataset.statusLabel} /> },
+              { header: '行数', numeric: true, cell: (dataset) => dataset.rows === null || dataset.rows === undefined ? '--' : integerFormatter.format(dataset.rows) },
+              { header: '日期覆盖', nowrap: true, cell: (dataset) => dataset.earliestDate || dataset.latestDate ? `${dataset.earliestDate ?? '--'} ～ ${dataset.latestDate ?? '--'}` : '不适用' },
+              { header: '文件更新时间', nowrap: true, cell: (dataset) => formatUpdatedAt(dataset.updatedAt) },
+            ]}
+            rows={filteredDatasets}
+            rowKey={(dataset) => dataset.key}
+            loading={loading && datasets.length === 0 ? '正在检查底层数据集…' : undefined}
+            empty="当前筛选范围没有需要展示的数据集。换一个数据域，或关闭「只看需处理」。"
+          />
+        </div>
       </section>
 
       <section aria-labelledby="quality-roadmap-title" className="rounded-xl border border-slate-200 bg-slate-900 p-5 text-white sm:p-6">

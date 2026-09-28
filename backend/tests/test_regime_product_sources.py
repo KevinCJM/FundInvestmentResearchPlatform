@@ -71,6 +71,25 @@ def test_unpublished_files_are_not_offered(market):
     assert all(i["binding_parameters"] == {} for i in service.catalog(kind="fund")["items"])
 
 
+@pytest.mark.parametrize('kind', ['etf', 'fund'])
+def test_product_search_pushdown_keeps_status_fields_and_pagination(market, kind, monkeypatch):
+    _, _, service = market
+    full = service.catalog(kind=kind)['items']
+    for query in ['沪深', '华夏', '999999', 'fund_daily', 'fund_nav', 'unmatched', '  ']:
+        selected = [row for row in full if query.strip().casefold() in ' '.join(
+            str(row.get(key) or '') for key in ('id', 'name', 'code', 'category', 'source_api')).casefold()]
+        for status in [None, 'available', 'not_downloaded']:
+            expected = [row for row in selected if status is None or row['status'] == status]
+            result = service.catalog(kind=kind, query=query, status=status, offset=1, limit=1)
+            assert result['total'] == len(expected)
+            assert result['items'] == expected[1:2]
+    import research_series.service as module
+    def forbidden(*args):
+        raise AssertionError('Unmatched products must not inspect historical fields')
+    monkeypatch.setattr(module, 'product_fields', forbidden)
+    assert service.catalog(kind=kind, query='unmatched')['items'] == []
+
+
 def test_fund_nav_uses_announcement_cutoff_and_first_release(market):
     root, _, catalog = market
     spec = {"kind": "fund", "ts_code": "000001.OF"}

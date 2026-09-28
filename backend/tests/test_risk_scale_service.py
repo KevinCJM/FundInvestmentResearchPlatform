@@ -74,6 +74,71 @@ P = '/api/strategic-allocation/risk-scales'
 R = '/api/strategic-allocation/reference-inputs'
 
 
+def test_source_labels_batch_is_metadata_only_and_preserves_exact_identity(setup, monkeypatch):
+    import json
+    import pandas as pd
+    from backend.research_series import service as series_module
+    svc, client, _ = setup
+    series = svc.references.sources.series
+    snapshot, manifest = series._active_snapshot()
+    pd.DataFrame([{'ts_code': '900002.SH', 'name': '同代码基金'}]).to_parquet(snapshot / 'fund_info_df.parquet')
+    manifest['files']['fund_info_df.parquet'] = {'status': 'passed'}
+    (series.data_dir / 'tushare_active.json').write_text(json.dumps(manifest))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Label lookup must not read history, check eligibility or hash market data')
+    monkeypatch.setattr(series, 'catalog', forbidden)
+    monkeypatch.setattr(series, '_coverage_lookup', forbidden)
+    monkeypatch.setattr(series_module, '_file_checksum', forbidden)
+    reads = []
+    read = pd.read_parquet
+    def tracked(path, *args, **kwargs):
+        reads.append(Path(path).name)
+        return read(path, *args, **kwargs)
+    monkeypatch.setattr(pd, 'read_parquet', tracked)
+    ids = ['index:index_daily:900002.SH', 'etf:fund_daily:900002.SH', 'fund:fund_nav:900002.SH',
+           'index:wrong_source:900002.SH', 'index:index_daily:900002.SH']
+    result = client.post(R + '/labels', json={'series_ids': ids})
+    assert result.status_code == 200, result.json()
+    assert result.json() == {'labels': {ids[0]: '测试专用利率价格指数', ids[1]: '测试专用利率代理', ids[2]: '同代码基金'},
+                             'missing_ids': [ids[3]]}
+    assert sorted(reads) == ['etf_info_df.parquet', 'fund_info_df.parquet', 'index_catalog_df.parquet']
+    # Metadata changes must be visible on the next request; labels are not a persisted cache.
+    pd.DataFrame([{'ts_code': '900002.SH', 'name': '新名称'}]).to_parquet(snapshot / 'fund_info_df.parquet')
+    assert client.post(R + '/labels', json={'series_ids': [ids[2]]}).json()['labels'][ids[2]] == '新名称'
+
+
+@pytest.mark.parametrize('ids', [[], ['invalid'], ['macro:cn_cpi:x'], ['index:a:x' + 'x' * 200], ['index:a:b'] * 301])
+def test_source_labels_rejects_invalid_or_unbounded_requests(setup, ids):
+    _, client, _ = setup
+    response = client.post(R + '/labels', json={'series_ids': ids})
+    assert response.status_code == 422
+    assert response.json()['detail']['code'] == 'INPUT_INVALID'
+
+
+def test_source_labels_refreshes_snapshot_and_reports_offline_storage(setup):
+    import json
+    import shutil
+    import pandas as pd
+    svc, client, _ = setup
+    series = svc.references.sources.series
+    old, manifest = series._active_snapshot()
+    replacement = old.with_name('replacement-snapshot')
+    shutil.copytree(old, replacement)
+    path = replacement / 'index_catalog_df.parquet'
+    frame = pd.read_parquet(path)
+    frame.loc[frame.ts_code == '900002.SH', 'name'] = '新快照名称'
+    frame.to_parquet(path)
+    manifest['snapshot_dir'] = replacement.name
+    active = series.data_dir / 'tushare_active.json'
+    active.write_text(json.dumps(manifest))
+    payload = {'series_ids': ['index:index_daily:900002.SH']}
+    assert client.post(R + '/labels', json=payload).json()['labels'][payload['series_ids'][0]] == '新快照名称'
+    active.unlink()
+    response = client.post(R + '/labels', json=payload)
+    assert response.status_code == 422  # Existing research-source error mapping.
+    assert response.json()['detail']['code'] == 'ACTIVE_SNAPSHOT_REQUIRED'
+
+
 def test_cold_start_full_flow_and_schema(setup):
     svc,client,source_request=setup
     assert client.get(P).json()['items']==[]

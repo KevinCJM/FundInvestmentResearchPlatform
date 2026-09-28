@@ -98,7 +98,17 @@ def _active_set_qp_solve(hessian, linear, matrix, limits, initial, max_iteration
                 kkt[j, n + k] = coefficient
                 kkt[n + k, j] = coefficient
         try:
-            solution = np.linalg.solve(kkt, rhs)
+            if is_linear and active_count == n:
+                # At a full-rank LP vertex there is no feasible face direction.
+                # Nearly parallel outer-approximation cuts make the saddle KKT
+                # system ill-conditioned: its spurious direction can skip the
+                # multiplier release below and falsely report an unbounded step.
+                # Solve the original active transpose for multipliers instead;
+                # keep the mathematically zero direction exact.
+                solution = np.zeros(n + active_count)
+                solution[n:] = np.linalg.solve(kkt[:n, n:].copy(), -gradient)
+            else:
+                solution = np.linalg.solve(kkt, rhs)
         except Exception:
             diagnostics[1] = np.inf
             return x, 3, iteration + 1, diagnostics, dual

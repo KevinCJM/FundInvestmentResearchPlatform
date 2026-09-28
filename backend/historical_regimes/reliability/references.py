@@ -31,15 +31,16 @@ def resolve_reference(graph, reference, *, hydrate=True):
 
 def reference_catalog(graph):
     items = []
-    for run in graph.runs.list():
-        for publication in run.get("publications", []):
-            ref = dict(run_id=run["id"], publication_id=publication["id"], content_hash=run.get("content_hash"))
-            try:
-                verified, verified_publication = resolve_reference(graph, ref, hydrate=False)
-            except IndicatorDomainError:
-                continue
-            items.append({**ref, "publication_usage": verified_publication["usage"], **{key: verified.get(key) for key in (
-                "definition_id", "definition_revision", "name", "frequency", "states", "as_of", "created_at", "series_summary")}})
+    with graph.runs.read_snapshot():
+        for run in graph.runs.list(summary=True):
+            for publication in run.get("publications", []):
+                ref = dict(run_id=run["id"], publication_id=publication["id"], content_hash=run.get("content_hash"))
+                try:
+                    verified, verified_publication = resolve_reference(graph, ref, hydrate=False)
+                except IndicatorDomainError:
+                    continue
+                items.append({**ref, "publication_usage": verified_publication["usage"], **{key: verified.get(key) for key in (
+                    "definition_id", "definition_revision", "name", "frequency", "states", "as_of", "created_at", "series_summary")}})
     return {"items": items}
 
 

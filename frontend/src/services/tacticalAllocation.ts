@@ -1,4 +1,6 @@
+import { systemText } from '../i18n/runtime'
 import { assertNativeNumericalExecution, type NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
+import type { Versioned } from './versioning'
 
 export interface TaaAsset {
   id: string
@@ -7,15 +9,17 @@ export interface TaaAsset {
   min_weight: number
   max_weight: number
   max_abs_tilt: number
+  research_proxy?: import('./strategicScope').ResearchProxy | null
   products: Array<{ kind: 'etf' | 'fund'; product_id: string; name: string; weight: number }>
 }
 
-export interface TaaBaseline {
+export interface TaaBaseline extends Versioned {
   id: string
   name: string
   created_at: string
   content_hash: string
-  alloc_name: string
+  alloc_name: string | null
+  implementation_status?: 'complete' | 'incomplete'
   as_of: string
   universe_snapshot_id?: string | null
   strategic_universe_id?: string | null
@@ -35,7 +39,7 @@ export interface TaaBaseline {
     selection?: import('./strategicAllocation').PolicyCandidate
     multi_cma?: import('./strategicAllocation').MultiCmaEvidence
     assumptions: import('./strategicAllocation').CmaDefinition
-    mandate: { max_tracking_error: number; max_volatility: number; currency: string; horizon_years: number }
+    mandate: { max_tracking_error: number; max_volatility: number; currency: string; horizon_years: number } & Partial<import('./strategicAllocation').MandateDefinition>
     independent_approval: boolean; execution: NativeNumericalExecutionAudit
   }
 }
@@ -158,6 +162,7 @@ export interface TaaPreview {
     train_observations: number
     validation_observations: number
     training?: TaaPreflight['training']
+    alignment?: TaaAlignment | null
     lineage: Record<string, unknown>
     pit: { status: string; reasons: string[] }
   }
@@ -195,6 +200,7 @@ export interface TaaScenarioRequest {
 export type TaaScenario = TaaScenarioRequest['scenario']
 export interface TaaScenarioExperiment { scenario: TaaScenario; result?: TaaScenarioResult }
 export interface TaaPreflight {
+  alignment?: TaaAlignment | null
   coverage: { start_date: string; end_date: string }
   dates: Pick<TaaPreviewRequest, 'start_date' | 'end_date' | 'as_of' | 'train_end_date'>
   quality: { status: 'clear' | 'blocked'; issues: Array<{ asset_id: string; date: string; value: number; code: string; message: string }> }
@@ -202,6 +208,18 @@ export interface TaaPreflight {
   guidance: Array<{ code: string; message: string; action: 'adjust_dates' | 'fixed_comparison' | 'review_data'; patch?: Partial<TaaPreviewRequest> }>
   pit: { status: string; reasons: string[] }
   can_calculate: boolean
+}
+
+export interface TaaAlignment {
+  method: string
+  common_observations: number
+  return_periods: number
+  non_common_dates: number
+  multi_observation_periods: number
+  max_calendar_days: number
+  day_count: string
+  calendar_verified: boolean
+  sources: Array<{ series_id: string; name: string; observations: number; not_observed_dates: number; start_date: string; end_date: string; date_examples: string[] }>
 }
 
 export interface TaaScenarioResult {
@@ -216,7 +234,7 @@ export interface TaaScenarioResult {
   execution: NativeNumericalExecutionAudit
 }
 
-export interface TaaDecision {
+export interface TaaDecision extends Versioned {
   id: string
   name: string
   created_at: string
@@ -239,12 +257,12 @@ const root = '/api/tactical-allocation'
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${root}${path}`, { ...init, headers: { 'Content-Type': 'application/json', ...init.headers } })
   let payload: any
-  try { payload = await response.json() } catch { throw new Error('服务没有返回可读取的资产配置数据，请检查后端连接后重试。') }
+  try { payload = await response.json() } catch { throw new Error(systemText('preInvestment.tacticalAllocation.theServiceReturnedUnreadableAllocationDataCheck')) }
   if (!response.ok) {
     const detail = payload?.detail
     const message = typeof detail === 'string' ? detail : Array.isArray(detail)
-      ? detail.map((item: { msg?: string }) => item.msg ?? '输入无效').join('；')
-      : detail?.message ?? payload?.message ?? `资产配置操作未完成（${response.status}）。`
+      ? detail.map((item: { msg?: string }) => item.msg ?? systemText('preInvestment.tacticalAllocation.invalidInput')).join('；')
+      : detail?.message ?? payload?.message ?? systemText('preInvestment.tacticalAllocation.allocationOperationDidNotComplete', { p0: response.status })
     throw new Error(message)
   }
   return payload as T
@@ -252,7 +270,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 const post = <T,>(path: string, body: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(body) })
 const audited = <T extends { execution: NativeNumericalExecutionAudit }>(result: T, name: string): T => {
-  if (!result || typeof result !== 'object') throw new Error(`${name}返回的结果不完整，请重新读取。`)
+  if (!result || typeof result !== 'object') throw new Error(systemText('preInvestment.tacticalAllocation.returnedIncompleteResultsPleaseReload', { p0: name }))
   assertNativeNumericalExecution(result.execution, name)
   return result
 }
@@ -261,7 +279,7 @@ export const getTaaCatalog = async (signal?: AbortSignal) => {
   const value = await request<TaaCatalog>('/catalog', { signal })
   if (!value || !Array.isArray(value.baselines) || !Array.isArray(value.allocations) || !Array.isArray(value.decisions)
     || value.allocations.some(item => !item || typeof item.alloc_name !== 'string' || !Array.isArray(item.assets))) {
-    throw new Error('资产配置目录格式不完整，请刷新或检查后端版本。')
+    throw new Error(systemText('preInvestment.tacticalAllocation.allocationCatalogFormatIsIncompleteRefreshOr'))
   }
   return value
 }
@@ -269,18 +287,18 @@ export const getTaaBaseline = async (id: string, signal?: AbortSignal) => {
   const value = await request<TaaBaseline>(`/baselines/${encodeURIComponent(id)}`, { signal })
   if (!value || typeof value.id !== 'string' || typeof value.as_of !== 'string' || !Array.isArray(value.assets)
     || !Array.isArray(value.pit?.reasons) || value.assets.some(asset => !asset || typeof asset.id !== 'string' || typeof asset.base_weight !== 'number')) {
-    throw new Error('SAA 基准信息不完整，请重新选择有效的已保存版本。')
+    throw new Error(systemText('preInvestment.tacticalAllocation.saaBaselineInformationIsIncompleteSelectA'))
   }
   return value
 }
 export const createTaaBaseline = (input: TaaBaselineInput) => post<TaaBaseline>('/baselines', input)
 function checkedPreview(value: TaaPreview): TaaPreview {
-  audited(value, '战术配置研究')
+  audited(value, systemText('preInvestment.tacticalAllocation.tacticalAllocationResearch'))
   if (value.walk_forward) {
-    audited(value.walk_forward, '多段样本外验证')
-    if (value.walk_forward.primary_selection_changed !== false || value.walk_forward.independently_funded_intervals !== true || !Array.isArray(value.walk_forward.folds)) throw new Error('分段验证口径不完整，已停止展示。')
+    audited(value.walk_forward, systemText('preInvestment.tacticalAllocation.multiPeriodOutOfSampleValidation'))
+    if (value.walk_forward.primary_selection_changed !== false || value.walk_forward.independently_funded_intervals !== true || !Array.isArray(value.walk_forward.folds)) throw new Error(systemText('preInvestment.tacticalAllocation.foldValidationConventionsAreIncompleteResultsAre'))
   }
-  if (value.policy_check) audited(value.policy_check, '政策风险校验')
+  if (value.policy_check) audited(value.policy_check, systemText('preInvestment.tacticalAllocation.policyRiskChecks'))
   return value
 }
 export const previewTaa = async (input: TaaPreviewRequest) => checkedPreview(await post<TaaPreview>('/preview', input))
@@ -290,16 +308,16 @@ export const preflightTaa = async (input: TaaPreviewRequest, signal?: AbortSigna
     || !Array.isArray(value.quality?.issues) || !Array.isArray(value.guidance) || !Array.isArray(value.pit?.reasons)
     || !Array.isArray(value.training?.reasons) || typeof value.training?.eligible !== 'boolean'
     || typeof value.coverage?.start_date !== 'string' || typeof value.coverage?.end_date !== 'string' || !value.dates) {
-    throw new Error('研究条件检查结果不完整，请确认后端版本后重试。')
+    throw new Error(systemText('preInvestment.tacticalAllocation.researchPreflightResultsAreIncompleteConfirmThe'))
   }
   return value
 }
-export const simulateTaaScenario = async (input: TaaScenarioRequest) => audited(await post<TaaScenarioResult>('/scenarios', input), '战术配置情景模拟')
+export const simulateTaaScenario = async (input: TaaScenarioRequest) => audited(await post<TaaScenarioResult>('/scenarios', input), systemText('preInvestment.tacticalAllocation.tacticalAllocationScenarioSimulation'))
 export const saveTaaDecision = async (input: { request: TaaPreviewRequest; preview_hash: string; name: string; note: string; scenarios?: TaaScenario[] }) => checkedDecision(await post<TaaDecision>('/decisions', input))
 function checkedDecision(result: TaaDecision): TaaDecision {
   checkedPreview(result.preview)
-  if (result.scenarios && !Array.isArray(result.scenarios)) throw new Error('已保存情景格式不完整，请重新读取。')
-  result.scenarios?.forEach(item => audited(item.result, '已保存情景实验'))
+  if (result.scenarios && !Array.isArray(result.scenarios)) throw new Error(systemText('preInvestment.tacticalAllocation.savedScenarioFormatIsIncompletePleaseReload'))
+  result.scenarios?.forEach(item => audited(item.result, systemText('preInvestment.tacticalAllocation.savedScenarioExperiment')))
   return result
 }
 export const getTaaDecision = async (id: string, signal?: AbortSignal) => {

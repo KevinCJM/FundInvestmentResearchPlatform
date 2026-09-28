@@ -29,6 +29,6 @@ describe('risk scale input and generation contracts', () => {
   })
   it('shows an actionable empty source state', async () => {
     vi.spyOn(riskScales, 'sources').mockResolvedValue({ items: [], total: 0, offset: 0, limit: 20, problems: [] })
-    render(<SourcePicker onSelect={vi.fn()} />); expect(await screen.findByText('没有匹配的可用来源')).toBeInTheDocument(); vi.restoreAllMocks()
+    render(<SourcePicker onConfirm={vi.fn()} onCancel={vi.fn()} />); expect(await screen.findByText(/尝试其他名称、代码或来源类型/)).toBeInTheDocument(); vi.restoreAllMocks()
   })
 })

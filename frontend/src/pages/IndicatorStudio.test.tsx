@@ -1120,7 +1120,7 @@ describe('IndicatorStudio', () => {
     anchorClick.mockRestore()
   })
 
-  it('指标中心不提供滚动曲线入口，预览只请求单窗口结果', async () => {
+  it('行情指标中心不提供滚动曲线入口，预览只请求单窗口结果', async () => {
     const user = setupUser()
     await renderStudio('/indicator-studio?kind=etf&ids=510300.SH')
     expect(screen.queryByRole('checkbox', { name: /同时计算滚动曲线/ })).not.toBeInTheDocument()
@@ -1514,7 +1514,7 @@ describe('IndicatorStudio', () => {
     expect(within(composer).getByRole('button', { name: '展开到公式' })).toBeEnabled()
   })
 
-  it('单产品指标中心只提供产品可用的算子签名', async () => {
+  it('单产品行情指标中心只提供产品可用的算子签名', async () => {
     const user = setupUser()
     await renderStudio()
     let catalogDialog = await openCatalog(user)
@@ -1623,7 +1623,7 @@ describe('IndicatorStudio', () => {
     expect(screen.getByText(/已另存为新指标/)).toBeInTheDocument()
   })
 
-  it('指标中心固定为单产品上下文，不展示组合域和组合指标', async () => {
+  it('行情指标中心固定为单产品上下文，不展示组合域和组合指标', async () => {
     setupUser()
     await renderStudio()
     expect(screen.queryByText('计算域')).not.toBeInTheDocument()

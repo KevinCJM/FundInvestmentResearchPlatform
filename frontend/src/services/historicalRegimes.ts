@@ -1,3 +1,4 @@
+import { systemText } from '../i18n/runtime'
 import type { RegimeStudy } from './regimeGraph'
 import {
   assertCompliantExecutionGraph,
@@ -433,14 +434,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   })
   if (!response.ok) {
-    let message = `请求失败（${response.status}）`
+    let message = systemText('preInvestment.historicalRegimes.requestFailed', { p0: response.status })
     try {
       const body = await response.json()
       const detail = body?.detail
       if (typeof detail?.message === 'string') message = detail.message
       else if (typeof detail === 'string') message = detail
       else if (typeof body?.message === 'string') message = body.message
-      else if (Array.isArray(detail)) message = '提交内容未通过校验，请检查必填项与参数范围。'
+      else if (Array.isArray(detail)) message = systemText('preInvestment.historicalRegimes.validationFailedCheckRequiredFieldsAndParameter')
     } catch { /* retain the stable fallback */ }
     throw new HistoricalRegimeApiError(response.status, message)
   }
@@ -462,7 +463,7 @@ function assertHistoricalRegimeRunExecution(run: HistoricalRegimeRun): Historica
     : run.calculation_audit
       ? [run.calculation_audit]
       : []
-  assertCompliantExecutionGraph(audits, `历史情景「${run.name || run.id}」`)
+  assertCompliantExecutionGraph(audits, systemText('preInvestment.historicalRegimes.historicalScenario', { p0: run.name || run.id }))
   return run
 }
 
@@ -507,7 +508,7 @@ export async function createHistoricalRegimeDefinition(definition: HistoricalReg
 }
 
 export async function updateHistoricalRegimeDefinition(definition: HistoricalRegimeDefinition): Promise<HistoricalRegimeDefinition> {
-  if (!definition.id) throw new Error('保存修订版前需要定义 ID。')
+  if (!definition.id) throw new Error(systemText('preInvestment.historicalRegimes.aDefinitionIdIsRequiredBeforeSaving'))
   return request<HistoricalRegimeDefinition>(`/api/historical-regimes/definitions/${encodeURIComponent(definition.id)}`, {
     method: 'PUT',
     body: JSON.stringify(definition),
@@ -539,8 +540,8 @@ export async function runHistoricalRegime(
 }
 
 export async function listHistoricalRegimeRuns(definitionId?: string): Promise<HistoricalRegimeRun[]> {
-  const query = definitionId ? `?definition_id=${encodeURIComponent(definitionId)}` : ''
-  return listFrom<HistoricalRegimeRun>(await request<unknown>(`/api/historical-regimes/runs${query}`))
+  const query = new URLSearchParams({ ...(definitionId ? { definition_id: definitionId } : {}), summary: 'true' })
+  return listFrom<HistoricalRegimeRun>(await request<unknown>(`/api/historical-regimes/runs?${query}`))
 }
 
 export async function getHistoricalRegimeRun(id: string): Promise<HistoricalRegimeRun> {
@@ -561,6 +562,6 @@ export async function compareHistoricalRegimeRuns(runIds: string[], referenceRun
     method: 'POST',
     body: JSON.stringify({ run_ids: runIds, ...(referenceRunId ? { reference_run_id: referenceRunId } : {}) }),
   })
-  assertNativeNumericalExecution(result.execution, '历史情景版本比较')
+  assertNativeNumericalExecution(result.execution, systemText('preInvestment.historicalRegimes.historicalScenarioVersionComparison'))
   return result
 }

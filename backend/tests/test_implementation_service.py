@@ -414,7 +414,8 @@ def test_saved_taa_target_flows_into_same_implementation_path(implementation):
 
     service, body = implementation
     taa = TacticalAllocationService(
-        service.strategic.artifacts.root.parents[1], service.strategic.data.data_dir
+        service.strategic.artifacts.root.parents[1], service.strategic.data.data_dir,
+        universe_dir=service.strategic.data.universe_dir,
     )
     dates = (
         pd.read_parquet(service.strategic.data.data_dir / "asset_nv.parquet")["date"]

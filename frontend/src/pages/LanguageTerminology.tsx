@@ -1,3 +1,4 @@
+import { ErrorPanel } from '../components/ui'
 import { useEffect, useRef, useState } from 'react'
 import { DEFAULT_LANGUAGES, DEFAULT_LOCALE, isLocale, type LanguageDefinition, type Locale, type TranslationScope } from '../i18n/catalogs'
 import TranslationMatrix from '../components/localization/TranslationMatrix'
@@ -33,6 +34,7 @@ export default function LanguageTerminology() {
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [readFailed, setReadFailed] = useState(false)
   const [message, setMessage] = useState('')
   const [pending, setPending] = useState<Record<string, TranslationChange>>({})
   const expectedRevision = useRef<number | null>(null)
@@ -50,7 +52,7 @@ export default function LanguageTerminology() {
   useEffect(() => {
     const controller = new AbortController()
     let alive = true
-    setLoading(true)
+    setLoading(true); setReadFailed(false)
     const timer = window.setTimeout(() => {
       void (async () => {
         try {
@@ -68,7 +70,7 @@ export default function LanguageTerminology() {
           if (tab === 'history') setHistory(result as TranslationHistory)
           else setCatalog(result as Matrix)
           setError('')
-        } catch (failure) { if (alive && !controller.signal.aborted) setError(errorMessage(failure)) }
+        } catch (failure) { if (alive && !controller.signal.aborted) { setReadFailed(true); setError(errorMessage(failure)) } }
         finally { if (alive) setLoading(false) }
       })()
     }, query ? 200 : 0)
@@ -199,7 +201,9 @@ export default function LanguageTerminology() {
   }
   const switchTab = (next: typeof tab) => { if (busy || languageManager || cellEditing) return; setTab(next); setPage(1); setModule(''); setStatus('all'); setQuery(''); setSortBy('code'); setSortDir('asc'); setCatalog(null); setImportReview(null) }
   const displayed = !loading && catalog?.scope === tab ? catalog : null
+  const emptyReadFailure = readFailed && !loading && !(tab === 'history' ? history : displayed) && !changes.length && !cellEditing && !languageManager
 
+  if (error && !state && !loading) return <ErrorPanel onRetry={() => void reload()} />
   return <div className="min-w-0 space-y-5" data-testid="language-terminology">
     <header className="rounded-xl border border-slate-200 bg-white p-5"><h1 className="text-2xl font-bold text-slate-900">{s('i18n.title')}</h1><p className="mt-2 text-sm leading-6 text-slate-600">{s('i18n.description')}</p>
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -209,11 +213,12 @@ export default function LanguageTerminology() {
     </header>
     {languageManager && <LanguageColumnsEditor languages={languages} busy={busy} onSave={saveLanguages} onCancel={() => setLanguageManager(false)} />}
     {(runtime.offline || (!state && error)) && <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{s('i18n.offline')}</p>}
-    {error && <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900"><span>{error}</span><button type="button" className={button} disabled={busy || cellEditing} onClick={() => void reload()}>{s('common.refresh')}</button></div>}
+    {error && !emptyReadFailure && <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900"><span>{error}</span><button type="button" className={button} disabled={busy || cellEditing} onClick={() => void reload()}>{s('common.refresh')}</button></div>}
     {message && <p role="status" className="rounded-xl bg-accent-50 p-3 text-sm text-accent-900">{message}</p>}
     <div className="flex flex-wrap gap-2" role="tablist" aria-label={s('i18n.tabs')}>{(['system', 'business', 'history'] as const).map(value => <button key={value} id={`i18n-tab-${value}`} aria-controls="i18n-panel" type="button" role="tab" aria-selected={tab === value} disabled={cellEditing || busy || languageManager} className={`${button} ${tab === value ? '!border-accent-500 !bg-accent-50 !text-accent-800' : ''}`} onClick={() => switchTab(value)}>{s(`i18n.${value}`)}</button>)}</div>
     <section id="i18n-panel" role="tabpanel" aria-labelledby={`i18n-tab-${tab}`} className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
       <p className="mb-4 text-sm leading-6 text-slate-600">{s(tab === 'history' ? 'i18n.historyHint' : `i18n.${tab}Hint`)}</p>
+      {emptyReadFailure ? <ErrorPanel onRetry={() => setRefresh(value => value + 1)} /> : <>
       {tab !== 'history' && <>
         <div className="grid gap-3 sm:grid-cols-3"><label className="text-xs font-semibold">{s('i18n.search')}<input type="search" disabled={cellEditing || busy || languageManager} aria-label={s('i18n.search')} className={`${input} mt-1`} placeholder={s('i18n.matrix.searchHint')} value={query} onChange={event => { setQuery(event.target.value); setPage(1) }} /></label><label className="text-xs font-semibold">{s('i18n.module')}<select aria-label={s('i18n.module')} disabled={cellEditing || busy || languageManager} className={`${input} mt-1`} value={module} onChange={event => { setModule(event.target.value); setPage(1) }}><option value="">{s('common.all')}</option>{catalog?.modules.map(value => <option key={value} value={value}>{s(`i18n.modules.${value}`, {}, value)}</option>)}</select></label><label className="text-xs font-semibold">{s('i18n.status')}<select aria-label={s('i18n.status')} disabled={cellEditing || busy || languageManager} className={`${input} mt-1`} value={status} onChange={event => { setStatus(event.target.value); setPage(1) }}><option value="all">{s('common.all')}</option>{tab === 'business' && <option value="customized">{s('common.customized')}</option>}<option value="missing">{s('i18n.missing')}</option></select></label></div>
         <div className="mt-3 flex flex-wrap justify-end gap-2">{(query || module || status !== 'all') && <button type="button" className={button} disabled={busy || loading || languageManager || cellEditing} onClick={clearFilters}>{s('i18n.matrix.clearFilters')}</button>}<button type="button" className={button} disabled={busy || loading || !state || languageManager || cellEditing} onClick={openLanguageManager}>{s('i18n.matrix.manageLanguages')}</button></div>
@@ -223,6 +228,7 @@ export default function LanguageTerminology() {
         {catalog && <div className="mt-3 flex flex-wrap gap-3 text-xs text-slate-600">{Object.entries(catalog.coverage).map(([id, coverage]) => <p key={id}><code>{id}</code> · {s('i18n.coverage', coverage)}</p>)}</div>}
       </>}
       {tab === 'history' && <div className="overflow-auto"><table className="w-full min-w-[500px] text-left text-sm"><thead><tr><th scope="col" className="p-2">{s('i18n.revision')}</th><th scope="col" className="p-2">{s('i18n.time')}</th><th scope="col" className="p-2">{s('i18n.reason')}</th><th scope="col" className="p-2">{s('i18n.changeCount')}</th><th scope="col" /></tr></thead><tbody>{history?.items.map(item => <tr key={item.revision} className="border-t border-slate-100"><td className="p-2">{item.revision}</td><td className="p-2">{formatDate(item.at)}</td><td className="p-2">{s(`i18n.historyActions.${item.action}`, {}, item.action)}{item.reason ? ` · ${item.reason}` : ''}</td><td className="p-2">{item.change_count}</td><td className="p-2"><button type="button" className={button} disabled={busy || changes.length > 0 || item.revision === history.revision} onClick={() => void restore(item.revision)}>{s('i18n.restore')}</button></td></tr>)}</tbody></table></div>}
+      </>}
     </section>
     {tab === 'business' && <section className="space-y-3 rounded-xl border border-accent-200 bg-white p-4" aria-label={s('i18n.preview')}>
       {cellEditing && <p role="status" className="text-sm text-accent-800">{s('i18n.matrix.finishCell')}</p>}

@@ -5,6 +5,11 @@ import pytest
 from backend.strategic_allocation import kernels
 
 
+def with_budget(*args):
+    """Empty drawdown draws: the budget ABI without the Sharpe/drawdown rows."""
+    return kernels.policy_candidates_with_budget_kernel(*args, 0., np.empty((0, 0)))
+
+
 def inputs():
     return (
         np.array([0.06, 0.03]), np.diag([0.15 ** 2, 0.05 ** 2]), np.array([0.02, 0.005]),
@@ -16,7 +21,7 @@ def inputs():
 def test_budget_uses_same_candidates_without_changing_existing_four():
     args = inputs()
     original = kernels.policy_candidates_kernel(*args)
-    extended = kernels.policy_candidates_with_budget_kernel(*args, np.array([0.5, 0.5]))
+    extended = with_budget(*args, np.array([0.5, 0.5]))
     for before, after in zip(original[:3], extended[:3], strict=True):
         np.testing.assert_array_equal(before, after[:4])
     assert original[3] == extended[3]
@@ -31,7 +36,7 @@ def test_budget_candidate_respects_same_cap_and_group_constraints():
     args[3] = np.array([[.6, .8], [.2, .4]])
     args[4] = np.array([[1, 0]], dtype=np.uint8)
     args[5], args[6] = np.array([.65]), np.array([.75])
-    weights, metrics, _, accepted = kernels.policy_candidates_with_budget_kernel(*args, np.array([.5, .5]))
+    weights, metrics, _, accepted = with_budget(*args, np.array([.5, .5]))
     assert accepted > 0
     assert .65 - 1e-8 <= weights[4, 0] <= .75 + 1e-8
     assert .2 - 1e-8 <= weights[4, 1] <= .4 + 1e-8
@@ -43,13 +48,13 @@ def test_budget_candidate_respects_same_cap_and_group_constraints():
                                    np.array([np.nan, .5]), np.array([np.inf, 0.]), np.array([1.])])
 def test_invalid_budgets_fail_closed(budget):
     with pytest.raises(ValueError, match='POLICY_'):
-        kernels.policy_candidates_with_budget_kernel(*inputs(), budget)
+        with_budget(*inputs(), budget)
 
 
 def test_zero_variance_cannot_fabricate_a_risk_budget_candidate():
     args = list(inputs())
     args[1] = np.zeros((2, 2))
-    weights, metrics, contributions, accepted = kernels.policy_candidates_with_budget_kernel(*args, np.array([.5, .5]))
+    weights, metrics, contributions, accepted = with_budget(*args, np.array([.5, .5]))
     assert accepted > 0  # Original mean/utility methods remain defined.
     assert np.isnan(metrics[4]).all()
     assert np.isnan(contributions[4]).all()
@@ -80,8 +85,8 @@ def test_readonly_strided_risk_inputs_and_budget_do_not_compile_or_mutate():
     assert np.shares_memory(args[1], owner) and np.shares_memory(budget, budget_owner)
     saved_owner, saved_budget = owner.copy(), budget_owner.copy()
     signatures = {k.__name__: tuple(k.signatures) for k in kernels.KERNELS}
-    first = kernels.policy_candidates_with_budget_kernel(*args, budget)
-    second = kernels.policy_candidates_with_budget_kernel(*args, budget)
+    first = with_budget(*args, budget)
+    second = with_budget(*args, budget)
     np.testing.assert_array_equal(first[0], second[0])
     np.testing.assert_array_equal(owner, saved_owner)
     np.testing.assert_array_equal(budget_owner, saved_budget)

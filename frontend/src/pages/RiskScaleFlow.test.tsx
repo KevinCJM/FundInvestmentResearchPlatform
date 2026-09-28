@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import RiskScaleCenter from './RiskScaleCenter'
 import RiskScaleWorkspace from './RiskScaleWorkspace'
 import RiskScaleVersionView from './RiskScaleVersionView'
@@ -28,6 +28,7 @@ beforeEach(async () => {
   vi.spyOn(riskScales, 'catalog').mockResolvedValue({ items: [{ ...riskVersion, artifact_type: 'risk_scale', base_currency: 'CNY', risk_basis_id: riskDefinition.risk_basis_id }], drafts: [draft()], total: 1, next_offset: null })
   vi.spyOn(riskScales, 'defaults').mockResolvedValue({ items: [] })
   vi.spyOn(riskScales, 'reference').mockResolvedValue(riskReference)
+  vi.spyOn(riskScales, 'sourceLabels').mockResolvedValue({ labels: { 'index:index_daily:000300.SH': '沪深300' }, missing_ids: [] })
   vi.spyOn(riskScales, 'sources').mockResolvedValue({ items: [{ id: 'index:index_daily:000300.SH', kind: 'index', name: '沪深300', code: '000300.SH', status: 'available', coverage: { start_date: '2020-01-02', end_date: '2026-09-17' }, reference_capability: { available: true, supported_fields: ['close'] } }], total: 1, offset: 0, limit: 20, problems: [] })
   vi.spyOn(riskScales, 'draft').mockResolvedValue(draft(2))
   vi.spyOn(riskScales, 'version').mockResolvedValue(riskVersion)
@@ -183,7 +184,73 @@ describe('guided risk scale editing', () => {
     fireEvent.click(screen.getByRole('button', { name: '下一步' }))
     expect(await screen.findByText('沪深300')).toBeInTheDocument()
     expect(screen.getByText('000300.SH · 指数')).toBeInTheDocument()
-    expect(riskScales.sources).toHaveBeenCalledWith('index', '000300.SH', 0, expect.any(AbortSignal))
+    expect(riskScales.sourceLabels).toHaveBeenCalledWith(['index:index_daily:000300.SH'], expect.any(AbortSignal))
+    expect(riskScales.sources).not.toHaveBeenCalled()
+  })
+  it.each(['editFrom=risk-fixture', 'from=risk-fixture'])('allows editing and saving while names are pending: %s', async query => {
+    let resolve!: (value: Awaited<ReturnType<typeof riskScales.sourceLabels>>) => void
+    vi.mocked(riskScales.sourceLabels).mockImplementation(() => new Promise(done => { resolve = done }))
+    mount('/settings/risk-scales/new?' + query)
+    const name = await screen.findByLabelText('标尺名称')
+    expect(screen.getByText('正在补全代理名称，可以继续编辑。')).toBeInTheDocument()
+    fireEvent.change(name, { target: { value: '用户正在编辑的名称' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }))
+    await waitFor(() => expect(riskScales.saveDraft).toHaveBeenCalled())
+    await act(async () => resolve({ labels: { 'index:index_daily:000300.SH': '后台查到的名称' }, missing_ids: [] }))
+    expect(name).toHaveValue('用户正在编辑的名称')
+    fireEvent.click(screen.getByRole('button', { name: '下一步' }))
+    expect(screen.getByText('后台查到的名称')).toBeInTheDocument()
+    expect(riskScales.sourceLabels).toHaveBeenCalledTimes(1)
+  })
+  it('keeps failed or missing names local and retries without reloading edited inputs', async () => {
+    vi.mocked(riskScales.sourceLabels).mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValueOnce({ labels: {}, missing_ids: ['index:index_daily:000300.SH'] })
+      .mockResolvedValueOnce({ labels: { 'index:index_daily:000300.SH': '沪深300' }, missing_ids: [] })
+    mount('/settings/risk-scales/new?editFrom=risk-fixture')
+    const name = await screen.findByLabelText('标尺名称')
+    fireEvent.change(name, { target: { value: '保留修改' } })
+    fireEvent.click(await screen.findByRole('button', { name: '重试名称查询' }))
+    fireEvent.click(await screen.findByRole('button', { name: '重试名称查询' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: '重试名称查询' })).not.toBeInTheDocument())
+    expect(name).toHaveValue('保留修改')
+    expect(riskScales.version).toHaveBeenCalledTimes(1)
+    expect(riskScales.sourceLabels).toHaveBeenCalledTimes(3)
+  })
+  it('rejects late names after switching configurations even if transport ignores abort', async () => {
+    let resolve!: (value: Awaited<ReturnType<typeof riskScales.sourceLabels>>) => void
+    vi.mocked(riskScales.sourceLabels).mockImplementationOnce(() => new Promise(done => { resolve = done }))
+      .mockResolvedValue({ labels: { 'index:index_daily:000300.SH': '新方案名称' }, missing_ids: [] })
+    render(<MemoryRouter initialEntries={['/settings/risk-scales/new?editFrom=first']}><Link to="/settings/risk-scales/new?editFrom=second">切换方案</Link><RiskScaleWorkspace /></MemoryRouter>)
+    await screen.findByLabelText('标尺名称')
+    const signal = vi.mocked(riskScales.sourceLabels).mock.calls[0][1]!
+    fireEvent.click(screen.getByRole('link', { name: '切换方案' }))
+    await waitFor(() => expect(riskScales.sourceLabels).toHaveBeenCalledTimes(2))
+    expect(signal.aborted).toBe(true)
+    await act(async () => resolve({ labels: { 'index:index_daily:000300.SH': '过期名称' }, missing_ids: [] }))
+    fireEvent.click(screen.getByRole('button', { name: '下一步' }))
+    expect(screen.getByText('新方案名称')).toBeInTheDocument()
+    expect(screen.queryByText(/过期名称/)).not.toBeInTheDocument()
+  })
+  it('uses frozen names without querying current metadata', async () => {
+    vi.mocked(riskScales.reference).mockResolvedValue({ ...riskReference, provenance: { assets: [{ sources: [{ series_id: 'index:index_daily:000300.SH', name: '冻结名称' }] }] } })
+    mount('/settings/risk-scales/new?editFrom=risk-fixture')
+    await screen.findByLabelText('标尺名称')
+    expect(riskScales.sourceLabels).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '下一步' }))
+    expect(screen.getByText('冻结名称')).toBeInTheDocument()
+  })
+  it('preserves saved draft names and does not require name lookup', async () => {
+    vi.mocked(riskScales.draft).mockResolvedValue({ ...draft(), editable_definition: { ...draftEditor(), sourceLabels: { 'index:index_daily:000300.SH': '草稿名称' } } })
+    mount('/settings/risk-scales/drafts/draft-fixture')
+    await screen.findByLabelText('标尺名称')
+    expect(riskScales.sourceLabels).not.toHaveBeenCalled()
+  })
+  it('still blocks the form when the frozen reference identity does not match', async () => {
+    vi.mocked(riskScales.reference).mockResolvedValue({ ...riskReference, content_hash: '0'.repeat(64) })
+    mount('/settings/risk-scales/new?editFrom=risk-fixture')
+    expect(await screen.findByRole('alert')).toHaveTextContent(/校验不一致/)
+    expect(screen.queryByLabelText('标尺名称')).not.toBeInTheDocument()
+    expect(riskScales.sourceLabels).not.toHaveBeenCalled()
   })
   it('resumes a saved draft and recalculates immediately when the segmentation method changes', async () => {
     mount('/settings/risk-scales/drafts/draft-fixture'); fireEvent.click(await screen.findByRole('button', { name: '计算前沿与五档' })); await screen.findByLabelText('分档方式'); expect(screen.getByRole('option', { name: '收益等分' })).toBeInTheDocument(); const before = vi.mocked(riskScales.preview).mock.calls.length; fireEvent.change(screen.getByLabelText('分档方式'), { target: { value: 'equal_return_v1' } }); expect(screen.queryByRole('button', { name: '更新前沿与分档预览' })).not.toBeInTheDocument(); await waitFor(() => expect(vi.mocked(riskScales.preview).mock.calls.length).toBeGreaterThan(before)); expect(riskScales.preview).toHaveBeenLastCalledWith(expect.objectContaining({ definition: expect.objectContaining({ segmentation: { algorithm_id: 'equal_return_v1' } }) }), expect.any(AbortSignal)); expect(riskScales.reference).toHaveBeenCalledWith('reference-fixture', expect.any(AbortSignal))

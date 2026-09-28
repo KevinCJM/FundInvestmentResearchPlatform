@@ -203,7 +203,7 @@ def test_meta_unconfigured_and_message_503(harness: AgentHarness) -> None:
     payload = meta.json()
     assert payload["configured"] is False
     assert payload["catalog_version"]
-    assert {scope["id"] for scope in payload["scopes"]} == {"indicator_center", "product_research"}
+    assert {scope["id"] for scope in payload["scopes"]} == {"indicator_center", "product_research", "scenario_center"}
     assert payload["limits"]["tool_calls_per_turn"] is None
     assert payload["limits"]["tool_rounds_per_turn"] is None
 
@@ -935,6 +935,115 @@ def test_conversation_draft_and_human_save_need_no_product(harness, monkeypatch)
     assert saved.status_code == 200, saved.text
     assert len(harness.fake.create_calls) == 1
     assert harness.fake.evaluate_calls == []
+
+
+@pytest.mark.parametrize('bad_reads', [1, 3])
+def test_invalid_task_read_recovers_to_a_saveable_draft(harness, monkeypatch, bad_reads):
+    """Replay the observed capitalized parameters, including a blocked retry."""
+    context = authoring_context()
+    replies = [{'tool_calls': [{'name': 'task.read', 'arguments': {
+        'Section': 'sources', 'Offset': 0, 'Limit': 10,
+    }}]} for _ in range(bad_reads)]
+    if bad_reads == 1:
+        replies.append({'tool_calls': [{'name': 'task.read', 'arguments': {'section': 'sources'}}]})
+    replies.extend([
+        {'tool_calls': [{'name': 'metrics.validate', 'arguments': {'definition': DEFINITION}}]},
+        {'content': '草稿已生成并校验，请点击草稿卡片的“保存”。'},
+    ])
+    llm = harness.script(monkeypatch, replies)
+    sid = harness.create_session(context)['session_id']
+    response = harness.message(sid, {'message_id': 'write-indicator', 'expected_session_revision': 0,
+        'text': '你自己决定，给我写入指标', 'page_context': context})
+    assert response.status_code == 200, response.text
+    draft = response.json()['draft']
+    assert draft['valid'] and not draft.get('stale')
+    assert not harness.fake.create_calls and not harness.fake.evaluate_calls
+    results = [json.loads(item['content']) for item in llm.requests[-1]['messages'] if item['role'] == 'tool']
+    errors = [item['error'] for item in results if item.get('error')]
+    assert len(errors) == bad_reads
+    for error in errors:
+        assert 'section、offset、limit' in error['message']
+        assert '字段名区分大小写' in error['message']
+        assert '不表示缺少写入入口或权限' in error['message']
+    if bad_reads == 3:
+        assert errors[-1]['code'] == 'AGENT_NO_PROGRESS'
+    else:
+        source = next(item['result'] for item in results if (item.get('result') or {}).get('section') == 'sources')
+        assert source['sources'][0]['text'] == '你自己决定，给我写入指标'
+    system = llm.requests[-1]['system']
+    assert '先完成可执行的完整定义并调用 metrics.validate' in system
+    assert '生成草稿不依赖任务读取成功' in system
+    # The ordinary UI commit flow remains the sole write; retries cannot duplicate it.
+    frozen = harness.client.post(f'/api/agent/sessions/{sid}/commit-preview', json={
+        'draft_revision': draft['draft_revision'], 'definition': draft['definition'], 'page_context': context,
+    })
+    assert frozen.status_code == 200, frozen.text
+    body = {'request_id': 'confirmed-save', 'confirmation_id': frozen.json()['confirmation_id'],
+        'definition_hash': frozen.json()['definition_hash'], 'draft_revision': draft['draft_revision'], 'confirmed': True}
+    unconfirmed = harness.client.post(f'/api/agent/sessions/{sid}/commit', json={**body, 'confirmed': False})
+    assert unconfirmed.status_code == 422 and not harness.fake.create_calls
+    saved = harness.client.post(f'/api/agent/sessions/{sid}/commit', json=body)
+    replayed = harness.client.post(f'/api/agent/sessions/{sid}/commit', json=body)
+    assert saved.status_code == replayed.status_code == 200
+    assert saved.json()['indicator_id'] == replayed.json()['indicator_id']
+    assert replayed.json()['replayed'] and len(harness.fake.create_calls) == 1
+    assert harness.client.get(f'/api/agent/sessions/{sid}').json()['saved_commit']['indicator_id'] == saved.json()['indicator_id']
+
+
+def test_generated_indicator_commit_persists_in_real_repository(harness, monkeypatch, tmp_path):
+    from custom_indicators.service import CustomIndicatorService
+    service = CustomIndicatorService(tmp_path, tmp_path)
+    harness.client.app.state.agent_indicator_service = service
+    harness.script(monkeypatch, [
+        {'tool_calls': [{'name': 'metrics.validate', 'arguments': {'definition': DEFINITION}}]},
+        {'content': '草稿已校验，可以保存。'},
+    ])
+    context = authoring_context()
+    sid = harness.create_session(context)['session_id']
+    response = harness.message(sid, {'message_id': 'real-repository', 'expected_session_revision': 0,
+        'text': '生成并保存累计收益指标', 'page_context': context})
+    assert response.status_code == 200, response.text
+    draft = response.json()['draft']
+    assert draft['valid'], draft.get('diagnostics')
+    assert not [item for item in service.list_indicators()['items'] if item['source'] == 'custom']
+    frozen = harness.client.post(f'/api/agent/sessions/{sid}/commit-preview', json={
+        'draft_revision': draft['draft_revision'], 'definition': draft['definition'], 'page_context': context,
+    })
+    assert frozen.status_code == 200, frozen.text
+    body = {'request_id': 'real-save', 'confirmation_id': frozen.json()['confirmation_id'],
+        'definition_hash': frozen.json()['definition_hash'], 'draft_revision': draft['draft_revision'], 'confirmed': True}
+    saved = harness.client.post(f'/api/agent/sessions/{sid}/commit', json=body)
+    assert saved.status_code == 200, saved.text
+    assert harness.client.post(f'/api/agent/sessions/{sid}/commit', json=body).json()['replayed']
+    # Reopen the disk-backed service; the saved definition must survive in the catalog.
+    reopened = CustomIndicatorService(tmp_path, tmp_path)
+    record = reopened.get_indicator(saved.json()['indicator_id'], saved.json()['revision'])
+    assert record['name'] == DEFINITION['name'] and record['result_kind'] == 'scalar'
+    assert len([item for item in reopened.list_indicators()['items'] if item['source'] == 'custom']) == 1
+
+
+def test_argument_failure_does_not_echo_exception_or_unknown_values(harness, monkeypatch):
+    from agent.tools import argument_error_message
+    # Even an exception containing market data must yield registry-only guidance.
+    def fail_validation(_definition):
+        raise AgentError('AGENT_TOOL_ARGUMENTS_INVALID', 'SECRET_INPUT 987654.321', status_code=422,
+            diagnostics=[{'field': 'SECRET_FIELD', 'input': 987654.321}])
+    monkeypatch.setattr(harness.fake, 'validate', fail_validation)
+    llm = harness.script(monkeypatch, [
+        {'tool_calls': [{'name': 'metrics.validate', 'arguments': {'definition': DEFINITION}}]},
+        {'content': '参数需要调整，尚未生成指标。'},
+    ])
+    context = authoring_context()
+    sid = harness.create_session(context)['session_id']
+    response = harness.message(sid, {'message_id': 'bad-contract', 'expected_session_revision': 0,
+        'text': '生成指标', 'page_context': context})
+    assert response.status_code == 200, response.text
+    receipt = next(json.loads(item['content']) for item in llm.requests[-1]['messages'] if item['role'] == 'tool')
+    assert receipt['error']['message'] == argument_error_message('metrics.validate')
+    assert data_policy.verify(receipt, 'metrics.validate')
+    serialized = json.dumps(llm.requests, ensure_ascii=False)
+    assert 'SECRET_' not in serialized and '987654' not in serialized
+    assert not harness.fake.create_calls
 
 
 def test_preview_requires_real_target_and_can_use_searched_sample(harness, monkeypatch):

@@ -3,6 +3,7 @@ import { taaBaseline, taaCatalog, taaPreflight } from '../src/test/tacticalAlloc
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
 import path from 'node:path'
+import { auditTextContrast } from './helpers/contrast'
 
 let numericApi: ChildProcess | undefined
 let numericRoot = ''
@@ -55,6 +56,92 @@ test('流程首页在当前视口完整展示且不存在水平溢出', async ({
   await expect(page.getByText(/个节点/)).toHaveCount(0)
   await expect(page.getByRole('navigation', { name: '页脚导航' }).getByRole('link', { name: '设置' })).toHaveAttribute('href', '/settings')
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+})
+
+test('投前总览不自动选中上次研究，目录进入模块后仍需明确选择', async ({ page }, testInfo) => {
+  const bookmark = JSON.stringify({ name: '基础四类配置', mandateId: 'm1', strategicUniverseId: 's1', ltcmaId: 'c1', baselineId: 'b1', researchDate: '2019-12-31' })
+  await page.addInitScript((saved) => {
+    localStorage.setItem('allocation-journey:v1', saved)
+    sessionStorage.setItem('allocation-journey:v1', saved)
+  }, bookmark)
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.goto('/pre-investment/')
+  await expect(page.getByRole('heading', { name: '从投资目标，到研究定稿' })).toBeVisible()
+  await expect(page.getByText('基础四类配置', { exact: true })).toHaveCount(0)
+  await expect(page.getByText(/当前研究方案/)).toHaveCount(0)
+  // 总览只有模块入口，不展示某份研究的完成进度或携带其身份。
+  await expect(page.getByText('已保存，可返回', { exact: true })).toHaveCount(0)
+  const entries = page.getByRole('list', { name: '投前研究流程' }).getByRole('link')
+  await expect(entries).toHaveCount(9)
+  for (const entry of await entries.all()) expect(await entry.getAttribute('href')).not.toContain('?')
+  // Entire step is one navigation target; its explanatory content remains readable on hover/focus.
+  const firstStep = entries.first()
+  await firstStep.hover()
+  expect(await page.evaluate(auditTextContrast)).toEqual([])
+  await firstStep.focus()
+  await expect(firstStep).toBeFocused()
+  await expect(firstStep).toHaveAccessibleName('01 投资目标与约束')
+  await expect(firstStep).toHaveAccessibleDescription(/设定收益目标/)
+  await expect(firstStep.locator('a, button')).toHaveCount(0)
+  await expect(entries.filter({ hasText: '战术资产配置' })).toHaveAccessibleDescription(/按需/)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  expect(await page.evaluate(auditTextContrast)).toEqual([])
+  await page.screenshot({ path: testInfo.outputPath('pre-investment-overview.png'), fullPage: true })
+
+  const paths = page.locator('summary').filter({ hasText: '两种研究路径如何汇合？' })
+  await paths.focus()
+  await expect(paths).toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('heading', { name: '先定大类', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '先选产品池', exact: true })).toBeVisible()
+  expect(await page.evaluate(auditTextContrast)).toEqual([])
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('pre-investment-paths.png'), fullPage: true })
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('heading', { name: '先定大类', exact: true })).toBeHidden()
+  await page.getByRole('link', { name: '查看已保存 SAA', exact: true }).click()
+  await expect(page).toHaveURL(/\/pre-investment\/saa$/)
+  await expect(page.getByRole('heading', { name: '战略资产配置（SAA）' })).toBeVisible()
+  await page.goBack()
+  await entries.first().focus()
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/\/pre-investment\/objectives$/)
+  await expect(page.getByText('基础四类配置', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('尚未选择产品范围', { exact: true })).toBeVisible()
+  const sidebar = page.getByRole('complementary', { name: '投前决策子页面导航' })
+  if ((page.viewportSize()?.width ?? 1440) < 1280) {
+    const trigger = page.getByRole('button', { name: '投前决策阶段导航' })
+    await trigger.click()
+    await sidebar.getByRole('link', { name: /投前决策总览/ }).focus()
+    await page.keyboard.press('Escape')
+    await expect(trigger).toBeFocused()
+    await trigger.click()
+  }
+  await sidebar.getByRole('link', { name: /投前决策总览/ }).click()
+  await expect(page).toHaveURL(/\/pre-investment$/)
+  await expect(page.getByText(/当前研究方案/)).toHaveCount(0)
+  expect(await page.evaluate(() => localStorage.getItem('allocation-journey:v1'))).toBe(bookmark)
+  expect(errors).toEqual([])
+})
+
+test('投前总览英文长文案与减少动态效果可用', async ({ page }, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem('fund-research.i18n.locale', 'en-US'))
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.goto('/pre-investment')
+  const overview = page.getByTestId('pre-investment-overview')
+  await expect(overview.getByRole('heading', { name: 'From investment objectives to a final research package' })).toBeVisible()
+  await expect(overview.getByRole('list', { name: 'Pre-investment research workflow' }).getByRole('link')).toHaveCount(9)
+  const start = overview.getByRole('link', { name: 'Start with objectives' })
+  await expect(start).toHaveAttribute('href', '/pre-investment/objectives')
+  expect(await start.evaluate(element => getComputedStyle(element).transitionProperty)).toBe('none')
+  await overview.getByText('How do the two research paths converge?', { exact: true }).click()
+  await expect(overview.getByRole('heading', { name: 'Start with asset classes', exact: true })).toBeVisible()
+  await expect(overview.getByRole('heading', { name: 'Start with a product pool', exact: true })).toBeVisible()
+  await expect(overview).not.toContainText(/名称待补充|Text unavailable/)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  expect(await page.evaluate(auditTextContrast)).toEqual([])
+  await page.screenshot({ path: testInfo.outputPath('pre-investment-english.png'), fullPage: true })
 })
 
 test('静态 Booking 页统一业务录入与复式记账', async ({ page }) => {

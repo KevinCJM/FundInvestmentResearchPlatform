@@ -45,6 +45,9 @@ def resolve_uncertainty(request, cma, repository):
                     "收缩或奇异样本均值协方差只支持高斯插件近似；请明确确认近似，或使用可适用的未收缩样本版本。")
             calibration = "gaussian_plugin_not_exact_confidence"
             warnings.append("当前为样本／收缩均值协方差的高斯插件近似，名义覆盖水平不是精确频率学覆盖率。")
+    elif method == "long_term_scenario":
+        raise ValidationError("SAA_UNCERTAINTY_SET_UNAVAILABLE",
+            "长期情景已估计时间块重采样的均值误差，但尚未校准联合椭球半径；请使用区间稳健模式。")
     else:
         raise ValidationError("SAA_UNCERTAINTY_SET_UNAVAILABLE", "当前模型没有可校准的均值协方差。")
     probability = CONFIDENCE[request.uncertainty_confidence]

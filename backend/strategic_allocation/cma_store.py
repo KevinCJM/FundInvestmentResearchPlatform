@@ -32,7 +32,7 @@ class CmaDraftStore:
                         or type(item.get("revision")) is not int or item["revision"] < 1):
                     raise ValueError("invalid draft")
                 CmaDraftWrite.model_validate({k: item[k] for k in
-                    ("name", "editable_definition", "copied_from_id") if k in item})
+                    ("name", "editable_definition", "copied_from_id", "editing_ref") if k in item})
             return items
         except (ValueError, TypeError, KeyError, OSError) as exc:
             raise ValidationError("CMA_DRAFT_STORE_INVALID", "LTCMA 草稿记录无效，请检查存储。") from exc

@@ -24,7 +24,7 @@ class CmaModelContext(Contract):
     as_of: date
     currency: Currency
     return_basis: Literal["annual_arithmetic_total_return"] = "annual_arithmetic_total_return"
-    source: Source
+    source: str = Field(max_length=2000)
 
     @model_validator(mode="after")
     def context(self):
@@ -236,8 +236,37 @@ class RegimeCmaRequest(StatisticalCmaContext):
         return self
 
 
+class HistoricalScenarioReference(Contract):
+    """Exact published reference; names are never an identity bridge."""
+    run_id: Identifier
+    publication_id: Identifier
+    content_hash: Fingerprint
+
+
+class LongTermScenarioCmaRequest(StatisticalCmaContext):
+    method: Literal["long_term_scenario"]
+    window: CmaWindow = Field(default_factory=lambda: CmaWindow(kind="common_since_inception"))
+    run_ref: CmaVersionRef
+    historical_reference: HistoricalScenarioReference | None = None
+
+    @model_validator(mode="after")
+    def reference_identity(self):
+        if self.historical_reference is not None and (
+                self.historical_reference.run_id != self.run_ref.id
+                or self.historical_reference.content_hash != self.run_ref.content_hash):
+            raise ValueError("所选情景发布版本与历史研究不一致，请重新选择。")
+        return self
+
+
+class ConditionalScenarioCmaRequest(LongTermScenarioCmaRequest):
+    method: Literal["conditional_scenario"]
+    realtime_ref: CmaVersionRef
+    horizon_days: int = Field(ge=1, le=2520, strict=True)
+
+
 CmaModelRequest = Annotated[
-    BlackLittermanRequest | ScenarioMixtureRequest | HistoricalCmaRequest | BayesianCmaRequest | RegimeCmaRequest,
+    BlackLittermanRequest | ScenarioMixtureRequest | HistoricalCmaRequest | BayesianCmaRequest | RegimeCmaRequest
+    | LongTermScenarioCmaRequest | ConditionalScenarioCmaRequest,
     Field(discriminator="method"),
 ]
 CMA_MODEL_ADAPTER = TypeAdapter(CmaModelRequest)

@@ -3,8 +3,12 @@ import { useI18n } from '../../i18n/runtime'
 import { inputClass, NumberInput } from '../risk-models/ResearchUI'
 import { percentInputValue } from '../../services/strategicAllocation'
 
-export const control = `${inputClass} placeholder:text-slate-600 placeholder:opacity-100 focus-visible:ring-2 focus-visible:ring-accent-500`
+export const control = `${inputClass} !rounded-lg placeholder:text-slate-600 placeholder:opacity-100 focus-visible:ring-2 focus-visible:ring-accent-500`
 export const linkClass = 'inline-flex min-h-10 items-center rounded-lg px-2 text-sm font-medium text-accent-700 focus-visible:ring-2 focus-visible:ring-accent-500'
+export function cmaMethodText(t: (key: string, values?: Record<string, string | number>) => string, method: string, window?: string) {
+  const label = window && (/^\d+Y$/.test(window) ? t('historyYears', { years: window.slice(0, -1) }) : t(window))
+  return `${t(method)}${label ? ` · ${label}` : ''}`
+}
 export function useLtcmaText() {
   const { s, locale } = useI18n()
   return { locale, t: (key: string, values?: Record<string, string | number>) => s(`ltcma.${key}`, values) }

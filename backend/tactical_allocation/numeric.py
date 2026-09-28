@@ -131,8 +131,64 @@ def constrained_tilts_kernel(base, tilts, lower, upper, caps, strength, groups, 
     return result, scales
 
 
-@njit(FO(M, int64, float64, float64, int64), cache=True, nogil=True)
-def path_metrics_kernel(path, asset_count, periods_per_year, penalty, objective):
+@njit(FO(I), cache=True, nogil=True)
+def interval_years_kernel(days):
+    """ACT/365.25 durations between common price observations."""
+    years = np.empty(max(0, days.size - 1), dtype=np.float64)
+    for t in range(years.size):
+        if days[t + 1] <= days[t]:
+            raise ValueError("TAA_INTERVAL_DATES")
+        years[t] = (days[t + 1] - days[t]) / 365.25
+    return years
+
+
+@njit(FO(F, float64), cache=True, nogil=True)
+def cash_interval_returns_kernel(years, annual_return):
+    """Compound an effective annual cash assumption for each elapsed interval."""
+    if not np.isfinite(annual_return) or annual_return <= -1.0:
+        raise ValueError("TAA_CASH_RETURN")
+    result = np.empty(years.size, dtype=np.float64)
+    for t in range(years.size):
+        if not np.isfinite(years[t]) or years[t] <= 0.0:
+            raise ValueError("TAA_INTERVAL_DURATION")
+        result[t] = np.expm1(np.log1p(annual_return) * years[t])
+    return result
+
+
+@njit(types.UniTuple(float64, 2)(F, F, float64), cache=True, nogil=True)
+def annual_rate_moments_kernel(values, years, periods_per_year):
+    """Annual arithmetic drift and diffusion variance of dated increments.
+
+    An empty duration axis preserves the existing equal-period contract.
+    Irregular increments use r = drift * dt + sigma * sqrt(dt) * epsilon.
+    """
+    n = values.size
+    if n == 0 or years.size not in (0, n):
+        raise ValueError("TAA_INTERVAL_AXIS")
+    total, elapsed = 0.0, 0.0
+    for t in range(n):
+        dt = years[t] if years.size else 1.0 / periods_per_year
+        if not np.isfinite(dt) or dt <= 0.0 or not np.isfinite(values[t]):
+            raise ValueError("TAA_INTERVAL_DURATION")
+        total += values[t]
+        elapsed += dt
+    if years.size == 0:
+        mean = total / n
+        variance = 0.0
+        for t in range(n):
+            variance += (values[t] - mean) ** 2
+        return mean * periods_per_year, variance / (n - 1) * periods_per_year if n > 1 else 0.0
+    mean = total / elapsed
+    variance = 0.0
+    for t in range(n):
+        dt = years[t] if years.size else 1.0 / periods_per_year
+        residual = values[t] - mean * dt
+        variance += residual * residual / dt
+    return mean, variance / (n - 1) if n > 1 else 0.0
+
+
+@njit(FO(M, int64, float64, float64, int64, F), cache=True, nogil=True)
+def path_metrics_kernel(path, asset_count, periods_per_year, penalty, objective, years):
     """Net performance and active risk on one independently funded interval."""
     o = asset_count * 2
     n = path.shape[0]
@@ -140,36 +196,32 @@ def path_metrics_kernel(path, asset_count, periods_per_year, penalty, objective)
         raise ValueError("Empty evaluation interval.")
     taa = _performance_kernel(path[:, o + 7], path[:, o + 9], periods_per_year)
     baseline = _performance_kernel(path[:, o + 5], path[:, o + 8], periods_per_year)
-    mean = 0.0
+    active = np.empty(n, dtype=np.float64)
     turnover = 0.0
     maximum_turnover = 0.0
     cost = 0.0
     baseline_turnover = 0.0
     baseline_cost = 0.0
     for t in range(n):
-        mean += path[t, o + 7] - path[t, o + 5]
+        active[t] = path[t, o + 7] - path[t, o + 5]
         turnover += path[t, o + 1]
         maximum_turnover = max(maximum_turnover, path[t, o + 1])
         cost += path[t, o + 3]
         baseline_turnover += path[t, o + 10]
         baseline_cost += path[t, o + 12]
-    mean /= n
-    variance = 0.0
-    for t in range(n):
-        difference = path[t, o + 7] - path[t, o + 5] - mean
-        variance += difference * difference
-    variance = variance / (n - 1) * periods_per_year if n > 1 else 0.0
+    mean, variance = annual_rate_moments_kernel(active, years, periods_per_year)
+    _, taa_variance = annual_rate_moments_kernel(path[:, o + 7], years, periods_per_year)
     tracking_error = np.sqrt(variance)
     relative = (1.0 + taa[0]) / (1.0 + baseline[0]) - 1.0
-    score = mean * periods_per_year - penalty * variance
+    score = mean - penalty * variance
     if objective == 1:
         score = relative
     elif objective == 2:
         score = taa[4]
     result = np.empty(len(METRIC_NAMES), dtype=np.float64)
-    result[0], result[1], result[2], result[3], result[4] = taa[0], baseline[0], relative, taa[2], taa[4]
+    result[0], result[1], result[2], result[3], result[4] = taa[0], baseline[0], relative, (np.sqrt(taa_variance) if n > 1 else np.nan) if years.size else taa[2], taa[4]
     result[5] = tracking_error
-    result[6] = mean * periods_per_year / tracking_error if tracking_error > 1e-14 else np.nan
+    result[6] = mean / tracking_error if tracking_error > 1e-14 else np.nan
     result[7] = turnover
     result[8] = turnover / n
     result[9] = maximum_turnover
@@ -521,12 +573,16 @@ def current_signal_tilt_kernel(probabilities, state_tilts, use_signal, strength)
 current_signal_tilt_kernel.disable_compile()
 
 KERNELS = (input_status_kernel, constrained_tilts_kernel, path_metrics_kernel,
+           interval_years_kernel, cash_interval_returns_kernel, annual_rate_moments_kernel,
            select_candidate_kernel, candidate_feasibility_kernel, returns_availability_kernel,
            momentum_windows_kernel, momentum_signals_kernel, signal_counts_kernel, compose_product_weights_kernel,
            scenario_contributions_kernel, target_tilt_kernel,
            recommendation_details_kernel, aggregate_class_weights_kernel,
            knowledge_window_status_kernel, current_signal_tilt_kernel, holding_breaches_kernel,
            tilt_rows_status_kernel)
+
+for kernel in (interval_years_kernel, cash_interval_returns_kernel, annual_rate_moments_kernel, path_metrics_kernel):
+    kernel.disable_compile()
 
 
 def execution_audit() -> dict[str, Any]:
@@ -538,7 +594,7 @@ def execution_audit() -> dict[str, Any]:
                    and not any(v.objectmode for v in k.overloads.values()) for k in all_kernels)
     warmed = _WARMED_PID == os.getpid()
     return {
-        "engine": "tactical-allocation-njit/1.1.0", "backend": "numba_njit_fixed_signature",
+        "engine": "tactical-allocation-njit/1.2.0", "backend": "numba_njit_fixed_signature",
         "fully_warmed": bool(complete and inherited["complete"] and warmed),
         "complete": bool(complete and inherited["complete"] and warmed),
         "nopython": bool(complete), "python_fallback": 0, "object_mode": 0,
@@ -582,6 +638,13 @@ def _groups(asset_count, membership, lower, upper):
     return _array(membership, np.uint8, 2), _array(lower, np.float64, 1), _array(upper, np.float64, 1)
 
 
+def _period_years(value, count):
+    years = np.empty(0, dtype=np.float64) if value is None else _array(value, np.float64, 1)
+    if value is not None and (years.size != count or not np.isfinite(years).all() or np.any(years <= 0)):
+        raise ValueError("TAA_INTERVAL_DURATION")
+    return years
+
+
 def _checked_path(returns, probabilities, flags, tilts, base, cost, clock=None, policy=None, direct=None, gross_cost=False):
     if policy is None and direct is None and not gross_cost:
         path, _, _, _ = _taa_path_kernel(returns, probabilities, flags, tilts, base, 0.0, 1.0, 1.0, cost)
@@ -608,11 +671,12 @@ def evaluate_candidates(
     periods_per_year=252, risk_penalty=3.0, max_tracking_error=1.0,
     max_turnover=1.0, objective="active_utility", selected_candidate_id=None,
     group_membership=None, group_min=None, group_max=None, validation_start_index=None,
-    allow_infeasible_selected=False, decision_policy=None, clock=None, direct_tilts=None,
+    allow_infeasible_selected=False, decision_policy=None, clock=None, direct_tilts=None, period_years=None,
 ):
     """Freeze a training-only selected strength, then evaluate its holdout path."""
     _require_ready()
     returns, probabilities = _array(returns, np.float64, 2), _array(probabilities, np.float64, 2)
+    years = _period_years(period_years, len(returns))
     if returns.shape[0] > 20000 or returns.shape[1] > 100:
         raise ValueError("TAA research exceeds the bounded 20000-period / 100-asset workspace.")
     flags = _array(use_signal, np.uint8, 1)
@@ -670,7 +734,7 @@ def evaluate_candidates(
         direct_paths.append(None if direct_input is None else constrained_tilts_kernel(
             base, direct_input, lower, upper, caps, float(strength), groups, group_lower, group_upper)[0])
         path = interval_path(0, split, index)
-        train_metrics[index] = path_metrics_kernel(path, base.size, float(periods_per_year), float(risk_penalty), objectives[objective])
+        train_metrics[index] = path_metrics_kernel(path, base.size, float(periods_per_year), float(risk_penalty), objectives[objective], years[:split])
         breaches = holding_breaches_kernel(path, returns[:split], base, lower, upper, caps, groups, group_lower, group_upper) if decision_policy else 0
         train_breaches.append(breaches)
         feasible[index] = candidate_feasibility_kernel(train_metrics[index], float(max_tracking_error), float(max_turnover)) if breaches == 0 else 0
@@ -697,7 +761,7 @@ def evaluate_candidates(
     for index, strength in enumerate(strength_values):
         # An explicit maturity gap is skipped through views, never concatenated.
         path = interval_path(validation_start, len(returns), index)
-        validation = path_metrics_kernel(path, base.size, float(periods_per_year), float(risk_penalty), objectives[objective])
+        validation = path_metrics_kernel(path, base.size, float(periods_per_year), float(risk_penalty), objectives[objective], years[validation_start:])
         validation_breaches = holding_breaches_kernel(path, returns[validation_start:], base, lower, upper, caps, groups, group_lower, group_upper) if decision_policy else 0
         candidates.append({
             "id": f"scale-{index}", "strength": float(strength), "feasible": bool(feasible[index]),
@@ -793,9 +857,10 @@ def recommend_weights(probabilities, use_signal, base, state_tilts, lo, hi, max_
             "has_deviation": bool(has_deviation), "is_saa": not bool(has_deviation)}
 
 
-def stress_compare(returns, base, target, cost=0.0, periods_per_year=252, cost_basis="half_turnover"):
+def stress_compare(returns, base, target, cost=0.0, periods_per_year=252, cost_basis="half_turnover", period_years=None):
     _require_ready()
     values = _array(returns, np.float64, 2)
+    years = _period_years(period_years, len(values))
     base, target = _array(base, np.float64, 1), _array(target, np.float64, 1)
     if values.shape[0] == 0 or not np.isfinite(cost) or not 0 <= cost <= 1000:
         raise ValueError("Invalid scenario interval or costs.")
@@ -810,12 +875,13 @@ def stress_compare(returns, base, target, cost=0.0, periods_per_year=252, cost_b
     if cost_basis not in ("half_turnover", "gross_traded_weight"):
         raise ValueError("Unknown explicit transaction cost basis.")
     path = _checked_path(values, probabilities, flags, tilts, base, float(cost), gross_cost=cost_basis == "gross_traded_weight")
-    metrics = path_metrics_kernel(path, base.size, float(periods_per_year), 0.0, 0)
+    metrics = path_metrics_kernel(path, base.size, float(periods_per_year), 0.0, 0, years)
     baseline_contribution, target_contribution, excess_contribution = scenario_contributions_kernel(values, path, base)
     baseline_performance = _performance_kernel(path[:, base.size * 2 + 5], path[:, base.size * 2 + 8], float(periods_per_year))
+    _, baseline_variance = annual_rate_moments_kernel(path[:, base.size * 2 + 5], years, float(periods_per_year))
     path.setflags(write=False)
     return {
-        "baseline": {"total_return": float(metrics[1]), "annual_volatility": float(baseline_performance[2]) if np.isfinite(baseline_performance[2]) else None,
+        "baseline": {"total_return": float(metrics[1]), "annual_volatility": float(np.sqrt(baseline_variance)) if len(values) > 1 else None,
                      "max_drawdown": float(baseline_performance[4]), "turnover": float(metrics[11]), "cost": float(metrics[12])},
         "target": _metrics(metrics), "excess_return": float(metrics[2]),
         "baseline_nav": path[:, base.size * 2 + 8], "target_nav": path[:, base.size * 2 + 9],
@@ -853,6 +919,8 @@ def warm_tactical_allocation_kernels():
             raise RuntimeError("TAA signal/clock warmup incomplete")
         returns = np.zeros((40, 2), dtype=np.float64)
         starts = np.arange(40, dtype=np.int64)
+        years = interval_years_kernel(np.arange(41, dtype=np.int64))
+        cash_interval_returns_kernel(years, .02)
         available = np.broadcast_to((starts + 1)[:, None], returns.shape).copy()
         base = np.array([0.5, 0.5])
         signals = build_momentum_signals(returns, 2, 0.1, available, starts, 40, starts + 1)
@@ -866,6 +934,7 @@ def warm_tactical_allocation_kernels():
         recommend_weights(signals["current_probabilities"], signals["current_use_signal"], base,
                           signals["state_tilts"], np.zeros(2), np.ones(2), np.ones(2), 1.0)
         stress_compare(returns[:2], base, base)
+        stress_compare(returns[:2], base, base, period_years=years[:2])
         knowledge_window_status(available, 40)
         from .contracts import DecisionPolicy
         from .clocks import clock_plan

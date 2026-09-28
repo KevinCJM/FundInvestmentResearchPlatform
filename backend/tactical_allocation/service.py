@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from backend.custom_indicators.errors import ConflictError, ValidationError
+from backend.custom_indicators.errors import ConflictError, IndicatorDomainError, ValidationError
 from backend.tactical_allocation.contracts import PreviewRequest, ScenarioRequest, SaveDecisionRequest
 from backend.research_input_checks import return_quality, training_readiness_kernel
 from backend.tactical_allocation.data import TacticalAllocationData, warm_tactical_data
@@ -41,7 +41,12 @@ class TacticalAllocationService:
 
     def warm(self) -> dict[str, Any]:
         warm_tactical_data()
+        from backend.strategic_allocation import reference_evidence_kernels
+        from backend.strategic_allocation.reference_sources import ReferenceSources
+        ReferenceSources(self.data.data_dir).warm()
+        reference_evidence_kernels.warm()
         audit = numeric.warm_tactical_allocation_kernels()
+        audit['research_proxies'] = reference_evidence_kernels.audit()
         from backend.tactical_allocation.walk_forward import warm_walk_forward_kernels
         audit["walk_forward"] = warm_walk_forward_kernels()
         if not audit["walk_forward"]["complete"]:
@@ -49,9 +54,18 @@ class TacticalAllocationService:
         return audit
 
     def catalog(self) -> dict[str, Any]:
+        from backend.strategic_allocation.versioning import decision_state, policy_state, research_versions
         catalog = self.data.catalog()
-        return {**catalog, "baselines": self.repository.list_baselines(),
-                "decisions": self.repository.list_decisions()}
+        baselines, decisions = self.repository.list_baselines(), self.repository.list_decisions()
+        try:
+            lineage = research_versions(self.strategic_root, self.data.universe_dir)
+        except IndicatorDomainError:
+            lineage = None  # 战略侧存储不可读时仍展示冻结记录，只是不带上游状态。
+        if lineage:
+            by_id = {item["id"]: item for item in baselines}
+            baselines = [{**item, **policy_state(lineage, item)} for item in baselines]
+            decisions = [{**item, **decision_state(lineage, item, by_id.get(item.get("baseline_id")))} for item in decisions]
+        return {**catalog, "baselines": baselines, "decisions": decisions}
 
     def create_baseline(self, request: dict[str, Any]) -> dict[str, Any]:
         return self.repository.save_baseline(self.data.create_baseline(request))
@@ -95,7 +109,7 @@ class TacticalAllocationService:
             guidance.append({"code": "NAV_SCALE_BREAK", "message": quality["issues"][0]["message"], "action": "review_data"})
         return {"coverage": {"start_date": data["period_starts"][0], "end_date": data["dates"][-1]},
                 "dates": {key: str(getattr(request, key)) for key in ("start_date", "end_date", "as_of", "train_end_date")},
-                "quality": quality,
+                "quality": quality, "alignment": data.get("alignment"),
                 "training": {"eligible": enough and not bool(future) and not strict_unknown and not no_signals, "train_observations": split,
                              "validation_observations": len(days) - split, "unavailable_count": int(future),
                              "unknown_count": int(unknown), **(signal_counts or {}),
@@ -118,7 +132,7 @@ class TacticalAllocationService:
         if request.signal_mode == "momentum":
             signals = numeric.build_momentum_signals(
                 returns, request.lookback, request.max_abs_tilt,
-                available_at=data["available_at"], period_starts=starts,
+                available_at=data.get("signal_available_at", data["available_at"]), period_starts=starts,
                 as_of_day=_day(request.as_of),
                 period_ends=np.asarray([_day(value) for value in data["dates"]], dtype=np.int64),
                 max_signal_age_days=request.max_signal_age_days,
@@ -221,9 +235,21 @@ class TacticalAllocationService:
                           "signal_timing": audit_rows, "run_created_at": run.get("created_at"),
                           "publications": run.get("publications", [])}}
 
+    def _require_current_baseline(self, baseline: dict) -> None:
+        """新的 TAA 研究只能基于可用的 SAA 方案，见 docs/pre-investment/versioning.md。"""
+        if not baseline.get("policy"):
+            return
+        from backend.strategic_allocation.versioning import BLOCKED, policy_state, research_versions
+        status = policy_state(research_versions(self.strategic_root, self.data.universe_dir), baseline)["usable"]["status"]
+        if status == BLOCKED:
+            raise ValidationError("TAA_BASELINE_BLOCKED", "该 SAA 方案的投资目标或 LTCMA 已删除，不能用于新的 TAA 研究；历史决策仍可查看。")
+        if status != "ready":
+            raise ValidationError("TAA_BASELINE_NOT_CURRENT", "该 SAA 方案的投资目标或 LTCMA 已有新版本，请先基于最新版本重建 SAA，再做 TAA。")
+
     def _calculate(self, request: PreviewRequest) -> tuple[dict, dict]:
         numeric._require_ready()
         baseline = self.repository.get_baseline(request.baseline_id)
+        self._require_current_baseline(baseline)
         if baseline.get("policy") and request.max_tracking_error > baseline["policy"]["mandate"]["max_tracking_error"] + 1e-10:
             raise ValidationError("SAA_POLICY_TRACKING_ERROR", "战术主动风险上限不得超过已确认政策预算；需要扩大时请回长期配置重新研究。")
         data = self.data.load_data(baseline, str(request.start_date), str(request.end_date), str(request.as_of))
@@ -265,7 +291,7 @@ class TacticalAllocationService:
             request.max_tracking_error, request.max_turnover, request.objective,
             selected_candidate_id=request.selected_candidate_id or (None if request.search else "scale-1"),
             allow_infeasible_selected=request.decision_policy is not None and not request.search,
-            **group_args, **clock_args,
+            period_years=data.get("period_years"), **group_args, **clock_args,
         )
         candidate = next(item for item in result["candidates"] if item["id"] == result["selected_id"])
         current = _vector(request.current_weights, assets, "当前持仓") if request.current_weights is not None else None
@@ -303,7 +329,8 @@ class TacticalAllocationService:
                     "本次规则与 SAA 在当前研究中确定；历史回放不等于当时已部署，不能认定为正式 PIT 业绩。"] ))
         warnings = [*data.get("reasons", []),
                     "按冻结决策与执行时钟推进；未交易时持仓漂移。SAA/TAA 使用同一执行规则与成本，训练和验证独立从 SAA 起步。" if request.decision_policy else
-                    "日频目标再平衡；SAA/TAA 使用相同交易成本。训练和验证分别从 SAA 起步。",
+                    ("共同观察期目标再平衡；SAA/TAA 使用相同交易成本。训练和验证分别从 SAA 起步。" if data.get("alignment") else
+                     "日频目标再平衡；SAA/TAA 使用相同交易成本。训练和验证分别从 SAA 起步。"),
                     "候选选择只看训练区；多次查看留出结果后调参会降低验证独立性。"]
         if data["lineage"].get("excluded_incomplete_dates"):
             warnings.append("数据存在不完整日期，已采用共同净值区间；年化按 252 个观察期估算，不代表连续日频实盘收益。")
@@ -370,7 +397,7 @@ class TacticalAllocationService:
             "data": {"start_date": data["dates"][0], "end_date": data["dates"][-1],
                      "observations": len(data["dates"]), "train_observations": split,
                      "validation_observations": len(data["dates"]) - split,
-                     "source_hash": data["source_hash"], "lineage": data["lineage"],
+                     "source_hash": data["source_hash"], "lineage": data["lineage"], "alignment": data.get("alignment"),
                      "pit": {"status": "research_only", "reasons": reasons}, "quality": preflight["quality"], "training": preflight["training"]},
             "candidates": result["candidates"], "selected_id": result["selected_id"],
             "recommendation": {
@@ -391,7 +418,10 @@ class TacticalAllocationService:
                       "training_label_knowledge": training_knowledge,
                       "auto_selected_id": result.get("auto_selected_id", result["selected_id"]),
                       "baseline_hash": baseline["content_hash"], "formal_pit_eligible": False,
-                      "decision_as_of": str(request.as_of), "cost_basis": request.decision_policy.cost_basis if request.decision_policy else "half_turnover", "rebalance": request.decision_policy.model_dump(mode="json") if request.decision_policy else "daily_target", "periods_per_year": 252},
+                      "decision_as_of": str(request.as_of), "cost_basis": request.decision_policy.cost_basis if request.decision_policy else "half_turnover",
+                      "rebalance": request.decision_policy.model_dump(mode="json") if request.decision_policy else ("common_observation_target" if data.get("alignment") else "daily_target"),
+                      "annualization": data["lineage"].get("annualization", "equal_periods"),
+                      "periods_per_year": None if data.get("alignment") else 252},
         }
         if plan is not None:
             from .clocks import application_status
@@ -443,6 +473,7 @@ class TacticalAllocationService:
         target = _vector(preview["recommendation"]["weights"], assets, "TAA")
         snapshot = {}
         evidence = {}
+        years = None
         if scenario.kind == "shock":
             matrix = _vector(scenario.shocks, assets, "情景冲击").reshape(1, -1)
         else:
@@ -460,12 +491,17 @@ class TacticalAllocationService:
             else:
                 raise ValidationError("TAA_SCENARIO_COVERAGE", f"历史情景须位于本次预览范围 {data['period_starts'][0]} 至 {data['dates'][-1]}；请先调整研究区间并重新比较。")
             matrix = historical["returns"]
+            years = data["period_years"][left:right] if "period_years" in data else None
             quality = return_quality(matrix, historical["dates"], assets)
             if quality["issues"]:
                 raise ValidationError("TAA_NAV_SCALE_BREAK", quality["issues"][0]["message"], diagnostics=quality["issues"])
             snapshot = {"returns": matrix, "available_days": historical["available_at"]}
             evidence = {"dates": historical["dates"], "source_hash": historical["source_hash"]}
+            if years is not None:
+                snapshot["period_years"] = years
+                evidence["annualization"] = data["lineage"]["annualization"]
         result = numeric.stress_compare(matrix, base, target, preview_request.transaction_cost_bps,
+                                        period_years=years,
                                         cost_basis=preview_request.decision_policy.cost_basis if preview_request.decision_policy else "half_turnover")
         return {"name": scenario.name, "kind": scenario.kind, "simulation_scope": "current_target_fixed_stress", "cost_basis": result["cost_basis"],
                 "preview_hash": preview["preview_hash"], "evidence": evidence,
@@ -477,7 +513,7 @@ class TacticalAllocationService:
                                   for i, key in enumerate(assets)],
                 "cost": {"baseline": result["baseline_cost"], "taa": result["target_cost"]},
                 "warnings": ["这是指定冲击/历史条件下的比较，不是预测或发生概率。",
-                             "使用当前建议权重、每日恢复目标、同一成本；资产收益贡献扣除显式费用后与净收益对账；改善表示两者收益百分点之差。"],
+                             "使用当前建议权重、每个观察期恢复目标、同一成本；资产收益贡献扣除显式费用后与净收益对账；改善表示两者收益百分点之差。"],
                 "execution": result["execution"]}, snapshot
 
     def save_decision(self, body: SaveDecisionRequest) -> dict:
@@ -485,6 +521,10 @@ class TacticalAllocationService:
         if preview["preview_hash"] != body.preview_hash:
             raise ConflictError("TAA_PREVIEW_CHANGED", "输入数据或方案已变化，请重新预览后保存。")
         scenarios, arrays = [], {"returns": data["returns"], "available_days": data["available_at"]}
+        if "period_years" in data:
+            arrays.update({"period_years": data["period_years"], "signal_available_days": data["signal_available_at"],
+                "period_start_days": np.asarray([_day(day) for day in data["period_starts"]], dtype=np.int64),
+                "period_end_days": np.asarray([_day(day) for day in data["dates"]], dtype=np.int64)})
         for index, scenario in enumerate(body.scenarios):
             result, frozen = self._scenario_calculation(preview, data, scenario)
             scenarios.append({"scenario": scenario.model_dump(mode="json"), "result": result})

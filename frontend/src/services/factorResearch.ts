@@ -179,8 +179,6 @@ export const factorApi = {
   publish: (value: { run_id: string; name: string; effective_from: string; effective_to: string; note: string }) => request<FactorRelease>('/releases', 'POST', value),
   retire: (id: string) => request<FactorRelease>(`/releases/${id}/retire`, 'POST'),
   monitor: (id: string) => numerical<ReleaseMonitor>(`/releases/${id}/monitor`),
-  bindings: (contextType?: string, contextId?: string) => request<{ items: FactorBinding[] }>(`/bindings?context_type=${encodeURIComponent(contextType || '')}&context_id=${encodeURIComponent(contextId || '')}`),
-  bind: (value: Omit<FactorBinding, 'created_at' | 'run_id'>) => request<FactorBinding>('/bindings', 'POST', value),
   profile: (id: string, holdings: Array<{ product_id: string; weight: number }>, asOf: string) => numerical<PortfolioFactorProfile>(`/releases/${id}/portfolio-profile`, 'POST', { holdings, as_of: asOf }),
 }
 export const numberText = (value: NumberValue | undefined, digits = 3) => value == null || !Number.isFinite(value) ? '—' : value.toLocaleString('zh-CN', { maximumFractionDigits: digits })

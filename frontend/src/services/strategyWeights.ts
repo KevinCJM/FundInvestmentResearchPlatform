@@ -1,3 +1,4 @@
+import { systemText } from '../i18n/runtime'
 import { assertNativeNumericalExecution, type CppAotExecutionAudit } from '../utils/fixedNjitExecution'
 interface NjitStrategyExecutionAudit {
   backend: 'numba_njit_fixed_signature'
@@ -34,11 +35,11 @@ export async function requestEqualWeights(
   try {
     payload = await response.json()
   } catch {
-    throw new Error(`等权计算服务返回了无效响应（${response.status}）`)
+    throw new Error(systemText('preInvestment.strategyWeights.equalWeightServiceReturnedAnInvalidResponse', { p0: response.status }))
   }
   if (!response.ok) {
     const detail = (payload as { detail?: unknown })?.detail
-    throw new Error(typeof detail === 'string' ? detail : `等权计算失败（${response.status}）`)
+    throw new Error(typeof detail === 'string' ? detail : systemText('preInvestment.strategyWeights.equalWeightCalculationFailed', { p0: response.status }))
   }
   const result = payload as Partial<EqualWeightsResponse>
   if (
@@ -46,7 +47,7 @@ export async function requestEqualWeights(
     || result.weights.length !== assetCount
     || result.weights.some((weight) => typeof weight !== 'number' || !Number.isFinite(weight) || weight < 0)
   ) {
-    throw new Error('等权计算服务返回的权重向量无效或资产数量不一致')
+    throw new Error(systemText('preInvestment.strategyWeights.theReturnedEqualWeightVectorIsInvalid'))
   }
   try {
     assertNativeNumericalExecution(result.execution)
@@ -57,7 +58,7 @@ export async function requestEqualWeights(
       throw new Error('Incomplete NJIT proof')
     }
   } catch {
-    throw new Error((result.execution?.execution_backend ?? result.execution?.backend) === 'cpp_aot' ? '等权计算服务未通过 C++ AOT 执行校验' : '等权计算服务未通过固定签名 NJIT 执行校验')
+    throw new Error((result.execution?.execution_backend ?? result.execution?.backend) === 'cpp_aot' ? '等权计算服务未通过 C++ AOT 执行校验' : systemText('preInvestment.strategyWeights.theEqualWeightServiceFailedFixedSignature'))
   }
   return result as EqualWeightsResponse
 }

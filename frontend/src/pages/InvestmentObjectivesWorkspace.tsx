@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { readAllocationDraft, useAllocationDraft, updateAllocationJourney, allocationJourneyPath } from '../app/allocationJourney'
+import { readAllocationDraft, useAllocationDraft, updateAllocationJourney, writeAllocationDraft, allocationJourneyPath } from '../app/allocationJourney'
 import { useResearchDay } from '../app/ResearchContext'
-import { Badge, Button, Card } from '../components/ui'
+import { actionClass, Badge, Button, Card, ErrorPanel, LoadingPanel } from '../components/ui'
 import { Feedback, today } from '../components/risk-models/ResearchUI'
 import { TaskFields, GoalFields, ReturnCheck } from '../components/investment-mandate/MandateFields'
 import CashBudgetFields from '../components/investment-mandate/CashBudgetFields'
@@ -31,7 +31,7 @@ function alignPitDate(value: MandateDefinition, day: string, locked: boolean): M
 export default function InvestmentObjectivesWorkspace() {
   const { t } = useMandateText()
   const [params, setParams] = useSearchParams()
-  const editFrom = params.get('editFrom'), viewId = params.get('view'), fresh = params.get('fresh') === '1'
+  const editFrom = params.get('editFrom'), viewId = params.get('view'), fresh = params.get('fresh') ?? ''
   const platformDay = useResearchDay()
   const pitUnknown = platformDay === undefined
   const pitLocked = typeof platformDay === 'string'
@@ -39,7 +39,8 @@ export default function InvestmentObjectivesWorkspace() {
   const cutoff = researchDay
   const clockIssue = pitUnknown ? t('clockUnknown') : ''
   const researchLabel = pitUnknown ? t('clockUnknown') : pitLocked ? t('pitActive', { date: platformDay }) : t('pitOff')
-  const [draft, setDraft] = useAllocationDraft<MandateStudyRequest>('mandate-study:editor', () => {
+  // 新建每次带一个新的 fresh 令牌，草稿 key 跟着令牌走；否则「添加投资目标与约束」会捞回上一次没填完的草稿。
+  const [draft, setDraft] = useAllocationDraft<MandateStudyRequest>(fresh ? `mandate-study:editor:new:${fresh}` : 'mandate-study:editor', () => {
     if (!editFrom && !fresh) {
       const current = readAllocationDraft<MandateStudyRequest>('mandate-study:editor')
       if (current?.definition) return { ...newStudy(researchDay), ...current,
@@ -55,6 +56,7 @@ export default function InvestmentObjectivesWorkspace() {
   const [preview, setPreview] = useState<MandateAssessment | null>(null)
   const [scaleVersion, setScaleVersion] = useState<VersionView | null>(null)
   const [liveFunding, setLiveFunding] = useState<MandateFundingEcho | null>(null)
+  const [fundingError, setFundingError] = useState(false)
   const [step, setStep] = useState(0), [acknowledged, setAcknowledged] = useState(false)
   const [busy, setBusy] = useState(false), [initializing, setInitializing] = useState(Boolean(editFrom || viewId))
   const [error, setError] = useState(''), [notice, setNotice] = useState('')
@@ -70,10 +72,6 @@ export default function InvestmentObjectivesWorkspace() {
   const invalid = Boolean(versionUnavailable || clockIssue || issues.some(Boolean) || numericIssue)
   const statusLabel = (status?: string) => t(status === 'diagnosed' ? 'diagnosed' : status === 'needs_revision' ? 'needsRevision' : 'inputsOnly')
 
-  useEffect(() => {
-    if (!fresh) return
-    const next = new URLSearchParams(params); next.delete('fresh'); setParams(next, { replace: true })
-  }, [])
   useEffect(() => { heading.current?.focus() }, [step])
   useEffect(() => () => { generation.current += 1; operation.current?.abort() }, [])
   useEffect(() => {
@@ -105,24 +103,25 @@ export default function InvestmentObjectivesWorkspace() {
     previousResearchDay.current = platformDay
     // A viewing clock does not replace the inputs or diagnosis of a saved version.
     if (viewId || selected) return
-    generation.current += 1; operation.current?.abort(); setBusy(false); setAcknowledged(false); setPreview(null); setSelected(null)
+    generation.current += 1; operation.current?.abort(); setBusy(false); setAcknowledged(false); setPreview(null); setSelected(null); setLiveFunding(null)
     if (pitLocked) setDraft(current => ({ ...current, definition: alignPitDate(current.definition, platformDay, true) }))
     setNotice(pitUnknown ? '' : t('pitChanged'))
   }, [platformDay, pitLocked, pitUnknown, viewId, selected, definition.as_of])
 
   // 现金流改变真正需要的收益，所以填写页一边填一边回显服务端的确定性资金算术。
   useEffect(() => {
-    if (versionUnavailable || viewId || !definition.cash_budget || clockIssue || inputIssue) { setLiveFunding(null); return }
+    setLiveFunding(null); setFundingError(false)
+    if (versionUnavailable || viewId || clockIssue || inputIssue) return
     const controller = new AbortController()
     const timer = setTimeout(() => { previewMandateFunding({ ...draft, cma_id: null }, controller.signal)
       .then(result => { if (!controller.signal.aborted) setLiveFunding(result) })
-      .catch(() => { if (!controller.signal.aborted) setLiveFunding(null) }) }, 400)
+      .catch(() => { if (!controller.signal.aborted) { setLiveFunding(null); setFundingError(true) } }) }, 400)
     return () => { clearTimeout(timer); controller.abort() }
   }, [draft, clockIssue, inputIssue, versionUnavailable, viewId])
 
   function invalidate() {
     generation.current += 1; operation.current?.abort(); setBusy(false)
-    setPreview(null); setSelected(null); setAcknowledged(false); setError(''); setNotice(t('inputChanged'))
+    setPreview(null); setSelected(null); setLiveFunding(null); setAcknowledged(false); setError(''); setNotice(t('inputChanged'))
   }
   function update(patch: Partial<MandateDefinition>) {
     invalidate()
@@ -150,29 +149,32 @@ export default function InvestmentObjectivesWorkspace() {
   function save() {
     if (invalid || !preview || !acknowledged || selected || initializing) return
     void run(signal => confirmMandate({ ...draft, cma_id: null }, preview.preview_hash, signal, editSource?.id), version => {
+      // 保存后地址栏切成 view，草稿 key 跟着回到固定 key；先把这一版写进去，不让它落回旧草稿。
+      writeAllocationDraft('mandate-study:editor', draft)
       setSelected(version); setEditSource(null); setPreview(version.assessment ?? null); updateAllocationJourney({ mandateId: version.id })
       setParams({ view: version.id }, { replace: true }); setNotice(t('savedNotice'))
     })
   }
 
   const resolved = preview?.definition ?? definition
+  const fundingEcho = selected && preview ? { funding: preview.funding,
+    effective_target_return: preview.definition.effective_target_return ?? null, return_requirements: preview.return_requirements, execution: preview.execution } : liveFunding
   return <div className="min-w-0 space-y-5 text-slate-900">
     <header className="space-y-2"><Link className={listLinkClass} to="/pre-investment/objectives">{t('backObjectiveList')}</Link>
       <h1 className="text-2xl font-bold">{selected ? t('savedObjectiveTitle') : editSource ? t('editObjectiveTitle') : t('addObjectiveTitle')}</h1><p className="text-sm leading-6 text-slate-600">{t('simpleDescription')}</p></header>
-    <Feedback error={error || clockIssue} notice={notice} />
-    {initializing ? <div role="status" aria-live="polite" className="space-y-2"><p className="text-sm text-slate-600">{t('loadingObjective')}</p><div className="h-12 animate-pulse rounded-lg bg-slate-200 motion-reduce:animate-none" /><div className="h-24 animate-pulse rounded-lg bg-slate-100 motion-reduce:animate-none" /></div>
-      : versionUnavailable ? <Button onClick={() => setReload(value => value + 1)}>{t('retry')}</Button> : <>
+    {/* 读到的版本不可用时整块编辑器都出不来，失败原因交给中间的错误态，顶部只留 PIT 这类仍然成立的提示。 */}
+    <Feedback error={versionUnavailable ? clockIssue : error || clockIssue} notice={notice} />
+    {initializing ? <LoadingPanel text={t('loadingObjective')} />
+      : versionUnavailable ? <ErrorPanel message={error || t('catalogFailed')} action={<Button onClick={() => setReload(value => value + 1)}>{t('retry')}</Button>} /> : <>
       <nav aria-label={t('stepNavigation')} className="grid grid-cols-2 gap-2 border-b border-slate-200 pb-4">{stepKeys.map((key, index) => {
         const disabled = !selected && (Boolean(clockIssue) || index >= 1 && Boolean(inputIssue || numericIssue))
         return <button key={key} type="button" aria-current={index === step ? 'step' : undefined} disabled={disabled} onClick={() => setStep(index)}
           className={`min-h-11 rounded-lg p-3 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50 ${index === step ? 'bg-accent-50 font-semibold text-accent-900' : 'text-slate-600 hover:bg-slate-50'}`}>{index + 1}. {t(key)}</button>
       })}</nav>
-      <MandateImpactSummary value={resolved} decision={preview?.risk_decision} funding={preview?.funding}
+      <MandateImpactSummary value={resolved} decision={preview?.risk_decision} returns={preview?.return_requirements ?? fundingEcho?.return_requirements} funding={preview?.funding ?? fundingEcho?.funding} saved={Boolean(selected)}
         effectiveCash={preview?.reference_diagnosis?.cash_constraint?.effective_min_cash_weight ?? resolved.effective_cash_reserve_weight} />
       {editSource && !selected && <p className="rounded-lg bg-slate-50 p-3 text-sm leading-6 text-slate-700">{t('editingPublishedHint', { name: editSource.name })}</p>}
-      {selected && <div className="flex flex-wrap items-center gap-3 rounded-lg bg-slate-50 p-3"><Badge>{t('readonly')}</Badge><p className="text-sm">{selected.name} · {statusLabel(selected.assessment?.status ?? selected.assessment_status)}</p>
-        <Link className="inline-flex min-h-10 items-center text-sm font-semibold text-accent-800 underline" to={allocationJourneyPath('pool', { mandateId: selected.id })}>{t('nextScope')}</Link>
-      </div>}
+      {selected && <div className="flex flex-wrap items-center gap-3 rounded-lg bg-slate-50 p-3"><Badge>{t('readonly')}</Badge><p className="text-sm">{selected.name} · {statusLabel(selected.assessment?.status ?? selected.assessment_status)}</p></div>}
       <h2 ref={heading} tabIndex={-1} className="text-lg font-semibold">{t(stepKeys[step])}</h2>
       <Card className="min-w-0 space-y-5" aria-label={t('editor')}>
         {step === 0 && <fieldset disabled={Boolean(selected)} className="min-w-0 space-y-6">
@@ -185,11 +187,12 @@ export default function InvestmentObjectivesWorkspace() {
           <section className="min-w-0 space-y-5 border-t border-slate-200 pt-5"><h3 className="text-base font-semibold">{t('sectionGoal')}</h3>
             <GoalFields value={definition} onChange={update} version={scaleVersion} />
             <CashBudgetFields value={definition} onChange={update} funding={liveFunding?.funding ?? preview?.funding} />
-            <ReturnCheck value={definition} version={scaleVersion} funding={liveFunding} pending={Boolean(clockIssue || inputIssue)} /></section>
+            <ReturnCheck value={definition} version={scaleVersion} funding={fundingEcho} error={!selected && fundingError ? t('returnCheckFailed') : undefined} pending={Boolean(clockIssue || inputIssue)} /></section>
         </fieldset>}
         {step === 1 && <div className="space-y-5">
           {!selected && <><p className="text-sm leading-6 text-slate-600">{t('simpleDiagnosisHint')}</p><Button tone="primary" disabled={busy || invalid} onClick={diagnose}>{busy ? t('computing') : preview ? t('recalculate') : t('runDiagnosis')}</Button></>}
-          {busy && <div role="status" className="space-y-2"><p className="text-sm text-slate-600">{t('computingHint')}</p><div className="h-24 animate-pulse rounded-lg bg-slate-100 motion-reduce:animate-none" /></div>}
+          {/* 重算时上一版结果还在屏幕上，形象不能挨着那些数字（15.2 第 1 条），此时只留文字。 */}
+          {busy && (preview ? <p role="status" className="text-sm text-slate-600">{t('computingHint')}</p> : <LoadingPanel text={t('computingHint')} />)}
           {preview ? <>
             <MandateReferenceResults value={preview} />
             {preview.funding && <details className="border-t border-slate-200 pt-4"><summary className="min-h-10 cursor-pointer text-sm font-medium">{t('fundingDetails')}</summary><div className="mt-4"><FundingOverview value={preview.funding} /></div></details>}
@@ -203,8 +206,11 @@ export default function InvestmentObjectivesWorkspace() {
           </> : !busy && <p className="text-sm text-slate-600">{t('diagnosisEmptySimple')}</p>}
         </div>}
         {!selected && activeIssue && <p role="status" className="text-sm text-amber-800">{activeIssue}</p>}
-        <div className="flex flex-wrap justify-between gap-3 border-t border-slate-200 pt-4"><Button disabled={step === 0 || busy} onClick={() => setStep(current => current - 1)}>{t('previous')}</Button>
-          {step < 1 && <Button tone="primary" disabled={Boolean(activeIssue) || busy} onClick={() => setStep(current => current + 1)}>{t('next')}{t(stepKeys[step + 1])}</Button>}</div>
+        {/* 保存后本页就结束了，去向必须是页脚一个真正的按钮，不是正文里的一行小字链接。 */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4"><Button disabled={step === 0 || busy} onClick={() => setStep(current => current - 1)}>{t('previous')}</Button>
+          {step < 1
+            ? <Button tone="primary" disabled={Boolean(activeIssue) || busy} onClick={() => setStep(current => current + 1)}>{t('next')}{t(stepKeys[step + 1])}</Button>
+            : selected && <Link className={actionClass('primary')} to={allocationJourneyPath('pool', { mandateId: selected.id })}>{t('nextScope')}</Link>}</div>
       </Card>
     </>}
   </div>

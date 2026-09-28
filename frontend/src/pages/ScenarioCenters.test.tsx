@@ -4,6 +4,13 @@ import { act, render as renderUI, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import ScenarioCenters from './ScenarioCenters'
+import type { RegimeGraphDefinition } from '../services/regimeGraph'
+
+vi.mock('../components/agent/RegimeAgentPanel', async () => {
+  const { createBlankRegimeDefinition } = await vi.importActual<typeof import('../services/regimeGraph')>('../services/regimeGraph')
+  return { default: ({ onApply }: { onApply: (definition: RegimeGraphDefinition) => void }) =>
+    <button onClick={() => onApply(createBlankRegimeDefinition())}>使用 AI 提案</button> }
+})
 
 vi.mock('./HistoricalRegimeWorkbench', () => ({
   default: function MockWorkbench({ purpose, taskFocus, onNextResearchStep }: { purpose?: string; taskFocus?: string; onNextResearchStep?: () => void }) {
@@ -12,27 +19,70 @@ vi.mock('./HistoricalRegimeWorkbench', () => ({
     return <><h2>{title}</h2><button onClick={() => setCount(value => value + 1)}>草稿修改 {count}</button>{onNextResearchStep && <button onClick={onNextResearchStep}>下一步</button>}</>
   },
 }))
+vi.mock('./regime-workbench/RegimeStudyList', async () => {
+  const { Link } = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
+  return {
+    default: ({ stage, newHref }: { stage: string; newHref?: string }) => <><h2>{stage}清单</h2>{newHref ? <Link to={{ search: newHref }}>新建{stage}</Link> : null}</>,
+  }
+})
 vi.mock('./regime-workbench/GlobalEventCenter', () => ({ default: () => <h2>全球历史事件库内容</h2> }))
 vi.mock('./PublishedScenarioCenter', () => ({ default: () => <h2>情景模拟与压测内容</h2> }))
 const render = (node: ReactNode) => renderUI(<MemoryRouter>{node}</MemoryRouter>)
 const stepTabs = () => within(screen.getByRole('tablist', { name: '市场状态研究步骤' }))
 
 describe('ScenarioCenters', () => {
-  it('默认进入市场状态研究，并按历史参考→实时识别→验证三步切换且保留草稿', async () => {
+  it('应用另一研究步骤的 AI 提案不会清空已有草稿', async () => {
+    const user = userEvent.setup()
+    render(<ScenarioCenters />)
+    await user.click(screen.getByRole('button', { name: '使用 AI 提案' }))
+    await user.click(screen.getByRole('button', { name: '草稿修改 0' }))
+    await user.click(stepTabs().getByRole('tab', { name: /建立实时识别/ }))
+    await user.click(screen.getByRole('button', { name: '使用 AI 提案' }))
+    await user.click(screen.getByRole('button', { name: '草稿修改 0' }))
+    await user.click(stepTabs().getByRole('tab', { name: /定义历史参考/ }))
+    await user.click(screen.getByRole('link', { name: '新建historical' }))
+    expect(screen.getByRole('button', { name: '草稿修改 1' })).toBeVisible()
+  })
+
+  it('默认停在已保存清单，点新建才进工作台，步骤之间草稿保留', async () => {
     const user = userEvent.setup()
     render(<ScenarioCenters />)
     expect(screen.getByRole('tab', { name: /市场状态研究/ })).toHaveAttribute('aria-selected', 'true')
     expect(stepTabs().getByRole('tab', { name: /定义历史参考/ })).toHaveAttribute('aria-selected', 'true')
+    // 一进来是清单，不是编辑器。
+    expect(screen.getByRole('heading', { name: 'historical清单' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: '历史参考工作台内容' })).not.toBeInTheDocument()
+
+    await act(async () => { await user.click(screen.getByRole('link', { name: '新建historical' })) })
     expect(screen.getByRole('heading', { name: '历史参考工作台内容' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'historical清单' })).not.toBeInTheDocument()
     await act(async () => { await user.click(screen.getByRole('button', { name: '草稿修改 0' })) })
+
     await act(async () => { await user.click(stepTabs().getByRole('tab', { name: /建立实时识别/ })) })
+    expect(screen.getByRole('heading', { name: 'realtime清单' })).toBeVisible()
+    await act(async () => { await user.click(screen.getByRole('link', { name: '新建realtime' })) })
     expect(screen.getByRole('heading', { name: '实时识别工作台内容' })).toBeVisible()
     await act(async () => { await user.click(screen.getByRole('button', { name: '草稿修改 0' })) })
+
     await act(async () => { await user.click(stepTabs().getByRole('tab', { name: /验证识别能力/ })) })
     expect(screen.getByRole('heading', { name: '识别验证工作台内容' })).toBeVisible()
     expect(screen.getByRole('button', { name: '草稿修改 1' })).toBeVisible()
+
+    // 回到历史参考先落在清单；重新进入工作台时草稿还在。
     await act(async () => { await user.click(stepTabs().getByRole('tab', { name: /定义历史参考/ })) })
+    expect(screen.getByRole('heading', { name: 'historical清单' })).toBeVisible()
+    await act(async () => { await user.click(screen.getByRole('link', { name: '新建historical' })) })
     expect(screen.getByRole('button', { name: '草稿修改 1' })).toBeVisible()
+  })
+
+  it('工作台可以退回本步骤清单，地址栏不再带研究身份', async () => {
+    function Location() { const value = useLocation(); return <output data-testid="back-location">{value.search}</output> }
+    const user = userEvent.setup()
+    renderUI(<MemoryRouter initialEntries={['/settings/scenario-algorithms?center=market-state&stage=historical&definition=history&revision=3']}><ScenarioCenters /><Location /></MemoryRouter>)
+    expect(screen.getByRole('heading', { name: '历史参考工作台内容' })).toBeVisible()
+    await act(async () => { await user.click(screen.getByRole('link', { name: '返回历史参考清单' })) })
+    expect(screen.getByRole('heading', { name: 'historical清单' })).toBeVisible()
+    expect(screen.getByTestId('back-location')).not.toHaveTextContent('definition=')
   })
 
   it('旧 historical/realtime 深链接兼容为市场状态研究步骤，并保留精确版本', () => {
@@ -54,6 +104,8 @@ describe('ScenarioCenters', () => {
     renderUI(<MemoryRouter initialEntries={['/settings/scenario-algorithms?center=market-state&stage=historical&definition=history&revision=3']}><ScenarioCenters /><Location /></MemoryRouter>)
     await act(async () => { await user.click(stepTabs().getByRole('tab', { name: /建立实时识别/ })) })
     expect(screen.getByTestId('location')).not.toHaveTextContent('definition=')
+    expect(screen.getByRole('heading', { name: 'realtime清单' })).toBeVisible()
+    await act(async () => { await user.click(screen.getByRole('link', { name: '新建realtime' })) })
     await act(async () => { await user.click(screen.getByRole('button', { name: '草稿修改 0' })) })
     await act(async () => { await user.click(stepTabs().getByRole('tab', { name: /验证识别能力/ })) })
     expect(screen.getByRole('heading', { name: '识别验证工作台内容' })).toBeVisible()

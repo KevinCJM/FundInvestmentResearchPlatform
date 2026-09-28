@@ -1,3 +1,4 @@
+import { ErrorPanel } from '../components/ui'
 import { isNativeNumericalExecution } from '../utils/fixedNjitExecution';
 import { NumberInput } from "../components/risk-models/ResearchUI";
 import {
@@ -2902,20 +2903,7 @@ export function ScenarioSimulationCenter() {
       </div>
     );
   }
-  if (!meta || !draft) {
-    return (
-      <div className="space-y-4">
-        <Message error={error || "接口没有返回可用情景模板。"} notice="" />
-        <button
-          type="button"
-          onClick={() => window.location.reload()}
-          className="min-h-11 rounded-xl bg-slate-950 px-4 text-sm font-bold text-white"
-        >
-          重新加载
-        </button>
-      </div>
-    );
-  }
+  if (!meta || !draft) return <ErrorPanel onRetry={() => window.location.reload()} />
   const panels = [
     <BlueprintPanel
       key="blueprint"

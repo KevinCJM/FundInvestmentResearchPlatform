@@ -4519,8 +4519,8 @@ class RegimeGraphV2Service:
                     if definition.study and definition.study.purpose == "historical_reference" else None,
             }
 
-    def list_runs(self, definition_id: str | None = None) -> list[dict[str, Any]]:
-        items = self.runs.list(definition_id)
+    def list_runs(self, definition_id: str | None = None, summary: bool = False) -> list[dict[str, Any]]:
+        items = self.runs.list(definition_id, summary=summary)
         for item in items:
             if str(item.get("schema_version")) == "2.0":
                 item.pop("series", None)

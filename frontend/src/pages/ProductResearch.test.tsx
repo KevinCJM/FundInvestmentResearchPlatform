@@ -51,7 +51,7 @@ describe('ProductResearch', () => {
         summary: { universe_total: 1, filtered_total: 1, active_count: 1, active_rate: 1, recent_listings_12m: 0, avg_m_fee: 0.5, avg_c_fee: 0.1, total_issue_amount: 100, median_issue_amount: 100, unique_managements: 1 },
         snapshot_metric_fields: [
           { field: 'current_size', label: '当前规模', data_type: 'number', source: 'instrument_metrics_snapshot', metric_source: 'system_derived', metric_source_label: '系统衍生指标', metric_type: 'scale', metric_type_label: '规模指标', unit: 'project_normalized_wan', description: 'ETF 总份额 × 同期单位净值', available: true },
-          { field: 'return_1y', label: '累计收益率（1Y）', data_type: 'number', source: 'instrument_metrics_snapshot', metric_source: 'built_in', metric_source_label: '内置指标', metric_type: 'return', metric_type_label: '收益型指标', unit: 'ratio', description: '指标中心预计算', available: true },
+          { field: 'return_1y', label: '累计收益率（1Y）', data_type: 'number', source: 'instrument_metrics_snapshot', metric_source: 'built_in', metric_source_label: '内置指标', metric_type: 'return', metric_type_label: '收益型指标', unit: 'ratio', description: '行情指标中心预计算', available: true },
         ],
         snapshot: { status: 'ready', as_of: '2026-08-31' },
         available_filters: { fund_type: [], type: [], invest_type: [], qdii_type: [{ value: '非QDII', label: '非QDII', count: 1 }], market: [], status: [], management: [], custodian: [] }, sort_by: 'issue_amount', sort_dir: 'desc',
@@ -150,7 +150,7 @@ describe('ProductResearch', () => {
     expect(screen.getByText('快照截至 2026-08-28')).toBeInTheDocument()
     expect(screen.getByText('发行披露口径（非当前 AUM）')).toBeInTheDocument()
     expect(vi.mocked(fetch).mock.calls.some((call) => String(call[0]).includes('snapshot_metric=current_size'))).toBe(true)
-    expect(screen.queryByRole('button', { name: /在指标中心分析/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /在行情指标中心分析/ })).not.toBeInTheDocument()
   })
 
   it('从 URL 初始化场外基金、筛选和成立日排序', async () => {

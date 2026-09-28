@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Field, inputClass, NumberInput, percentText } from '../risk-models/ResearchUI'
 import { metadata, riskScales, textValue, type ReferenceAsset, type VersionView } from '../../services/riskScales'
 import { percentInputValue as percent, type MandateDefinition, type MandateFundingEcho, type ObjectiveKind } from '../../services/strategicAllocation'
-import { CUSTOM_BENCHMARK, lastPaymentMonth, levelReaches, newCashBudget } from './model'
+import { CUSTOM_BENCHMARK, lastPaymentMonth, newCashBudget } from './model'
 import { useMandateText } from './text'
 
 type Props = { value: MandateDefinition; onChange: (patch: Partial<MandateDefinition>) => void }
@@ -18,6 +18,10 @@ export function TaskFields({ value, onChange, cutoff, pitLocked, pitLabel }: Pro
 }) {
   const { t } = useMandateText()
   const changeHorizon = (years: number) => onChange({ horizon_years: years,
+    ...(value.target_return_basis === 'annual_compound' && Number.isFinite(value.target_return)
+      && Number.isInteger(years) && years >= 1 && years <= 30 ? {
+        target_return: (1 + value.target_return) ** (value.horizon_years / years) - 1,
+      } : {}),
     ...(value.cash_budget && Number.isInteger(years) && years >= 1 && years <= 30 ? {
       cash_budget: { ...value.cash_budget, flows: value.cash_budget.flows.map(flow => flow.last_month === flow.first_month && flow.every_months === 1
         || lastPaymentMonth(flow.first_month, flow.every_months, years * 12) <= flow.first_month
@@ -38,9 +42,9 @@ export function TaskFields({ value, onChange, cutoff, pitLocked, pitLabel }: Pro
 
 export function GoalFields({ value, onChange, version }: Props & { version: VersionView | null }) {
   const { t } = useMandateText()
-  const [basis, setBasis] = useState<'annual' | 'total'>('annual')
+  const basis = value.target_return_basis === 'annual_compound' ? 'total' : 'annual'
   const kind = value.objective_kind ?? 'absolute_return'
-  // Same number, two ways to say it. Only the annual value is stored; the conversion is geometric.
+  // A cumulative objective is stored as compound annual growth, never an arithmetic mean.
   const years = Number.isInteger(value.horizon_years) && value.horizon_years >= 1 ? value.horizon_years : 1
   const totalReturn = Number.isFinite(value.target_return) ? (1 + value.target_return) ** years - 1 : NaN
   const setTotal = (number: number) => onChange({ target_return: (1 + number / 100) ** (1 / years) - 1 })
@@ -57,6 +61,7 @@ export function GoalFields({ value, onChange, version }: Props & { version: Vers
       objective_kind: objective,
       ...keepLevel ? {} : { risk_authorization: { ...value.risk_authorization!, authorized_max_level: null, selected_max_level: null } },
       target_return: objective === 'absolute_return' ? NaN : 0,
+      target_return_basis: 'annual_arithmetic',
       target_excess_return: objective === 'benchmark_relative' ? NaN : 0,
       cash_budget: cash,
       funding_target: objective === 'funding_goal' ? { amount: NaN, amount_basis: 'nominal' } : null,
@@ -111,13 +116,13 @@ export function GoalFields({ value, onChange, version }: Props & { version: Vers
       {(['absolute_return', 'funding_goal', 'benchmark_relative'] as const).map(id => <option key={id} value={id}>{t(id)}</option>)}
     </select></Field>
     {kind === 'absolute_return' && <><div className="grid gap-4 sm:grid-cols-2">
-      <Field label={basis === 'annual' ? t('targetReturn') : t('targetTotalReturn', { years })} hint={t('returnHint')}>
+      <Field label={basis === 'annual' ? t('targetReturn') : t('targetTotalReturn', { years })} hint={t(basis === 'total' ? 'compoundTargetHint' : 'returnHint')}>
         <NumberInput className={inputClass} value={percent(basis === 'annual' ? value.target_return : totalReturn)}
           onValueChange={n => basis === 'annual' ? onChange({ target_return: n / 100 }) : setTotal(n)} /></Field>
-      <Field label={t('returnBasis')} hint={t('returnBasisHint')}><select className={inputClass} value={basis} onChange={e => setBasis(e.target.value as 'annual' | 'total')}>
+      <Field label={t('returnBasis')} hint={t('returnBasisHint')}><select className={inputClass} value={basis} onChange={e => onChange({ target_return_basis: e.target.value === 'total' ? 'annual_compound' : 'annual_arithmetic', target_return: NaN })}>
         <option value="annual">{t('annualBasis')}</option><option value="total">{t('totalBasis')}</option></select></Field>
     </div>
-    {Number.isFinite(value.target_return) && <p className="text-xs leading-5 text-slate-600">{t('returnConversion',
+    {basis === 'total' && Number.isFinite(value.target_return) && <p className="text-xs leading-5 text-slate-600">{t('compoundConversion',
       { annual: percentText(value.target_return), years, total: percentText(totalReturn) })}</p>}
 </>}
     {kind === 'funding_goal' && <p className="text-sm leading-6 text-slate-600">{t('fundingGoalHint')}</p>}
@@ -156,47 +161,35 @@ export function GoalFields({ value, onChange, version }: Props & { version: Vers
  * whether the chosen level's frozen reference portfolio delivers it. Cash flows move the
  * demand, so the number is read from the server's funding kernel, never computed here.
  */
-export function ReturnCheck({ value, version, funding, pending }: {
-  value: MandateDefinition; version: VersionView | null; funding: MandateFundingEcho | null; pending: boolean
+export function ReturnCheck({ value, funding, pending, error }: {
+  value: MandateDefinition; version: VersionView | null; funding: MandateFundingEcho | null; pending: boolean; error?: string
 }) {
   const { t } = useMandateText()
-  const levels = version?.preview.result.levels ?? []
-  const selectedLevel = value.risk_authorization?.selected_max_level ?? null
-  const portrait = selectedLevel ? levels[selectedLevel - 1] : undefined
+  const returns = funding?.return_requirements
   const kind = value.objective_kind ?? 'absolute_return'
-  const stated = kind === 'absolute_return' && Number.isFinite(value.target_return) ? value.target_return : null
-  const solved = funding?.funding?.cashflow_required_return
-  const cashflow = typeof solved === 'number' && Number.isFinite(solved) ? solved : null
-  // An absolute target is floored by the cash flows (the server takes the larger); the
-  // other objectives state no arithmetic return, so the flows alone say what is needed.
-  // A ledger with no echo back yet cannot be read as "no cash flows"; that would quote a
-  // target the money does not actually support.
-  const waiting = Boolean(value.cash_budget) && !funding
-  const solution = waiting ? null : kind === 'absolute_return' ? funding?.effective_target_return ?? stated : cashflow
-  // 二分求解出的 0% 带 1e-16 量级残差，显示成 −0.00% 没有意义；低于展示精度就按 0 读。
-  const required = solution != null && Math.abs(solution) < 5e-5 ? 0 : solution
-  const raised = stated != null && required != null && required > stated + 1e-10
-  const sufficient = required == null ? -1 : levels.findIndex(level => levelReaches(level.expected_return.value, required) === true)
-  const reaches = levelReaches(portrait?.expected_return.value, required)
-  const verdict = !portrait ? t('returnCheckNeedsLevel')
-    : reaches === true ? t('levelReachesRequired', { level: selectedLevel ?? '', reference: percentText(portrait.expected_return.value) })
-      : reaches === false ? sufficient >= 0
-        ? t('targetNeedsHigherLevel', { target: percentText(required), level: selectedLevel ?? '',
-            reference: percentText(portrait.expected_return.value), suggested: sufficient + 1 })
-        : t('targetAboveAllLevels', { target: percentText(required) })
-        : ''
+  const arithmetic = returns?.arithmetic_floor ?? (kind === 'absolute_return' && value.target_return_basis !== 'annual_compound'
+    && Number.isFinite(value.target_return) ? value.target_return : null)
+  const compound = returns?.compound_floor ?? (value.target_return_basis === 'annual_compound' && Number.isFinite(value.target_return)
+    ? value.target_return : funding?.funding?.cashflow_required_return ?? null)
+  const reference = returns?.reference_comparison
+  const cap = returns?.volatility_cap ?? value.max_volatility
+  const waiting = pending || !funding
   return <section aria-label={t('returnCheck')} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
     <h4 className="text-sm font-semibold text-slate-900">{t('returnCheck')}</h4>
-    {funding?.funding?.cashflow_required_return_status === 'above_search_bound'
-      ? <p role="status" className="mt-2 text-sm leading-6 text-amber-800">{t('cashflowReturnUnreachable')}</p>
-      : required == null
-        ? <p className="mt-2 text-sm leading-6 text-slate-600">{t(pending || waiting ? 'returnCheckPending' : 'returnCheckNotApplicable')}</p>
-        : <>
-          <p className={`mt-2 text-sm leading-6 ${raised ? 'text-amber-800' : 'text-slate-900'}`}>
-            {raised ? t('returnRaisedByCashflow', { required: percentText(required), stated: percentText(stated) })
-              : t(cashflow == null ? 'requiredReturnFromTarget' : 'requiredReturnFromCashflow', { required: percentText(required) })}</p>
-          {verdict && <p role="status" className={`mt-1 text-sm leading-6 ${reaches === true ? 'text-slate-700' : 'text-amber-800'}`}>{verdict}</p>}
-          {cashflow != null && <p className="mt-1 text-xs leading-5 text-slate-600">{t('cashflowReturnBasis')}</p>}
-        </>}
+    <p className="mt-1 text-xs leading-5 text-slate-600">{t('requirementsHelp')}</p>
+    <dl className="mt-3 grid gap-3 sm:grid-cols-3">
+      <div><dt className="text-xs text-slate-600">{t('requiredArithmetic')}</dt><dd className="mt-1 font-semibold tabular-nums">{arithmetic == null ? t('notSpecified') : percentText(arithmetic)}</dd></div>
+      <div><dt className="text-xs text-slate-600">{t('requiredCompound')}</dt><dd className="mt-1 font-semibold tabular-nums">{compound == null ? t('notSpecified') : percentText(compound)}</dd></div>
+      <div><dt className="text-xs text-slate-600">{t('impactVolatility')}</dt><dd className="mt-1 font-semibold tabular-nums">{cap == null ? t('pendingValue') : percentText(cap)}</dd></div>
+    </dl>
+    {kind === 'benchmark_relative' && <p className="mt-2 text-sm leading-6 text-slate-700">{returns?.benchmark_return == null
+      ? t('benchmarkReturnPending') : t('benchmarkReturnEquation', { benchmark: percentText(returns.benchmark_return),
+        excess: percentText(returns.target_excess_return), required: percentText(returns.arithmetic_floor) })}</p>}
+    {compound != null && <p className="mt-2 text-xs leading-5 text-slate-600">{t('compoundComparisonHelp')}</p>}
+    {error ? <p role="alert" className="mt-2 text-sm text-rose-700">{t('returnCheckFailed')}</p> : returns?.status === 'funding_return_unresolved' ? <p role="status" className="mt-2 text-sm leading-6 text-amber-800">{t('cashflowReturnUnreachable')}</p>
+      : waiting ? <p role="status" className="mt-2 text-sm text-slate-600">{t('returnCheckPending')}</p>
+      : reference && <p role="status" className={`mt-2 text-sm leading-6 ${reference.within_limits ? 'text-slate-700' : 'text-amber-800'}`}>
+        {t(reference.within_limits ? 'referenceReturnPass' : 'referenceReturnFail', {
+          reference: percentText(reference.arithmetic_return), required: percentText(reference.required_arithmetic_return), risk: percentText(reference.volatility) })}</p>}
   </section>
 }

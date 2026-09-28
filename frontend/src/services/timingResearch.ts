@@ -1,3 +1,4 @@
+import { systemText } from '../i18n/runtime'
 import { assertNativeNumericalExecution, type NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
 
 export type TimingValueType = 'series' | 'condition' | 'panel' | 'condition_panel'
@@ -78,13 +79,13 @@ async function request<T>(path: string, method = 'GET', body?: unknown, signal?:
   if (!response.ok) {
     const detail = value?.detail
     const message = typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map((item: { msg?: string }) => item.msg).join('；') : detail?.message
-    throw new Error(message || `请求失败（${response.status}），请稍后重试。`)
+    throw new Error(message || systemText('preInvestment.timingResearch.requestFailedRetryLater', { p0: response.status }))
   }
   return value as T
 }
 async function numerical<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   const value = await request<T & { execution?: unknown }>(path, method, body, signal)
-  assertNativeNumericalExecution(value.execution, '择时研究')
+  assertNativeNumericalExecution(value.execution, systemText('preInvestment.timingResearch.timingResearch'))
   return value
 }
 export const timingApi = {
@@ -105,7 +106,7 @@ export const timingApi = {
 
 export const timingNumber = (value: number | null | undefined, digits = 2) => value == null || !Number.isFinite(value) ? '—' : value.toLocaleString('zh-CN', { maximumFractionDigits: digits })
 export const timingPercent = (value: number | null | undefined) => value == null || !Number.isFinite(value) ? '—' : `${(value * 100).toFixed(2)}%`
-export const timingReason = (reason: string) => ({ take_profit: '止盈', stop_loss: '止损', max_holding: '达到最长持有期', max_holding_bars: '达到最长持有期', exit_signal: '退出条件触发', exit_rule: '退出条件触发', entry_signal: '入场条件触发', end_of_data: '区间结束，仍持仓', hold: '继续持有', none: '无操作', entry: '买入', exit: '卖出' }[reason] || reason || '—')
+export const timingReason = (reason: string) => ({ take_profit: systemText('preInvestment.timingResearch.takeProfit2'), stop_loss: systemText('preInvestment.timingResearch.stopLoss2'), max_holding: systemText('preInvestment.timingResearch.maximumHoldingPeriodReached'), max_holding_bars: systemText('preInvestment.timingResearch.maximumHoldingPeriodReached'), exit_signal: systemText('preInvestment.timingResearch.exitConditionTriggered'), exit_rule: systemText('preInvestment.timingResearch.exitConditionTriggered'), entry_signal: systemText('preInvestment.timingResearch.entryConditionTriggered'), end_of_data: systemText('preInvestment.timingResearch.intervalEndedStillInvested'), hold: systemText('preInvestment.timingResearch.keepHolding'), none: systemText('preInvestment.timingResearch.noAction'), entry: systemText('preInvestment.timingResearch.buy'), exit: systemText('preInvestment.timingResearch.sell') }[reason] || reason || '—')
 
 export function editableTimingDefinition(definition: TimingDefinition): TimingDefinition {
   return { name: definition.name, description: definition.description, entry: definition.entry, exit: definition.exit, execution: { ...definition.execution }, nodes: definition.nodes.map(node => ({ ...node, inputs: { ...node.inputs }, parameters: { ...node.parameters } })), ...(definition.adaptation ? { adaptation: structuredClone(definition.adaptation) } : {}), ...(definition.training ? { training: structuredClone(definition.training) } : {}) }

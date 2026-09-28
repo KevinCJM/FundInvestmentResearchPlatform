@@ -9,7 +9,9 @@ from .contracts import (CmaRequest, PolicyRequest,
                         PublishPolicyRequest, RiskReferenceRequest,
                         MandateStudyRequest, ConfirmMandateRequest)
 from .service import StrategicAllocationService
-from .universe_contracts import UniverseRequest, ConfirmUniverseRequest, ImplementationMapRequest, ConfirmImplementationMapRequest
+from .scope_feasibility_contracts import ScopeFeasibilityRequest
+from .scope_feasibility import diagnose as diagnose_scope
+from .universe_contracts import UniverseRequest, ConfirmUniverseRequest, ImplementationMapRequest, ConfirmImplementationMapRequest, ScopeMandateBinding
 
 MESSAGES = {
     "CMA_MATRIX_SHAPE": "相关矩阵的大小与资产数量不匹配。",
@@ -31,7 +33,7 @@ def _call(function, *args):
     except IndicatorDomainError as exc:
         raise HTTPException(exc.status_code, detail=exc.detail()) from exc
     except RuntimeError as exc:
-        if "预热" not in str(exc) and "CMA_MODEL_NOT_READY" not in str(exc):
+        if "预热" not in str(exc) and "CMA_MODEL_NOT_READY" not in str(exc) and "MOMENT_FRONTIER_NOT_READY" not in str(exc):
             raise
         raise HTTPException(503, detail={"code": "SAA_NOT_READY",
             "message": "本进程尚未完成配置计算预热，请稍后重试。"}) from exc
@@ -47,6 +49,14 @@ def build_router(service: StrategicAllocationService) -> APIRouter:
     def catalog():
         return _call(service.catalog)
 
+    @router.get("/policies")
+    def list_policies():
+        return _call(service.list_policies)
+
+    @router.post("/scope-feasibility")
+    def scope_feasibility(body: ScopeFeasibilityRequest):
+        return _call(diagnose_scope, service, body)
+
     @router.post("/universes/preview")
     def preview_universe(body: UniverseRequest):
         return _call(service.scopes.preview_universe, body)
@@ -58,6 +68,14 @@ def build_router(service: StrategicAllocationService) -> APIRouter:
     @router.get("/universes/{identifier}")
     def get_universe(identifier: str):
         return _call(service.scopes.get_universe, identifier)
+
+    @router.delete("/universes/{identifier}")
+    def retire_universe(identifier: str):
+        return _call(service.scopes.retire_universe, identifier)
+
+    @router.post("/universes/{identifier}/mandate")
+    def bind_universe_mandate(identifier: str, body: ScopeMandateBinding):
+        return _call(service.scopes.bind_mandate, identifier, body.mandate_id)
 
     @router.post("/implementation-maps/preview")
     def preview_mapping(body: ImplementationMapRequest):
@@ -110,6 +128,10 @@ def build_router(service: StrategicAllocationService) -> APIRouter:
     @router.get("/cma/{identifier}")
     def get_cma(identifier: str):
         return _call(service.get_cma, identifier)
+
+    @router.post("/policy/frontier")
+    def policy_frontier(body: PolicyRequest):
+        return _call(service.policy_frontier, body)
 
     @router.post("/policy/preview")
     def preview_policy(body: PolicyRequest):

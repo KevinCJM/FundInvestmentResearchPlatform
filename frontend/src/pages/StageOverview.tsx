@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { statusLabels, type StageId } from '../app/processRegistry'
 import { useLocalizedStage } from '../i18n/navigation'
 import { useI18n } from '../i18n/runtime'
+import PreInvestmentOverview from './PreInvestmentOverview'
 
 const statusStyles = {
   available: 'bg-emerald-100 text-emerald-800',
@@ -12,6 +13,8 @@ const statusStyles = {
 export default function StageOverview({ stageId }: { stageId: StageId }) {
   const { s } = useI18n()
   const stage = useLocalizedStage(stageId)
+
+  if (stageId === 'pre-investment') return <PreInvestmentOverview stage={stage} />
 
   return (
     <div className="space-y-5">

@@ -1,3 +1,4 @@
+import { systemText, useI18n, i18n } from '../../i18n/runtime'
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import katex from 'katex'
@@ -15,11 +16,11 @@ import {
 const fallbackPresentation = (indicator?: IndicatorDefinition): MetricPresentation => indicator?.presentation ?? {
   indicator_id: indicator?.id ?? null,
   revision: indicator?.revision ?? null,
-  name: indicator?.name ?? '指标',
+  name: indicator?.name ?? systemText('preInvestment.metricDisplay.metric'),
   source: indicator?.source ?? 'inline',
   indicator_type: indicator?.indicator_type ?? 'other',
   category: indicator?.category_id ?? 'custom',
-  category_label: indicator?.category_label ?? '工作区指标',
+  category_label: indicator?.category_label ?? systemText('preInvestment.metricDisplay.workspaceMetric'),
   context_kind: indicator?.context_kind ?? 'single_product',
   catalog_status: indicator?.catalog_status ?? 'current',
   display_format: indicator?.display_format ?? 'number',
@@ -31,7 +32,7 @@ const fallbackPresentation = (indicator?: IndicatorDefinition): MetricPresentati
   direction: indicator?.direction ?? 'higher_better',
   description: indicator?.description ?? '',
   methodology: indicator?.methodology ?? indicator?.description ?? '',
-  data_basis: indicator?.data_basis ?? '真实数据、严格窗口、缺失不填充',
+  data_basis: indicator?.data_basis ?? systemText('preInvestment.metricDisplay.realDataStrictWindowsNoMissingValue'),
   minimum_observations: indicator?.minimum_observations ?? 1,
   applicable_product_kinds: indicator?.applicable_product_kinds ?? ['etf', 'fund'],
 }
@@ -47,11 +48,11 @@ export const formatMetricValue = (
 ) => {
   const contract = presentation ?? fallbackPresentation()
   if (contract.display_format === 'date') {
-    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return '不可计算'
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return systemText('preInvestment.metricDisplay.cannotCalculate')
     const parsed = new Date(`${value}T00:00:00Z`)
-    return Number.isFinite(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value ? value : '不可计算'
+    return Number.isFinite(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value ? value : systemText('preInvestment.metricDisplay.cannotCalculate')
   }
-  if (typeof value !== 'number' || !Number.isFinite(value)) return '不可计算'
+  if (typeof value !== 'number' || !Number.isFinite(value)) return systemText('preInvestment.metricDisplay.cannotCalculate')
   const scaled = value * (contract.value_scale ?? (contract.display_format === 'percent' ? 100 : 1))
   const formatter = new Intl.NumberFormat('zh-CN', {
     notation: contract.notation ?? 'standard',
@@ -72,18 +73,19 @@ export function MetricValue({
   presentation?: MetricPresentation
   className?: string
 }) {
+  useI18n()
   const formatted = formatMetricValue(value, presentation)
-  return <span className={`${formatted === '不可计算' ? 'text-slate-600' : 'tabular-nums'} ${className}`}>{formatted}</span>
+  return <span className={`${formatted === systemText('preInvestment.metricDisplay.cannotCalculate') ? 'text-slate-600' : 'tabular-nums'} ${className}`}>{formatted}</span>
 }
 
 const statusCopy = (
   status: EvaluationResult['status'],
   warnings: EvaluationWarning[],
 ) => {
-  if (status === 'error') return { label: '计算失败', tone: 'bg-rose-50 text-rose-700' }
-  if (status === 'unavailable') return { label: '不可计算', tone: 'bg-amber-50 text-amber-700' }
-  if (status === 'warning') return { label: warnings.some((item) => item.code.includes('SAMPLE')) ? '样本不足' : '有警告', tone: 'bg-amber-50 text-amber-700' }
-  return { label: '正常', tone: 'bg-emerald-50 text-emerald-700' }
+  if (status === 'error') return { label: systemText('preInvestment.metricDisplay.calculationFailed'), tone: 'bg-rose-50 text-rose-700' }
+  if (status === 'unavailable') return { label: systemText('preInvestment.metricDisplay.cannotCalculate'), tone: 'bg-amber-50 text-amber-700' }
+  if (status === 'warning') return { label: warnings.some((item) => item.code.includes('SAMPLE')) ? systemText('preInvestment.metricDisplay.insufficientSamples') : systemText('preInvestment.metricDisplay.warnings'), tone: 'bg-amber-50 text-amber-700' }
+  return { label: systemText('preInvestment.metricDisplay.valid'), tone: 'bg-emerald-50 text-emerald-700' }
 }
 
 type AvailabilityResult = Pick<
@@ -92,50 +94,51 @@ type AvailabilityResult = Pick<
 >
 
 const knownVariableLabels: Record<string, string> = {
-  adjusted_nav: '复权净值',
-  returns: '普通收益率',
-  log_returns: '对数收益率',
-  adjusted_open: '复权开盘价',
-  adjusted_high: '复权最高价',
-  adjusted_low: '复权最低价',
-  adjusted_close: '复权收盘价',
-  market_open: '开盘价',
-  market_high: '最高价',
-  market_low: '最低价',
-  market_close: '收盘价',
-  previous_close: '前收盘价',
-  price_change: '价格变动额',
-  price_return: '行情涨跌幅',
-  volume: '成交量',
-  turnover_amount: '成交额',
-  unit_nav: '单位净值',
-  accumulated_nav: '累计净值',
+  get adjusted_nav() { return systemText('preInvestment.metricDisplay.adjustedNav') },
+  get returns() { return systemText('preInvestment.metricDisplay.simpleReturns') },
+  get log_returns() { return systemText('preInvestment.metricDisplay.logReturns') },
+  get adjusted_open() { return systemText('preInvestment.metricDisplay.adjustedOpen') },
+  get adjusted_high() { return systemText('preInvestment.metricDisplay.adjustedHigh') },
+  get adjusted_low() { return systemText('preInvestment.metricDisplay.adjustedLow') },
+  get adjusted_close() { return systemText('preInvestment.metricDisplay.adjustedClose') },
+  get market_open() { return systemText('preInvestment.metricDisplay.open') },
+  get market_high() { return systemText('preInvestment.metricDisplay.high') },
+  get market_low() { return systemText('preInvestment.metricDisplay.low') },
+  get market_close() { return systemText('preInvestment.metricDisplay.close') },
+  get previous_close() { return systemText('preInvestment.metricDisplay.previousClose') },
+  get price_change() { return systemText('preInvestment.metricDisplay.priceChange') },
+  get price_return() { return systemText('preInvestment.metricDisplay.marketReturn') },
+  get volume() { return systemText('preInvestment.metricDisplay.volume') },
+  get turnover_amount() { return systemText('preInvestment.metricDisplay.turnoverValue') },
+  get unit_nav() { return systemText('preInvestment.metricDisplay.unitNav') },
+  get accumulated_nav() { return systemText('preInvestment.metricDisplay.cumulativeNav') },
 }
 
 export function IndicatorInputDates({ context }: { context?: IndicatorDateContext | null }) {
+  useI18n()
   if (!context) return null
-  return <section aria-label="本次计算的数据与日期" className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-left text-sm text-amber-950">
-    <h4 className="font-semibold">本次计算的数据与日期</h4>
+  return <section aria-label={systemText('preInvestment.metricDisplay.dataAndDatesUsedInThisCalculation')} className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-left text-sm text-amber-950">
+    <h4 className="font-semibold">{systemText('preInvestment.metricDisplay.dataAndDatesUsedInThisCalculation')}</h4>
     <dl className="mt-2 grid gap-2 sm:grid-cols-2">
-      <div><dt className="text-xs text-amber-800">产品成立日期</dt><dd>{context.found_date || '数据源未提供'}</dd></div>
-      {context.list_date && <div><dt className="text-xs text-amber-800">上市日期</dt><dd>{context.list_date}</dd></div>}
-      <div><dt className="text-xs text-amber-800">本次计算截止日（PIT）</dt><dd>{context.as_of || '未设置，使用本地全部日期'}</dd></div>
+      <div><dt className="text-xs text-amber-800">{systemText('preInvestment.metricDisplay.productInceptionDate')}</dt><dd>{context.found_date || systemText('preInvestment.metricDisplay.notProvidedByTheDataSource')}</dd></div>
+      {context.list_date && <div><dt className="text-xs text-amber-800">{systemText('preInvestment.metricDisplay.listingDate')}</dt><dd>{context.list_date}</dd></div>}
+      <div><dt className="text-xs text-amber-800">{systemText('preInvestment.metricDisplay.calculationCutoffPit')}</dt><dd>{context.as_of || systemText('preInvestment.metricDisplay.notSetAllLocalDatesUsed')}</dd></div>
     </dl>
     {context.sources.map((source, index) => <div key={`${source.label}-${index}`} className="mt-3 border-t border-amber-200 pt-2">
-      <p>{source.label}本地覆盖：{source.first_date || '起点未确认'} 至 {source.latest_date || '终点未确认'}</p>
+      <p>{source.label}{systemText('preInvestment.metricDisplay.localCoverage')}{source.first_date || systemText('preInvestment.metricDisplay.startUnconfirmed')} {" " + systemText('preInvestment.metricDisplay.to') + " "}{source.latest_date || systemText('preInvestment.metricDisplay.endUnconfirmed')}</p>
       {context.as_of && (source.disclosure_status === 'required_unavailable'
-        ? <p className="mt-1 text-xs">该来源缺少公告日期字段，无法验证截止日当时已披露，已停止使用该来源，未接受任何记录。原始条数和日期覆盖尚未核实，不代表本地没有数据。</p>
+        ? <p className="mt-1 text-xs">{systemText('preInvestment.metricDisplay.thisSourceLacksAnnouncementDatesSoDisclosure')}</p>
         : <>
-          <p className="mt-1 text-xs">原有 {source.rows_before_as_of ?? '未确认'} 条记录 → 日期筛选后 {source.rows_after_date_filter ?? '未确认'} 条 → {source.uses_disclosure_date ? '披露筛选并去重后' : '去重后'} {source.rows_after_as_of ?? '未确认'} 条。</p>
+          <p className="mt-1 text-xs">{systemText('preInvestment.metricDisplay.originally') + " "}{source.rows_before_as_of ?? systemText('preInvestment.metricDisplay.unconfirmed')} {" " + systemText('preInvestment.metricDisplay.recordsAfterDateFiltering') + " "}{source.rows_after_date_filter ?? systemText('preInvestment.metricDisplay.unconfirmed')} {" " + systemText('preInvestment.metricDisplay.records') + " "}{source.uses_disclosure_date ? systemText('preInvestment.metricDisplay.afterDisclosureFilteringAndDeduplication') : systemText('preInvestment.metricDisplay.afterDeduplication')} {source.rows_after_as_of ?? systemText('preInvestment.metricDisplay.unconfirmed')} {" " + systemText('preInvestment.metricDisplay.items')}</p>
           <p className="mt-1 text-xs">{source.uses_disclosure_date
-            ? '该来源还按公告日期筛选：公告日期晚于截止日或缺失的记录不参与计算。'
-            : '该来源仅按数据日期筛选，未校验公告日期，不能据此认定截止日已披露。'}</p>
+            ? systemText('preInvestment.metricDisplay.thisSourceAlsoFiltersAnnouncementDatesRecords')
+            : systemText('preInvestment.metricDisplay.thisSourceFiltersDataDatesOnlyAnnouncement')}</p>
         </>)}
     </div>)}
-    <p className="mt-2 text-xs">成立日期、上市日期和本地数据起点是不同概念；产品已经成立，也可能尚无已下载的数据。</p>
+    <p className="mt-2 text-xs">{systemText('preInvestment.metricDisplay.inceptionListingAndLocalDataStartDates')}</p>
     {context.as_of && <>
-      <p className="mt-2">本次只使用截止日及之前的记录；各数据源是否执行公告日期筛选，以上方说明为准。</p>
-      <p className="mt-2">做历史研究时，请选择当时已有可用数据的产品。若要查看最新表现，可在顶部 PIT 中选择“关闭 PIT · 查看全部磁盘数据”，仅影响当前标签页；预览中的历史截止日如已填写，也需相应调整。</p>
+      <p className="mt-2">{systemText('preInvestment.metricDisplay.onlyRecordsOnOrBeforeTheCutoff')}</p>
+      <p className="mt-2">{systemText('preInvestment.metricDisplay.forHistoricalResearchSelectProductsWithData')}</p>
     </>}
   </section>
 }
@@ -147,6 +150,7 @@ export function MetricUnavailableReason({
   result: AvailabilityResult
   compact?: boolean
 }) {
+  useI18n()
   const requirements = result.input_requirements
   const blocked = requirements?.blocking_inputs ?? []
   const partial = requirements?.partial_inputs ?? []
@@ -162,26 +166,26 @@ export function MetricUnavailableReason({
     .map((item) => knownVariableLabels[item] ?? item)
     .filter((item, index, items) => items.indexOf(item) === index)
   const summary = blocked.length
-    ? `该指标需要 ${requirements?.required_count ?? blocked.length} 个输入字段，当前产品缺少：${labels.join('、')}。`
-    : `本次使用的${labels.join('、')}存在部分缺失，已按共同有效日期计算。`
+    ? systemText('preInvestment.metricDisplay.thisMetricRequiresInputFieldsTheCurrent', { p0: requirements?.required_count ?? blocked.length, p1: labels.join('、') })
+    : systemText('preInvestment.metricDisplay.someValuesAreMissingCalculationsUseCommon', { p0: labels.join('、') })
   return <>{dateContext}<div className={`${compact ? 'mt-1' : 'mt-3'} rounded-lg border border-amber-200 bg-amber-50 p-3 text-left text-xs text-amber-950`}>
     <p className="font-medium">{summary}</p>
     <details className="mt-2" open={!compact}>
-      <summary className="cursor-pointer font-semibold text-amber-800">{blocked.length ? '为什么无法计算' : '查看数据覆盖情况'}</summary>
+      <summary className="cursor-pointer font-semibold text-amber-800">{blocked.length ? systemText('preInvestment.metricDisplay.whyCalculationIsUnavailable') : systemText('preInvestment.metricDisplay.viewDataCoverage')}</summary>
       <ul className="mt-2 space-y-1">
-        {affected.map((item) => <li key={item.variable_id}><span className="font-medium">{item.label}</span>：{item.reason || (item.status === 'partial' ? '部分日期缺少有效值。' : '当前没有可用数据。')}</li>)}
+        {affected.map((item) => <li key={item.variable_id}><span className="font-medium">{item.label}</span>：{item.reason || (item.status === 'partial' ? systemText('preInvestment.metricDisplay.someDatesLackValidValues') : systemText('preInvestment.metricDisplay.noUsableDataCurrentlyAvailable'))}</li>)}
       </ul>
       {result.target_data && <div className="mt-3 border-t border-amber-200 pt-2">
-        <p className="font-semibold">当前已有数据</p>
-        {result.target_data.available_datasets.length > 0 && <p className="mt-1">数据源：{result.target_data.available_datasets.join('、')}</p>}
-        {availableFields.length > 0 && <p className="mt-1">可用字段：{availableFields.join('、')}</p>}
-        <p className="mt-1">数据截至：{result.target_data.data_latest_date || '暂无'}</p>
+        <p className="font-semibold">{systemText('preInvestment.metricDisplay.currentlyAvailableData')}</p>
+        {result.target_data.available_datasets.length > 0 && <p className="mt-1">{systemText('preInvestment.metricDisplay.dataSource')}{result.target_data.available_datasets.join('、')}</p>}
+        {availableFields.length > 0 && <p className="mt-1">{systemText('preInvestment.metricDisplay.availableFields')}{availableFields.join('、')}</p>}
+        <p className="mt-1">{systemText('preInvestment.metricDisplay.dataThrough')}{result.target_data.data_latest_date || systemText('preInvestment.metricDisplay.none')}</p>
       </div>}
-      {alternatives.length > 0 && <p className="mt-3 border-t border-amber-200 pt-2"><span className="font-semibold">建议：</span>可改用{alternatives.join('、')}构建适用于当前产品的指标。</p>}
+      {alternatives.length > 0 && <p className="mt-3 border-t border-amber-200 pt-2"><span className="font-semibold">{systemText('preInvestment.metricDisplay.suggestion')}</span>{systemText('preInvestment.metricDisplay.youCanInsteadUse')}{alternatives.join('、')}{systemText('preInvestment.metricDisplay.toBuildAMetricSuitableForThis')}</p>}
       <details className="mt-2">
-        <summary className="cursor-pointer text-amber-700">查看技术详情</summary>
+        <summary className="cursor-pointer text-amber-700">{systemText('preInvestment.metricDisplay.viewTechnicalDetails')}</summary>
         <ul className="mt-1 space-y-1 font-mono text-xs text-amber-800">
-          {affected.map((item) => <li key={item.variable_id}>{item.variable_id} · {item.source_dataset || '运行时派生'}{item.source_field ? `.${item.source_field}` : ''} · {item.reason_code || item.status}</li>)}
+          {affected.map((item) => <li key={item.variable_id}>{item.variable_id} · {item.source_dataset || systemText('preInvestment.metricDisplay.runtimeDerived')}{item.source_field ? `.${item.source_field}` : ''} · {item.reason_code || item.status}</li>)}
         </ul>
       </details>
     </details>
@@ -197,6 +201,7 @@ export function MetricStatus({
   warnings?: EvaluationWarning[]
   showReason?: boolean
 }) {
+  useI18n()
   const copy = statusCopy(status, warnings)
   return <span className="inline-flex flex-col items-start gap-1">
     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${copy.tone}`}>{copy.label}</span>
@@ -205,8 +210,8 @@ export function MetricStatus({
 }
 
 export const indicatorOptionLabel = (indicator: IndicatorDefinition) => {
-  const source = indicator.source === 'built_in' ? '内置' : '工作区'
-  const compatibility = indicator.catalog_status === 'compatibility' ? ' · 兼容' : ''
+  const source = indicator.source === 'built_in' ? systemText('preInvestment.metricDisplay.builtIn') : systemText('preInvestment.metricDisplay.workspace')
+  const compatibility = indicator.catalog_status === 'compatibility' ? " " + systemText('preInvestment.metricDisplay.compatible') : ''
   return `${indicator.name} · ${source} v${indicator.revision}${compatibility}`
 }
 
@@ -256,7 +261,7 @@ export function MetricSelector({
   selectedIds,
   onChange,
   maxSelected,
-  label = '选择指标',
+  label = systemText('preInvestment.metricDisplay.selectMetrics'),
   disabledReasons = {},
 }: {
   indicators: IndicatorDefinition[]
@@ -267,6 +272,7 @@ export function MetricSelector({
   label?: string
   disabledReasons?: Record<string, string>
 }) {
+  useI18n()
   const [query, setQuery] = useState('')
   const [indicatorType, setIndicatorType] = useState('all')
   const [indicatorSource, setIndicatorSource] = useState<'all' | 'built_in' | 'custom'>('all')
@@ -277,8 +283,8 @@ export function MetricSelector({
   const panelId = useId()
   const indicatorTypes = useMemo(() => [...new Map(indicators.map((indicator) => [
     indicator.indicator_type ?? indicator.presentation?.indicator_type ?? indicator.category_id ?? 'other',
-    indicator.category_label ?? indicator.presentation?.category_label ?? '其他指标',
-  ])).entries()], [indicators])
+    indicator.category_label ?? indicator.presentation?.category_label ?? systemText('preInvestment.metricDisplay.otherMetrics'),
+  ])).entries()], [indicators, i18n.language])
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase()
     return indicators.filter((indicator) => {
@@ -345,11 +351,10 @@ export function MetricSelector({
 
   return <div className="relative">
     <button ref={triggerRef} type="button" aria-expanded={open} aria-controls={panelId} aria-haspopup="dialog" onClick={() => setOpen((current) => !current)} className="flex min-h-11 cursor-pointer items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">
-      <span>{label}</span><span className="text-xs text-slate-600">已选 {selectedIds.length}{quota}</span>
+      <span>{label}</span><span className="text-xs text-slate-600">{systemText('preInvestment.metricDisplay.selected') + " "}{selectedIds.length}{quota}</span>
     </button>
-    {open && position && createPortal(<div ref={panelRef} id={panelId} role="dialog" aria-label={`${label}面板`} style={position} className="fixed z-[70] flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
-      <div className="grid shrink-0 gap-2 border-b border-slate-100 p-3 sm:grid-cols-[9rem_9rem_minmax(12rem,1fr)]"><label className="block text-xs font-medium text-slate-600">指标类型<select aria-label="按指标类型筛选" value={indicatorType} onChange={(event) => setIndicatorType(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-2 text-sm focus:border-accent-500 focus:outline-none"><option value="all">全部类型</option>{indicatorTypes.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label><label className="block text-xs font-medium text-slate-600">指标来源<select aria-label="按指标来源筛选" value={indicatorSource} onChange={(event) => setIndicatorSource(event.target.value as 'all' | 'built_in' | 'custom')} className="mt-1 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-2 text-sm focus:border-accent-500 focus:outline-none"><option value="all">全部</option><option value="built_in">内置指标</option><option value="custom">工作区指标</option></select></label><label className="block text-xs font-medium text-slate-600">搜索指标
-        <input aria-label="搜索指标" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="名称、说明或分类" className="mt-1 min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm focus:border-accent-500 focus:outline-none" />
+    {open && position && createPortal(<div ref={panelRef} id={panelId} role="dialog" aria-label={systemText('preInvestment.metricDisplay.panel', { p0: label })} style={position} className="fixed z-[70] flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+      <div className="grid shrink-0 gap-2 border-b border-slate-100 p-3 sm:grid-cols-[9rem_9rem_minmax(12rem,1fr)]"><label className="block text-xs font-medium text-slate-600">{systemText('preInvestment.metricDisplay.metricType')}<select aria-label={systemText('preInvestment.metricDisplay.filterByMetricType')} value={indicatorType} onChange={(event) => setIndicatorType(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-2 text-sm focus:border-accent-500 focus:outline-none"><option value="all">{systemText('preInvestment.metricDisplay.allTypes')}</option>{indicatorTypes.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label><label className="block text-xs font-medium text-slate-600">{systemText('preInvestment.metricDisplay.metricSource')}<select aria-label={systemText('preInvestment.metricDisplay.filterByMetricSource')} value={indicatorSource} onChange={(event) => setIndicatorSource(event.target.value as 'all' | 'built_in' | 'custom')} className="mt-1 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-2 text-sm focus:border-accent-500 focus:outline-none"><option value="all">{systemText('preInvestment.metricDisplay.all')}</option><option value="built_in">{systemText('preInvestment.metricDisplay.builtInMetrics')}</option><option value="custom">{systemText('preInvestment.metricDisplay.workspaceMetric')}</option></select></label><label className="block text-xs font-medium text-slate-600">{systemText('preInvestment.metricDisplay.searchMetrics')}<input aria-label={systemText('preInvestment.metricDisplay.searchMetrics')} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={systemText('preInvestment.metricDisplay.nameDescriptionOrCategory')} className="mt-1 min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm focus:border-accent-500 focus:outline-none" />
       </label></div>
       <div className="min-h-0 flex-1 overflow-auto p-3" role="listbox" aria-multiselectable="true">
         {filtered.map((indicator) => {
@@ -357,12 +362,12 @@ export function MetricSelector({
           const checked = selectedIds.includes(indicator.id)
           return <label key={indicator.id} className={`flex min-h-11 gap-3 border-b border-slate-100 px-2 py-2 last:border-0 ${disabledReason ? 'cursor-not-allowed opacity-55' : 'cursor-pointer hover:bg-accent-50'}`}>
             <input type="checkbox" checked={checked} disabled={Boolean(disabledReason) || (!checked && atLimit)} onChange={() => toggle(indicator.id)} />
-            <span className="min-w-0"><span className="block text-sm font-medium text-slate-800">{indicatorOptionLabel(indicator)}</span><span className="block text-xs text-slate-600">{disabledReason ?? indicator.product_kind_hint?.message ?? indicator.presentation?.category_label ?? indicator.category_label ?? '未分类'}</span></span>
+            <span className="min-w-0"><span className="block text-sm font-medium text-slate-800">{indicatorOptionLabel(indicator)}</span><span className="block text-xs text-slate-600">{disabledReason ?? indicator.product_kind_hint?.message ?? indicator.presentation?.category_label ?? indicator.category_label ?? systemText('preInvestment.metricDisplay.uncategorized')}</span></span>
           </label>
         })}
-        {filtered.length === 0 && <p className="px-2 py-6 text-center text-sm text-slate-600">没有匹配的指标。</p>}
+        {filtered.length === 0 && <p className="px-2 py-6 text-center text-sm text-slate-600">{systemText('preInvestment.metricDisplay.noMatchingMetrics')}</p>}
       </div>
-      <div className="flex shrink-0 items-center justify-between border-t border-slate-100 px-4 py-2 text-xs text-slate-600"><span>显示 {filtered.length} 项 · 已选 {selectedIds.length}{quota}</span><button type="button" onClick={() => setOpen(false)} className="min-h-9 px-2 font-medium text-accent-700 hover:underline">完成</button></div>
+      <div className="flex shrink-0 items-center justify-between border-t border-slate-100 px-4 py-2 text-xs text-slate-600"><span>{systemText('preInvestment.metricDisplay.showing') + " "}{filtered.length} {" " + systemText('preInvestment.metricDisplay.itemsSelected') + " "}{selectedIds.length}{quota}</span><button type="button" onClick={() => setOpen(false)} className="min-h-9 px-2 font-medium text-accent-700 hover:underline">{systemText('preInvestment.metricDisplay.completed')}</button></div>
     </div>, document.body)}
   </div>
 }
@@ -374,6 +379,7 @@ export function MetricDefinitionDrawer({
   indicator: IndicatorDefinition | null
   onClose: () => void
 }) {
+  useI18n()
   if (!indicator) return null
   const presentation = fallbackPresentation(indicator)
   const displayFormula = indicator.display_latex?.trim() || ''
@@ -389,8 +395,8 @@ export function MetricDefinitionDrawer({
   }
   return <div className="fixed inset-0 z-[100] flex justify-end bg-slate-950/35" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose() }}>
     <aside role="dialog" aria-modal="true" aria-labelledby="metric-definition-title" className="h-full w-full max-w-lg overflow-auto bg-white p-6 shadow-2xl">
-      <div className="flex items-start justify-between gap-4"><div><p className="text-xs font-semibold text-accent-600">{presentation.category_label}</p><h2 id="metric-definition-title" className="mt-1 text-2xl font-semibold text-slate-900">{presentation.name}</h2><p className="mt-1 text-sm text-slate-600">{indicatorOptionLabel(indicator)}</p></div><button type="button" onClick={onClose} className="min-h-11 rounded-lg px-3 text-sm text-slate-600 hover:bg-slate-100">关闭</button></div>
-      <dl className="mt-6 grid gap-4 text-sm"><div><dt className="font-semibold text-slate-700">说明</dt><dd className="mt-1 text-slate-600">{presentation.description || '—'}</dd></div><div><dt className="font-semibold text-slate-700">方法</dt><dd className="mt-1 text-slate-600">{presentation.methodology || '—'}</dd></div><div><dt className="font-semibold text-slate-700">数据口径</dt><dd className="mt-1 text-slate-600">{presentation.data_basis}</dd></div><div><dt className="font-semibold text-slate-700">方向与样本</dt><dd className="mt-1 text-slate-600">{presentation.direction === 'neutral' ? '仅展示，不判断优劣' : presentation.direction === 'higher_better' ? '数值越高越好' : '数值越低越好'} · 至少 {presentation.minimum_observations} 个观察值</dd></div><div><dt className="font-semibold text-slate-700">公式</dt><dd className="mt-1">{formulaMarkup ? <div data-testid="metric-formula-latex" className="overflow-x-auto rounded-lg border border-accent-100 bg-accent-50/50 px-3 py-4 text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /> : <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500">该兼容指标暂未提供数学符号排版。</p>}{<details className="mt-2"><summary className="cursor-pointer text-xs font-medium text-slate-500 hover:text-accent-700">高级信息：查看公式源码</summary><code className="mt-2 block overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-emerald-200">{indicator.expression}</code></details>}</dd></div></dl>
+      <div className="flex items-start justify-between gap-4"><div><p className="text-xs font-semibold text-accent-600">{presentation.category_label}</p><h2 id="metric-definition-title" className="mt-1 text-2xl font-semibold text-slate-900">{presentation.name}</h2><p className="mt-1 text-sm text-slate-600">{indicatorOptionLabel(indicator)}</p></div><button type="button" onClick={onClose} className="min-h-11 rounded-lg px-3 text-sm text-slate-600 hover:bg-slate-100">{systemText('preInvestment.metricDisplay.close2')}</button></div>
+      <dl className="mt-6 grid gap-4 text-sm"><div><dt className="font-semibold text-slate-700">{systemText('preInvestment.metricDisplay.description')}</dt><dd className="mt-1 text-slate-600">{presentation.description || '—'}</dd></div><div><dt className="font-semibold text-slate-700">{systemText('preInvestment.metricDisplay.method')}</dt><dd className="mt-1 text-slate-600">{presentation.methodology || '—'}</dd></div><div><dt className="font-semibold text-slate-700">{systemText('preInvestment.metricDisplay.dataConvention')}</dt><dd className="mt-1 text-slate-600">{presentation.data_basis}</dd></div><div><dt className="font-semibold text-slate-700">{systemText('preInvestment.metricDisplay.directionAndSample')}</dt><dd className="mt-1 text-slate-600">{presentation.direction === 'neutral' ? systemText('preInvestment.metricDisplay.displayOnlyNoRankingPreference') : presentation.direction === 'higher_better' ? systemText('preInvestment.metricDisplay.higherIsBetter') : systemText('preInvestment.metricDisplay.lowerIsBetter')} {" " + systemText('preInvestment.metricDisplay.atLeast') + " "}{presentation.minimum_observations} {" " + systemText('preInvestment.metricDisplay.observations')}</dd></div><div><dt className="font-semibold text-slate-700">{systemText('preInvestment.metricDisplay.formula')}</dt><dd className="mt-1">{formulaMarkup ? <div data-testid="metric-formula-latex" className="overflow-x-auto rounded-lg border border-accent-100 bg-accent-50/50 px-3 py-4 text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /> : <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500">{systemText('preInvestment.metricDisplay.thisCompatibilityMetricHasNoTypesetMathematical')}</p>}{<details className="mt-2"><summary className="cursor-pointer text-xs font-medium text-slate-500 hover:text-accent-700">{systemText('preInvestment.metricDisplay.advancedViewFormulaSource')}</summary><code className="mt-2 block overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-emerald-200">{indicator.expression}</code></details>}</dd></div></dl>
     </aside>
   </div>
 }
@@ -412,21 +418,22 @@ export function MetricMatrix({
   periodOptions?: string[]
   onPeriodChange?: (indicatorId: string, period: string) => void
 }) {
+  useI18n()
   const resultMap = new Map(results.map((result) => [`${result.indicator_id}:${result.target.kind}:${result.target.product_id}`, result]))
   return <div className="overflow-auto rounded-xl border border-slate-200">
-    <table className="min-w-[760px] w-full text-sm"><thead className="bg-slate-50 text-left text-slate-600"><tr><th scope="col" className="sticky left-0 bg-slate-50 px-4 py-3">指标</th>{targets.map((target) => <th scope="col" key={`${target.kind}:${target.product_id}`} className="px-4 py-3 text-center">{target.name}<span className="block text-xs font-normal">{target.product_id}</span></th>)}</tr></thead><tbody>{indicators.map((indicator) => {
+    <table className="min-w-[760px] w-full text-sm"><thead className="bg-slate-50 text-left text-slate-600"><tr><th scope="col" className="sticky left-0 bg-slate-50 px-4 py-3">{systemText('preInvestment.metricDisplay.metric')}</th>{targets.map((target) => <th scope="col" key={`${target.kind}:${target.product_id}`} className="px-4 py-3 text-center">{target.name}<span className="block text-xs font-normal">{target.product_id}</span></th>)}</tr></thead><tbody>{indicators.map((indicator) => {
       const rowResults = targets.map((target) => resultMap.get(`${indicator.id}:${target.kind}:${target.product_id}`))
       const finiteValues = rowResults.flatMap((result) => typeof result?.value === 'number' && Number.isFinite(result.value) ? [result.value] : [])
       const direction = indicator.presentation?.direction ?? indicator.direction
       const bestValue = direction !== 'neutral' && finiteValues.length > 1 ? (direction === 'lower_better' ? Math.min(...finiteValues) : Math.max(...finiteValues)) : null
       const worstValue = direction !== 'neutral' && finiteValues.length > 1 ? (direction === 'lower_better' ? Math.max(...finiteValues) : Math.min(...finiteValues)) : null
       const period = periodsByIndicator[indicator.id]
-      return <tr key={indicator.id} className="border-t border-slate-100"><th scope="row" className="sticky left-0 bg-white px-4 py-3 text-left"><button type="button" onClick={() => onDefinition?.(indicator)} className="font-semibold text-slate-800 hover:text-accent-700">{indicator.name}</button><span className="block text-xs font-normal text-slate-600">{indicator.source === 'built_in' ? '内置' : '工作区'} v{indicator.revision} · {direction === 'neutral' ? '仅展示' : direction === 'lower_better' ? '低值优先' : '高值优先'}</span>{onPeriodChange && period && <label className="mt-2 block text-xs font-medium text-slate-600">计算区间<select aria-label={`${indicator.name}计算区间`} value={period} onChange={(event) => onPeriodChange(indicator.id, event.target.value)} className="mt-1 min-h-9 w-full rounded-xl border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"><option value={period}>{indicatorPeriodOptionLabel(period)}</option>{periodOptions.filter((item) => item !== period).map((item) => <option key={item} value={item}>{indicatorPeriodOptionLabel(item)}</option>)}</select></label>}</th>{targets.map((target, index) => {
+      return <tr key={indicator.id} className="border-t border-slate-100"><th scope="row" className="sticky left-0 bg-white px-4 py-3 text-left"><button type="button" onClick={() => onDefinition?.(indicator)} className="font-semibold text-slate-800 hover:text-accent-700">{indicator.name}</button><span className="block text-xs font-normal text-slate-600">{indicator.source === 'built_in' ? systemText('preInvestment.metricDisplay.builtIn') : systemText('preInvestment.metricDisplay.workspace')} v{indicator.revision} · {direction === 'neutral' ? systemText('preInvestment.metricDisplay.displayOnly') : direction === 'lower_better' ? systemText('preInvestment.metricDisplay.lowerValuesFirst') : systemText('preInvestment.metricDisplay.higherValuesFirst')}</span>{onPeriodChange && period && <label className="mt-2 block text-xs font-medium text-slate-600">{systemText('preInvestment.metricDisplay.calculationInterval')}<select aria-label={systemText('preInvestment.metricDisplay.calculationInterval2', { p0: indicator.name })} value={period} onChange={(event) => onPeriodChange(indicator.id, event.target.value)} className="mt-1 min-h-9 w-full rounded-xl border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"><option value={period}>{indicatorPeriodOptionLabel(period)}</option>{periodOptions.filter((item) => item !== period).map((item) => <option key={item} value={item}>{indicatorPeriodOptionLabel(item)}</option>)}</select></label>}</th>{targets.map((target, index) => {
         const result = rowResults[index]
         const presentation = resolveMetricPresentation(result, indicator)
         const isBest = bestValue !== null && result?.value === bestValue
         const isWorst = worstValue !== null && result?.value === worstValue && worstValue !== bestValue
-        return <td key={`${target.kind}:${target.product_id}`} className={`px-4 py-3 text-center ${isBest ? 'bg-emerald-50' : isWorst ? 'bg-rose-50' : ''}`}><MetricValue value={result?.value} presentation={presentation} />{isBest && <span className="mt-1 block text-xs font-semibold text-emerald-700">最佳</span>}{isWorst && <span className="mt-1 block text-xs font-semibold text-rose-700">最弱</span>}{result && <span className="mt-1 block"><MetricStatus status={result.status} warnings={result.warnings} /></span>}{result && result.value === null && result.input_requirements && <MetricUnavailableReason result={result} compact />}</td>
+        return <td key={`${target.kind}:${target.product_id}`} className={`px-4 py-3 text-center ${isBest ? 'bg-emerald-50' : isWorst ? 'bg-rose-50' : ''}`}><MetricValue value={result?.value} presentation={presentation} />{isBest && <span className="mt-1 block text-xs font-semibold text-emerald-700">{systemText('preInvestment.metricDisplay.best')}</span>}{isWorst && <span className="mt-1 block text-xs font-semibold text-rose-700">{systemText('preInvestment.metricDisplay.weakest')}</span>}{result && <span className="mt-1 block"><MetricStatus status={result.status} warnings={result.warnings} /></span>}{result && result.value === null && result.input_requirements && <MetricUnavailableReason result={result} compact />}</td>
       })}</tr>
     })}</tbody></table>
   </div>

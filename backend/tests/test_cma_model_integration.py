@@ -1,5 +1,6 @@
 """Offline actual CMA -> unique search -> funding -> saved TAA policy integration."""
 import copy
+import itertools
 from datetime import date, timedelta
 
 import numpy as np
@@ -35,8 +36,12 @@ def model_request(method='black_litterman'):
     return raw
 
 
+_published = itertools.count(1)
+
+
 def save(service, raw):
-    request = CmaRequest.model_validate(raw)
+    # 同一工作区内每份 LTCMA 名称必须不同；不改写调用方传入的 raw。
+    request = CmaRequest.model_validate({**raw, 'name': f"{raw['name']}-{next(_published)}"})
     preview = service.preview_cma(request)
     return service.publish_cma(PublishCmaRequest(request=request, preview_hash=preview['preview_hash']))
 
@@ -156,8 +161,8 @@ def test_budget_optional_fifth_and_publish(workspace):
     cma = save(service, model_request()); m = mandate(service)
     _, original = policy(service, m, cma)
     req, budget = policy(service, m, cma, risk_budget={'股票': .3, '债券': .7})
-    assert len(original['candidates']) == 4 and len(budget['candidates']) == 5
-    assert original['candidates'] == budget['candidates'][:4]
+    assert len(original['candidates']) == 6 and len(budget['candidates']) == 7
+    assert original['candidates'][:4] == budget['candidates'][:4] and original['candidates'][4:] == budget['candidates'][5:]
     fifth = budget['candidates'][4]
     assert fifth['id'] == 'risk-budget' and fifth['available']
     assert fifth['risk_budget_distance'] == pytest.approx(sum((fifth['risk_contributions'][a]-b)**2 for a,b in req.risk_budget.items()))
@@ -193,7 +198,7 @@ def test_old_artifact_no_recompute(workspace, monkeypatch):
     import backend.strategic_allocation.cma_application as application
     monkeypatch.setattr(application, 'evaluate_cma_model', lambda *a, **k: pytest.fail('old artifact recomputed'))
     _, preview = policy(service, m, cma)
-    assert len(preview['candidates']) == 4 and service.get_cma(cma['id']) == cma
+    assert len(preview['candidates']) == 6 and service.get_cma(cma['id']) == cma
 
 
 def test_fifth_retains_funding_gate_and_stale_budget_hash(workspace):
@@ -203,7 +208,7 @@ def test_fifth_retains_funding_gate_and_stale_budget_hash(workspace):
         review_date=date.today()+timedelta(days=90), max_volatility=.8, objective_kind='funding_goal',
         funding_plan=dict(total_capital=100000., terminal_target=1e12, required_probability=.99, flows=[])))
     req, result = policy(service, m, cma, risk_budget={'股票': .5, '债券': .5})
-    assert len(result['candidates']) == 5
+    assert len(result['candidates']) == 7
     assert result['candidates'][4]['goal_check']['within_limits'] is False
     with pytest.raises(ValidationError, match='门槛'):
         service.publish_policy(PublishPolicyRequest(request=req, preview_hash=result['preview_hash'],
@@ -275,7 +280,7 @@ def test_model_strategic_first_preserves_unmapped_assets_and_cash_gate(tmp_path)
         review_date=date.today()+timedelta(days=90), strategic_universe_id=scope['id'],
         institutional_context=context(), max_volatility=.8))
     req, preview = policy(service, m, cma, risk_budget={'equity':.6,'cash':.4})
-    assert len(preview['candidates']) == 5
+    assert len(preview['candidates']) == 7
     assert all(c['weights']['cash'] >= .4-1e-8 for c in preview['candidates'])
     assert preview['current_application_eligible'] is False
     assert not service.data.data_dir.exists()

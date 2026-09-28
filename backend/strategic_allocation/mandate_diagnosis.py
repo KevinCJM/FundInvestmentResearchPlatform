@@ -8,8 +8,9 @@ from backend.custom_indicators.errors import ValidationError
 from backend.sensitivity.repository import digest_json
 from .contracts import PolicyRequest
 from . import goal_kernels as goals, mandate_kernels as numeric
-from .mandate_inputs import effective_funding_plan, cash_success_required, effective_cash_floor, effective_return_floor
+from .mandate_inputs import effective_funding_plan, cash_success_required, effective_cash_floor
 from .planning import funding_inputs, _funding_metrics
+from .return_targets import requirements, check_return, target_curve
 
 LIMITATIONS = [
     "这是冻结全局参考下的有限候选研究，不是本次实际SAA的采纳证明。",
@@ -158,14 +159,38 @@ def diagnose_reference(service, request, definition: dict, decision: dict) -> di
         if solved[11] != 0:
             result.update(status="solver_failed", blockers=["参考约束前沿未完成数值验证，不能判定目标无解。"])
             return result
-        floor = effective_return_floor(definition, prepared[0]["cashflow_required_return"] if prepared else None)
+        returns = requirements(definition, means=means, ids=ids,
+            method=spec["method_code"], periods=spec["periods_per_year"])
+        result["return_requirements"] = returns
+        result["target_curve"] = target_curve(returns, result["constrained_frontier"])
+        floor = returns["arithmetic_floor"]
         return_floor = floor if floor is not None else -np.inf
         metrics, levels, eligible = numeric.reference_candidate_checks_kernel(weights, statuses, means, covariance, uncertainty,
             bounds, membership, lows, highs, benchmark_weights, definition["max_volatility"],
             return_floor,
             benchmark["max_tracking_error"] if benchmark else 1., benchmark["target_excess_return"] if benchmark else 0.,
             definition["risk_aversion"], request.uncertainty_penalty, caps, float(solved[2][0, 0]))
+        diagnostic_eligible = eligible.copy()
+        diagnostic_returns = {**returns, "status": "resolved", "compound_floor": (
+            definition["target_return"] if definition.get("objective_kind", "absolute_return") == "absolute_return"
+            and definition.get("target_return_basis") == "annual_compound" else None)}
+        for i in range(eligible.size):
+            if diagnostic_eligible[i] and not check_return(diagnostic_returns, metrics[i, 0], metrics[i, 1])["within_limits"]:
+                diagnostic_eligible[i] = False
+            if eligible[i] and not check_return(returns, metrics[i, 0], metrics[i, 1])["within_limits"]:
+                eligible[i] = False
         result["reachability"] = _reachability(metrics, levels, definition["max_volatility"], return_floor)
+        if returns["compound_floor"] is not None:
+            # Select among solved points using each point's own risk conversion.
+            # This remains a finite reference diagnostic, not an infeasibility proof.
+            passing = [i for i in range(statuses.size) if statuses[i] == 0
+                and check_return(returns, metrics[i, 0], metrics[i, 1])["within_limits"]]
+            least = min(passing, key=lambda i: metrics[i, 1]) if passing else None
+            result["reachability"].update(target_return=None,
+                min_volatility_for_target=float(metrics[least, 1]) if least is not None else None,
+                required_risk_level=int(levels[least]) if least is not None and 1 <= levels[least] <= 5 else None,
+                binding=("none" if least is not None and metrics[least, 1] <= definition["max_volatility"] + 1e-10
+                         else "volatility_cap" if least is not None else "unreachable_at_any_level"))
         outcomes = None
         if cash_success_required(definition):
             summary, inflows, outflows = prepared
@@ -187,7 +212,13 @@ def diagnose_reference(service, request, definition: dict, decision: dict) -> di
         if selected < 0:
             result.update(status="no_validated_candidate_in_search", blockers=["当前授权和有限参考搜索中未找到达标候选；可调整预算或继续实际CMA研究。"])
             if outcomes is not None:
-                diagnostic = numeric.diagnostic_reference_candidate_kernel(metrics, eligible, outcomes)
+                # A cash shortfall must retain its capital-adjustment diagnosis.
+                # Relax only the added funding-return screen for this diagnostic;
+                # these weights never become an authorized candidate.
+                diagnostic_outcomes, _ = numeric.reference_funding_search_kernel(metrics, diagnostic_eligible,
+                    draws, summary["investable_capital"], inflows, outflows, summary["nominal_terminal_target"],
+                    plan["annual_fee"], plan["required_probability"], spec["method_code"], spec["periods_per_year"])
+                diagnostic = numeric.diagnostic_reference_candidate_kernel(metrics, diagnostic_eligible, diagnostic_outcomes)
                 if diagnostic >= 0:
                     candidate = {**result["candidates"][diagnostic], "weights": dict(zip(ids, weights[diagnostic].tolist(), strict=True))}
                     candidate["content_hash"] = digest_json(candidate)

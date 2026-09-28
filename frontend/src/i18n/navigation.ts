@@ -9,7 +9,7 @@ export function localizeStage(stage: ReturnType<typeof getStage>): ReturnType<ty
     ...stage,
     label: text(stage.path, 'label', stage.label),
     description: text(stage.path, 'description', stage.description),
-    nodes: stage.nodes.map(node => ({ ...node, label: text(node.path, 'label', node.label), description: text(node.path, 'description', node.description) })),
+    nodes: stage.nodes.map(node => ({ ...node, label: text(node.path, 'label', node.label), description: systemText(`${routeTranslationKey(stage.path)}.${node.id}.description`, {}, text(node.path, 'description', node.description)) })),
     tools: stage.tools?.map(tool => ({ ...tool, label: text(tool.path, 'label', tool.label), description: text(tool.path, 'description', tool.description) })),
   }
 }

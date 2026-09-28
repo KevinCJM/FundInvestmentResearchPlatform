@@ -9,7 +9,7 @@ import ReturnConstructionWorkbench from '../components/factor-research/ReturnCon
 import ReturnDatasetWorkspace from '../components/factor-research/ReturnDatasetWorkspace'
 import { buttonClass, inputClass, secondaryClass, type Action } from '../components/factor-research/shared'
 import { factorApi, type FactorRelease, type FactorRun, type ResearchCatalog, type RunRecord, type Study } from '../services/factorResearch'
-import { EmptyState } from '../components/ui'
+import { EmptyState, ErrorPanel } from '../components/ui'
 
 type Module = 'characteristics' | 'returns'
 type Tab = 'library' | 'workbench' | 'releases' | 'construct' | 'datasets' | 'attribution'
@@ -77,6 +77,7 @@ export default function FactorResearchCenter() {
   }
   const viewRun = (id: string) => navigate('characteristics', 'workbench', { run: id })
   const attribute = (id: string) => navigate('returns', 'attribution', { dataset: id })
+  if (!catalog && error && !busy) return <ErrorPanel onRetry={() => void action('加载因子研究中心', refresh)} />
   return <div className="min-w-0 space-y-5" data-testid="factor-research-center">
     <header className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs font-semibold tracking-widest text-accent-600">共享研究能力</p><h2 className="mt-2 text-2xl font-bold text-slate-950">因子研究中心</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">按计算逻辑与研究产物区分：特征用于比较产品，收益序列用于研究收益来源。两者都可服务投前、投中与投后。</p></div><div className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-6 text-slate-600">数据截至 {catalog?.snapshot.latest_date || '待核对'}<br />{catalog?.ready ? '研究计算已就绪' : '正在检查研究环境'}</div></div>

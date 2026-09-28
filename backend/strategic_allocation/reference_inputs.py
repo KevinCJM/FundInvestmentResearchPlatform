@@ -80,7 +80,23 @@ def _rebalance_reset_flags(days: list[str], rule: str) -> np.ndarray:
     return result
 
 
-def _validate_sse_calendar(snapshot_dir, observed_dates):
+def common_return_periods(source_dates: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """共同观测日，以及其中对每条来源都真正相邻的收益期。
+
+    不同交易日历的来源只能在共同日期上对齐。交集里相邻的两天之间，某条来源可能还有
+    自己的观测（它在这两天之间开过市），那一段就不是单日收益；整段排除而不是并入样本，
+    避免把跨日收益当成日收益按 252 年化。
+    """
+    common = source_dates[0]
+    for dates in source_dates[1:]:
+        common = np.intersect1d(common, dates, assume_unique=True)
+    adjacent = np.ones(max(common.size - 1, 0), dtype=bool)
+    for dates in source_dates:
+        adjacent &= np.diff(np.searchsorted(dates, common)) == 1
+    return common, adjacent
+
+
+def _sse_calendar_coverage(snapshot_dir, observed_dates):
     path = snapshot_dir / "trade_day_df.parquet"
     if not path.is_file():
         raise ValidationError("REFERENCE_SSE_CALENDAR_REQUIRED", "缺少 SSE 交易日日历，无法证明日频参考样本连续。")
@@ -107,16 +123,13 @@ def _validate_sse_calendar(snapshot_dir, observed_dates):
     if open_values.isna().any() or not open_values.isin([0, 1]).all():
         raise ValidationError("REFERENCE_SSE_CALENDAR_INVALID", "SSE 交易日日历的 is_open 必须全部为 0 或 1。")
     open_mask = open_values.eq(1).to_numpy()
-    expected = pd.DatetimeIndex(parsed.to_numpy()[open_mask]).sort_values()
-    expected = expected[(expected >= observed[0]) & (expected <= observed[-1])]
-    missing = expected.difference(observed)
-    unexpected = observed.difference(expected)
-    if len(missing) or len(unexpected):
-        diagnostics = ([{"code": "missing_trading_day", "date": stamp.strftime("%Y-%m-%d")} for stamp in missing[:20]]
-                       + [{"code": "unexpected_observation_day", "date": stamp.strftime("%Y-%m-%d")} for stamp in unexpected[:20]])
-        raise ValidationError("REFERENCE_SSE_CALENDAR_GAP",
-            f"共同参考样本与 SSE 开放日不连续：缺少 {len(missing)} 个开放日，含 {len(unexpected)} 个非开放日观察。",
-            diagnostics=diagnostics)
+    all_open = pd.DatetimeIndex(parsed.to_numpy()[open_mask]).sort_values()
+    expected = all_open[(all_open >= observed[0]) & (all_open <= observed[-1])]
+    # 日历本身仍须可读且完整；覆盖差异只做记录，来源按共同日期对齐，不因缺开放日阻断。
+    epoch = lambda index: index.to_numpy().astype("datetime64[D]").astype(np.int64)
+    return {"missing_trading_days": len(expected.difference(observed)),
+            "non_trading_observations": len(observed.difference(expected)),
+            "open_days": epoch(expected), "all_open_days": epoch(all_open)}
 
 
 def confirm_warnings(preview, acknowledged):
@@ -158,7 +171,6 @@ class ReferenceInputs:
     def _input_calculation(self, request: ReferenceInputRequest):
         evidence.require_ready()
         source_cache = {}
-        common_dates = None
         snapshot, manifest = self.sources.active_snapshot_context()
         for asset in request.assets:
             if asset.asset_type == 'cash':
@@ -171,13 +183,21 @@ class ReferenceInputs:
                     if dates.ndim != 1 or dates.size < 21 or np.any(dates[1:] <= dates[:-1]):
                         raise ValidationError('REFERENCE_SOURCE_DATES', '参考序列日期不足、重复或未按时间递增。')
                     source_cache[source_key] = {**source, '_date_ints': dates}
-                dates = source_cache[source_key]['_date_ints']
-                common_dates = dates if common_dates is None else np.intersect1d(common_dates, dates, assume_unique=True)
-        if common_dates is None or common_dates.size < 21:
-            raise ValidationError('REFERENCE_INTERSECTION_TOO_SHORT', '所选非现金代理的历史数据交集不足 21 个观测日，请更换代理。')
+        if not source_cache:
+            raise ValidationError('REFERENCE_INTERSECTION_TOO_SHORT', '历史标尺至少需要一个非现金研究代理。')
+        common_dates, adjacent = common_return_periods([item['_date_ints'] for item in source_cache.values()])
+        if common_dates.size < 21 or int(adjacent.sum()) < 20:
+            raise ValidationError('REFERENCE_INTERSECTION_TOO_SHORT', '所选非现金代理共同可得的单日收益不足 20 个，请更换代理。')
         if common_dates.size > 10000:
             raise ValidationError('REFERENCE_INTERSECTION_TOO_LONG', '共同历史区间超过 10000 个观测日，当前风险标尺不支持更长历史。')
-        _validate_sse_calendar(snapshot, common_dates)
+        coverage = _sse_calendar_coverage(snapshot, common_dates)
+        # 所有代理都没有数据的 SSE 开放日不是日历差异，是缺数据：相邻性看不出来，仍然阻断。
+        union = np.unique(np.concatenate([item['_date_ints'] for item in source_cache.values()]))
+        blind = np.setdiff1d(coverage['open_days'], union)
+        if blind.size and any(bool(np.isin(item['_date_ints'], coverage['all_open_days']).all())
+                              for item in source_cache.values()):
+            raise ValidationError('REFERENCE_SSE_CALENDAR_GAP',
+                f'共同样本区间内有 {blind.size} 个 SSE 开放日所有代理都没有数据；不能按 252 日频年化。')
         days = common_dates.astype('datetime64[D]').astype(str).tolist()
         panel = np.empty((common_dates.size - 1, len(request.assets)), dtype=np.float64)
         provenance = []
@@ -220,6 +240,10 @@ class ReferenceInputs:
             panel[:, j] = result
             information_clocks.extend(x['information_available_at'] for x in identities)
             provenance.append({'asset_id': asset.id, 'asset_type': 'market', 'sources': identities, 'rebalance': asset.rebalance})
+        # 只保留对每条来源都相邻的收益期；这一次边界复制之后面板只读。
+        excluded_periods = int(adjacent.size - adjacent.sum())
+        panel = np.ascontiguousarray(panel[adjacent]) if excluded_periods else panel
+        sample_dates = common_dates[1:][adjacent] if excluded_periods else common_dates[1:]
         panel.flags.writeable = False
         mean, covariance, observed_volatility, correlation = evidence.annual_moments(panel, 0., np.int64(252))
         fingerprints = {'return_panel': array_digest(panel), 'effective_returns': array_digest(mean),
@@ -229,16 +253,24 @@ class ReferenceInputs:
             warnings.append(problem('CASH_ASSUMPTION', '现金收益率由用户直接输入；现金波动率和与其它资产协方差按定义为 0。'))
         if any(component.kind == 'index' for asset in request.assets for component in asset.components):
             warnings.append(problem('INDEX_SERIES_SEMANTICS', '指数按用户选择的指数值序列直接计算；价格指数或全收益指数的经济含义由所选指数本身决定。'))
+        if excluded_periods or coverage['missing_trading_days'] or coverage['non_trading_observations']:
+            warnings.append(problem('COMMON_DATE_INTERSECTION',
+                f"""按各代理共同可得的交易日对齐：共同日 {common_dates.size} 个，排除 {excluded_periods} 个跨日收益期，"""
+                f"""其中 {coverage['missing_trading_days']} 个 SSE 开放日不在共同日内、{coverage['non_trading_observations']} 个共同日不是 SSE 开放日。"""))
         quality = {'observed_annual_volatility': observed_volatility.tolist(),
                    'actual_start': days[0], 'data_as_of': days[-1],
                    'intersection_start': days[0], 'intersection_end': days[-1],
-                   'observations': common_dates.size - 1, 'complete_intersection': True, 'missing': 0,
+                   'observations': int(panel.shape[0]),
+                   'complete_intersection': not (excluded_periods or coverage['missing_trading_days']),
+                   'missing': coverage['missing_trading_days'],
+                   'excluded_return_periods': excluded_periods,
+                   'non_trading_observations': coverage['non_trading_observations'],
                    'historical_pit_proven': False, 'information_available_at': max(information_clocks),
                    'cash_asset_ids': [asset.id for asset in request.assets if asset.asset_type == 'cash'],
                    'unit': 'decimal', 'moment_period': 'annual', 'periods_per_year': 252,
                    'annualization_method': 'arithmetic_mean_and_covariance_times_periods',
                    'return_semantics': request.return_basis,
-                   'quality_policy': 'strict-common-date-intersection-adjusted-products/3.0.0'}
+                   'quality_policy': 'common-adjacent-daily-return-intersection-adjusted-products/4.0.0'}
         moments = {'annual_returns': mean.tolist(), 'covariance': covariance.tolist(),
                    'annual_volatilities': observed_volatility.tolist(), 'correlation': clean(correlation),
                    'moment_semantics': request.return_basis, 'moment_period': 'annual', 'unit': 'decimal'}
@@ -246,7 +278,7 @@ class ReferenceInputs:
                    'quality': quality, 'warnings': warnings, 'moments': moments,
                    'provenance': {'assets': provenance, 'array_hashes': fingerprints,
                                   'kernel_version': evidence.VERSION, 'kernel_fingerprint': evidence.audit()['fingerprint']}}
-        arrays = {'returns': panel, 'dates': common_dates[1:], 'effective_returns': mean, 'covariance': covariance}
+        arrays = {'returns': panel, 'dates': sample_dates, 'effective_returns': mean, 'covariance': covariance}
         return freeze_hash(payload), arrays
 
     def preview(self, request):

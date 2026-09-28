@@ -1,3 +1,4 @@
+import { systemText } from '../i18n/runtime'
 import {
   assertNativeNumericalExecution,
   type NativeNumericalExecutionAudit,
@@ -1117,7 +1118,7 @@ export class CustomIndicatorApiError extends Error {
 
 const DEFAULT_ERROR: ApiErrorDetail = {
   code: 'REQUEST_FAILED',
-  message: '请求失败，请稍后重试。',
+  get message() { return systemText('preInvestment.customIndicators.requestFailedRetryLater') },
 }
 
 export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -1155,7 +1156,7 @@ async function calculationRequest<T extends { execution: unknown }>(
   init?: RequestInit,
 ): Promise<T> {
   const result = await apiRequest<T>(path, init)
-  assertNativeNumericalExecution(result.execution, '指标与评价计算')
+  assertNativeNumericalExecution(result.execution, systemText('preInvestment.customIndicators.indicatorAndEvaluationCalculation'))
   return result
 }
 
@@ -1331,7 +1332,7 @@ export const evaluateCustomIndicators = async (input: EvaluateIndicatorsRequest)
   const prepared = await apiRequest<{ prepared: boolean; indicator_refs: IndicatorReference[] }>('/api/custom-indicators/prepare', {
     method: 'POST', body: JSON.stringify({ indicator_ids: input.indicator_ids ?? [], indicator_refs: input.indicator_refs ?? [], inline_definition: input.inline_definition, compile_token: input.compile_token }),
   })
-  if (!prepared.prepared) throw new Error('计算计划尚未准备完成。')
+  if (!prepared.prepared) throw new Error(systemText('preInvestment.customIndicators.calculationPlanIsNotReady'))
   // Use the prepared revisions; a concurrent catalog edit must not switch the
   // algorithm between preparation and execution. Inline drafts retain tokens.
   const request = input.inline_definition ? input : { ...input, indicator_ids: [], indicator_refs: prepared.indicator_refs }

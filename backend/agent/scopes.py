@@ -1,8 +1,8 @@
 """Scope, page and tool whitelists for the agent.
 
-Two scopes exist: the indicator center and product research. Tools declare
-which calculation domain they accept so a portfolio page can never receive a
-single-product target and a single-product page can never run portfolio math.
+Indicator, product and scenario scopes declare their own calculation domains.
+Scenario graphs, immutable portfolios and single-product calculations cannot
+use one another's domain tools.
 """
 
 from __future__ import annotations
@@ -14,11 +14,13 @@ SCOPE_INDICATOR_CENTER = "indicator_center"
 SCOPE_PRODUCT_RESEARCH = "product_research"
 
 SCOPE_LABELS = {
+    "scenario_center": "情景算法中心",
     SCOPE_INDICATOR_CENTER: "指标中心",
     SCOPE_PRODUCT_RESEARCH: "产品研究",
 }
 
 PAGE_SCOPES: dict[str, str] = {
+    "regime-workbench": "scenario_center",
     "indicator-studio": SCOPE_INDICATOR_CENTER,
     "evaluation-plan": SCOPE_INDICATOR_CENTER,
     "product-detail": SCOPE_PRODUCT_RESEARCH,
@@ -85,6 +87,8 @@ def validate_page_context(page_context: PageContext, *, pit_off: bool, allow_aut
     """Validate page/scope/view-state and return the resolved scope."""
 
     scope = scope_for_page(page_context.page)
+    if (scope == "scenario_center") != (page_context.context_kind == "regime_graph"):
+        raise AgentError("AGENT_TOOL_DOMAIN_MISMATCH", "页面与情景计算域不一致。", status_code=409)
     if page_context.view_state == "unknown" and not allow_authoring:
         raise AgentError(
             "AGENT_CONTEXT_CHANGED",

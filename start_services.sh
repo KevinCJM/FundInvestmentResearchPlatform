@@ -257,7 +257,7 @@ start_frontend() {
   echo > "$FRONTEND_LOG_FILE"
   cd "$FRONTEND_DIR"
   local pid
-  pid="$(launch_detached frontend "$FRONTEND_LOG_FILE" npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" --strictPort)" || return 1
+  pid="$(VITE_API_TARGET="$BACKEND_URL" launch_detached frontend "$FRONTEND_LOG_FILE" npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" --strictPort)" || return 1
   if ! wait_for_port "$FRONTEND_PORT" "$(read_pid_from_file "$FRONTEND_PID_FILE")"; then
     echo "[失败] 前端未能在 :$FRONTEND_PORT 就绪。"
     show_log_tail "$FRONTEND_LOG_FILE"

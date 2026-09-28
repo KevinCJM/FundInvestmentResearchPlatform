@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
-import { NumberInput } from './ResearchUI'
+import { Field, NumberInput } from './ResearchUI'
 
 function Editor({ initial = 0 }: { initial?: number }) {
   const [value, setValue] = useState(initial)
@@ -28,4 +28,12 @@ describe('压力数值输入', () => {
     await act(async () => { await user.click(screen.getByRole('button', { name: '外部重置' })) })
     expect(input).toHaveValue('5')
   })
+})
+
+it('字段标签明确区分必填与非必填', () => {
+  render(<><Field label="必填字段" required><input required /></Field><Field label="可选字段" optional><input /></Field></>)
+  expect(screen.getByLabelText('必填字段')).toBeRequired()
+  expect(screen.getByLabelText('必填字段').closest('label')).toHaveAttribute('data-required', 'true')
+  expect(screen.getByLabelText('可选字段').closest('label')).toHaveAttribute('data-optional', 'true')
+  expect(screen.getByText('可选字段')).toHaveAttribute('data-optional-label', '（非必填）')
 })

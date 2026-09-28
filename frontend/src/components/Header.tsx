@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { recordRecentVisit } from '../homepage/history';
+import CommandPalette from './CommandPalette';
 import PitBadge from './PitBadge';
 import { availableLanguages, chooseLocale, useI18n } from '../i18n/runtime';
 import { routeTranslationKey, type Locale } from '../i18n/catalogs';
@@ -35,6 +36,7 @@ export default function Header() {
       <nav className="mx-auto max-w-[1600px] px-4 py-3 sm:px-6 lg:px-8" aria-label={s('navigation.main')}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <NavLink to="/" className="shrink-0 text-sm font-bold tracking-wide text-white" aria-label={s('app.home')}>{s('app.title')}</NavLink>
+          <CommandPalette />
           <label className="shrink-0"><span className="sr-only">{s('i18n.language')}</span><select aria-label={s('i18n.language')} value={locale} onChange={event => void chooseLocale(event.target.value as Locale)} className="min-h-10 max-w-[100px] rounded-lg border border-slate-600 bg-slate-900 px-2 text-xs text-white">{availableLanguages().filter(item => item.enabled).map(item => <option key={item.id} value={item.id}>{item.id === 'zh-CN' ? '中文' : item.label}</option>)}</select></label>
           <button type="button" className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-accent-500 xl:hidden" aria-expanded={menuOpen} aria-controls={menuOpen ? 'mobile-navigation' : undefined} onClick={() => setMenuOpen((open) => !open)}>{s('navigation.menu')}</button>
           <div className="hidden items-center space-x-1 xl:flex">

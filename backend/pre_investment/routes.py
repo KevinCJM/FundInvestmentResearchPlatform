@@ -28,7 +28,7 @@ def build_router(service):
 
     @router.get("/packages")
     def packages():
-        return {"items": _call(service.repository.list)}
+        return {"items": _call(service.list_packages)}
 
     @router.post("/packages", status_code=201)
     def create(body: PackageWrite):

@@ -233,7 +233,13 @@
         "记忆确认",
         "ai-functions",
         "data_policy",
-        "useAgentConversation"
+        "useAgentConversation",
+        "情景智能体",
+        "RegimeAgentPanel",
+        "regimes.validate",
+        "regimes.read",
+        "regimes.lookup",
+        "AI 找不到情景算法"
       ],
       "negative_keywords": [
         "routing memory only"
@@ -249,7 +255,9 @@
         "frontend_etf_research_pages",
         "frontend_portfolio_research",
         "market_data_snapshot_lifecycle",
-        "project_docs"
+        "project_docs",
+        "backend_regime_research",
+        "frontend_regime_research"
       ],
       "pitfall_ids": [
         "P01",
@@ -461,7 +469,6 @@
         "factor research",
         "factor_research",
         "FactorResearchCenter",
-        "FactorEvidencePanel",
         "RankIC",
         "滚动IC",
         "产品特征因子",
@@ -873,7 +880,8 @@
         "backend_instrument_analytics"
       ],
       "pitfall_ids": [
-        "P07"
+        "P07",
+        "P26"
       ],
       "expand_search_codes": [
         "read_frontend_backend_pair"
@@ -996,7 +1004,8 @@
         "P01",
         "P07",
         "P09",
-        "P14"
+        "P14",
+        "P33"
       ],
       "expand_search_codes": [
         "read_frontend_backend_pair",
@@ -1329,6 +1338,8 @@
       "id": "R87",
       "task_type": "investment_objectives_cma_and_strategic_policy",
       "match_keywords": [
+        "已保存研究范围",
+        "研究范围重名",
         "LTCMA",
         "LtcmaWorkspace",
         "bayesian_niw",
@@ -1369,7 +1380,26 @@
         "共同约束",
         "minimax_regret",
         "maximin_return",
-        "CompatibilityResults"
+        "CompatibilityResults",
+        "long_term_scenario",
+        "conditional_scenario",
+        "长期情景CMA",
+        "条件情景CMA",
+        "情景CMA",
+        "cma_scenario_evidence",
+        "LtcmaScenarioFields",
+        "LtcmaScenarioResults",
+        "scope-feasibility",
+        "研究范围初筛",
+        "范围可达性",
+        "目标约束点",
+        "历史情景",
+        "生成方法",
+        "计算讲解",
+        "LtcmaMethodSelect",
+        "LtcmaMethodHelp",
+        "时间块重采样",
+        "block_mean_uncertainty"
       ],
       "negative_keywords": [],
       "route_priority": 101,
@@ -1379,14 +1409,16 @@
       "expand_to_modules": [
         "tactical_allocation_workbench",
         "backend_quant_core",
-        "frontend_allocation_workflows"
+        "frontend_allocation_workflows",
+        "backend_regime_research"
       ],
       "pitfall_ids": [
         "P04",
         "P05",
         "P07",
         "P08",
-        "P23"
+        "P23",
+        "P28"
       ],
       "expand_search_codes": [
         "read_frontend_backend_pair"

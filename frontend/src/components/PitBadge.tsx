@@ -1,3 +1,5 @@
+import { researchMessage } from '../i18n/researchMessages'
+import { systemText, useI18n } from '../i18n/runtime'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useResearchContext } from '../app/ResearchContext'
@@ -12,6 +14,7 @@ import { useResearchContext } from '../app/ResearchContext'
  * header's row rather than adding a band to every page.
  */
 export default function PitBadge() {
+  useI18n()
   const { settings, override, temporary, overrideRelease, noPit, label, asOf, runMode, loading, error, refresh, applyOverride } =
     useResearchContext()
   const [open, setOpen] = useState(false)
@@ -19,13 +22,13 @@ export default function PitBadge() {
   // Retain the initial loading placeholder; a failed read must remain visible.
   if (loading && !settings && !error && !override) return null
   const unknown = noPit === null || runMode === null
-  const systemLabel = loading ? '正在读取' : error ? '未知（读取失败）' : settings?.effective.label ?? '未知'
+  const systemLabel = loading ? systemText('preInvestment.pitBadge.loading') : error ? systemText('preInvestment.pitBadge.unknownLoadFailed') : settings?.effective.label ?? systemText('preInvestment.pitBadge.unknown')
 
   // The badge answers one question — on or off, and if on, which口径. The day,
   // the mode and the system default are one click away in the popover.
   const name = override && !override.off
-    ? (overrideRelease?.name ?? asOf ?? '最新数据')
-    : (settings?.release?.name ?? asOf ?? '最新数据')
+    ? (overrideRelease?.name ?? asOf ?? systemText('preInvestment.pitBadge.latestData'))
+    : (settings?.release?.name ?? asOf ?? systemText('preInvestment.pitBadge.latestData'))
   const strict = runMode === 'STRICT_PIT'
   const tone = unknown
     ? 'border-amber-400/60 bg-amber-400/10 text-amber-200'
@@ -47,19 +50,19 @@ export default function PitBadge() {
       <button
         type="button"
         className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-medium tabular-nums ${tone}`}
-        title={`${label}${strict ? '（严格 PIT）' : ''}；点击切换本页查看口径`}
+        title={systemText('preInvestment.pitBadge.clickToChangeThisTabSData', { p0: researchMessage(label), p1: strict ? systemText('preInvestment.pitBadge.strictPit') : '' })}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
         data-testid="pit-badge"
       >
-        <span>{unknown ? 'PIT 口径未知' : noPit ? 'PIT 关闭' : `PIT 打开：${name}`}</span>
+        <span>{unknown ? systemText('preInvestment.pitBadge.pitContextUnknown') : noPit ? systemText('preInvestment.pitBadge.pitOff') : systemText('preInvestment.pitBadge.pitOn', { p0: name })}</span>
         {temporary && (
           <span className="group relative flex items-center" title="">
             <span className="flex h-4 w-4 items-center justify-center rounded-full bg-rose-700 text-xs font-bold leading-none text-white">
               !
             </span>
             <span className="pointer-events-none absolute right-0 top-full z-50 mt-1.5 hidden w-64 rounded-xl border border-slate-200 bg-white p-2 text-left text-xs font-normal leading-4 text-slate-700 shadow-lg group-hover:block">
-              {loading || error ? '本页已指定临时口径；系统默认尚未确认，不能判断两者是否一致。' : `本页正在临时查看的口径与系统默认（${systemLabel}）不一致，只影响这个标签页；点开可跟随系统默认。`}
+              {loading || error ? systemText('preInvestment.pitBadge.aTemporaryContextIsSetForThis') : systemText('preInvestment.pitBadge.thisTabSTemporaryContextDiffersFrom', { p0: systemLabel })}
             </span>
           </span>
         )}
@@ -70,20 +73,19 @@ export default function PitBadge() {
           <button
             type="button"
             className="fixed inset-0 z-40 cursor-default"
-            aria-label="关闭口径切换"
+            aria-label={systemText('preInvestment.pitBadge.closeDataContextSwitcher')}
             onClick={() => setOpen(false)}
           />
           <div
             className="absolute left-0 z-50 mt-2 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white p-3 text-left text-xs text-slate-700 shadow-lg xl:left-auto xl:right-0"
             data-testid="pit-switcher"
           >
-            <p className="font-semibold text-slate-900">本页查看口径</p>
+            <p className="font-semibold text-slate-900">{systemText('preInvestment.pitBadge.thisTabSDataContext')}</p>
             <p className="mt-1 text-slate-600">
-              系统默认：{systemLabel}。此处的切换只影响你自己的这个标签页，不改变平台设置。
-            </p>
+              {systemText('preInvestment.pitBadge.systemDefault')}{systemLabel}{systemText('preInvestment.pitBadge.changesHereAffectOnlyYourCurrentTab')}</p>
             {error && <div role="alert" className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-amber-900">
-              <p>PIT 设置读取失败：{error}。未确认系统口径，请重试；实际结果以服务端返回的口径为准。</p>
-              <button type="button" onClick={refresh} disabled={loading} className="mt-2 rounded-lg border border-amber-300 px-2 py-1 font-semibold disabled:opacity-50">{loading ? '正在重试…' : '重试读取 PIT 口径'}</button>
+              <p>{systemText('preInvestment.pitBadge.unableToLoadPitSettings')}{error}{systemText('preInvestment.pitBadge.theSystemContextIsUnconfirmedRetryActual')}</p>
+              <button type="button" onClick={refresh} disabled={loading} className="mt-2 rounded-lg border border-amber-300 px-2 py-1 font-semibold disabled:opacity-50">{loading ? systemText('preInvestment.pitBadge.retrying') : systemText('preInvestment.pitBadge.retryLoadingPitContext')}</button>
             </div>}
 
             <div className="mt-2 space-y-1">
@@ -95,15 +97,13 @@ export default function PitBadge() {
                 onClick={() => applyOverride(null)}
                 data-testid="pit-follow-system"
               >
-                跟随系统默认
-              </button>
+                {systemText('preInvestment.pitBadge.followSystemDefault')}</button>
 
               {/* The commonest thing a reader wants is another day, not another
                   vintage — and until now the popover only offered vintages. */}
               <div className="rounded-lg border border-slate-200 px-2 py-1.5">
                 <label className="font-medium text-slate-900" htmlFor="pit-badge-as-of">
-                  只看某一天为止
-                </label>
+                  {systemText('preInvestment.pitBadge.viewDataThroughADate')}</label>
                 <div className="mt-1 flex items-center gap-2">
                   <input
                     id="pit-badge-as-of"
@@ -120,8 +120,7 @@ export default function PitBadge() {
                       applyOverride({ off: false, releaseId: null, asOf: draftDay, runMode: 'RESEARCH' })
                     }
                   >
-                    应用到本页
-                  </button>
+                    {systemText('preInvestment.pitBadge.applyToThisTab')}</button>
                 </div>
               </div>
 
@@ -139,10 +138,10 @@ export default function PitBadge() {
                 >
                   <span className="flex items-baseline justify-between gap-2">
                     <span className="font-medium text-slate-900">{release.name}</span>
-                    <span className="tabular-nums text-slate-600">站在 {release.as_of ?? '—'}</span>
+                    <span className="tabular-nums text-slate-600">{systemText('preInvestment.pitBadge.asOf') + " "}{release.as_of ?? '—'}</span>
                   </span>
                   <span className="mt-0.5 block font-normal text-slate-600">
-                    {release.run_mode === 'STRICT_PIT' ? '严格 PIT' : '研究模式'}
+                    {release.run_mode === 'STRICT_PIT' ? systemText('preInvestment.pitBadge.strictPit2') : systemText('preInvestment.pitBadge.researchMode')}
                   </span>
                 </button>
               ))}
@@ -155,8 +154,7 @@ export default function PitBadge() {
                 onClick={() => applyOverride({ off: true, releaseId: null, asOf: null, runMode: 'RESEARCH' })}
                 data-testid="pit-turn-off"
               >
-                关闭 PIT · 查看全部磁盘数据
-                <span className="mt-0.5 block font-normal text-slate-600">结果不具备时点可复现性，仅用于查看。</span>
+                {systemText('preInvestment.pitBadge.turnOffPitViewAllOnDisk')}<span className="mt-0.5 block font-normal text-slate-600">{systemText('preInvestment.pitBadge.resultsAreForViewingOnlyAndAre')}</span>
               </button>
             </div>
 
@@ -165,8 +163,7 @@ export default function PitBadge() {
               className="mt-2 inline-block text-accent-700 underline hover:no-underline"
               onClick={() => setOpen(false)}
             >
-              管理数据版本与系统默认口径
-            </Link>
+              {systemText('preInvestment.pitBadge.manageDataVersionsAndSystemDefaults')}</Link>
           </div>
         </>
       )}

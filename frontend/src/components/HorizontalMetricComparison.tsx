@@ -1,3 +1,4 @@
+import { systemText, useI18n, i18n } from '../i18n/runtime'
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactECharts from 'echarts-for-react';
 import type { MetricPresentation } from '../services/customIndicators';
@@ -59,11 +60,12 @@ export default function HorizontalMetricComparison({
   emptyText = '-',
   height = DEFAULT_METRIC_TABLE_HEIGHT,
 }: HorizontalMetricComparisonProps) {
+  useI18n()
   const hasData = columns.length > 0 && rows.length > 0;
 
   const exportMatrix = useMemo(() => {
     if (!hasData) return null;
-    const header = ['指标', ...columns];
+    const header = [systemText('preInvestment.horizontalMetricComparison.metric'), ...columns];
     const data = rows.map(row => [
       row.label,
       ...columns.map((_, idx) => {
@@ -76,7 +78,7 @@ export default function HorizontalMetricComparison({
       }),
     ]);
     return [header, ...data];
-  }, [columns, emptyText, hasData, rows]);
+  }, [columns, emptyText, hasData, rows, i18n.language]);
 
   const handleExport = useCallback(() => {
     if (!exportMatrix) return;
@@ -84,7 +86,7 @@ export default function HorizontalMetricComparison({
     const csvContent = '\ufeff' + lines.join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const filename = `指标横向对比_${new Date().toISOString().replace(/[:T]/g, '-').split('.')[0]}.csv`;
+    const filename = systemText('preInvestment.horizontalMetricComparison.metricComparisonCsv', { p0: new Date().toISOString().replace(/[:T]/g, '-').split('.')[0] });
     const link = document.createElement('a');
     link.href = url;
     link.download = filename;
@@ -107,8 +109,7 @@ export default function HorizontalMetricComparison({
           onClick={handleExport}
           className="rounded-xl border border-slate-300 bg-white px-3 py-1 text-xs text-slate-700 shadow-sm transition hover:bg-slate-50"
         >
-          导出表格
-        </button>
+          {systemText('preInvestment.horizontalMetricComparison.exportTable')}</button>
       </div>
       <div className="overflow-x-auto">
         <div
@@ -118,7 +119,7 @@ export default function HorizontalMetricComparison({
           <table className="text-xs border" style={{ width: '100%', tableLayout: 'fixed' }}>
             <thead>
               <tr>
-                <th scope="col" className="border px-2 py-2">指标</th>
+                <th scope="col" className="border px-2 py-2">{systemText('preInvestment.horizontalMetricComparison.metric')}</th>
                 {columns.map(col => (
                   <th scope="col" key={`metric-header-${col}`} className="border px-2 py-2">
                     {col}
@@ -173,21 +174,22 @@ export function AllocationMetricsReview({
   annualRows = [],
   detailedContent,
 }: Pick<HorizontalMetricComparisonProps, 'columns' | 'rows'> & { annualRows?: HorizontalMetricRow[]; detailedContent?: React.ReactNode }) {
+  useI18n()
   const [annualOpen, setAnnualOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   return <div className="space-y-3">
-    <section aria-label="核心指标对比">
-      <h3 className="mb-2 text-sm font-semibold">核心指标对比 · {rows.length} 项</h3>
+    <section aria-label={systemText('preInvestment.horizontalMetricComparison.coreMetricComparison')}>
+      <h3 className="mb-2 text-sm font-semibold">{systemText('preInvestment.horizontalMetricComparison.coreMetricComparison2') + " "}{rows.length} {" " + systemText('preInvestment.horizontalMetricComparison.items')}</h3>
       <HorizontalMetricComparison columns={columns} rows={rows} />
     </section>
     {annualRows.length > 0 && <details open={annualOpen} onToggle={event => setAnnualOpen(event.currentTarget.open)} className="rounded-xl border border-slate-200 bg-white p-3">
-      <summary className="cursor-pointer text-sm font-semibold text-slate-700">年度指标明细</summary>
-      {annualOpen && <section aria-label="年度指标明细" className="mt-3"><HorizontalMetricComparison columns={columns} rows={annualRows} /></section>}
+      <summary className="cursor-pointer text-sm font-semibold text-slate-700">{systemText('preInvestment.horizontalMetricComparison.annualMetricDetails')}</summary>
+      {annualOpen && <section aria-label={systemText('preInvestment.horizontalMetricComparison.annualMetricDetails')} className="mt-3"><HorizontalMetricComparison columns={columns} rows={annualRows} /></section>}
     </details>}
     <details open={detailOpen} onToggle={event => setDetailOpen(event.currentTarget.open)} className="rounded-xl border border-slate-200 bg-white p-3">
-      <summary className="cursor-pointer text-sm font-semibold text-slate-700">{detailedContent ? '详细研究：收益风险象限与同类一致性' : '详细研究：收益风险象限'}</summary>
+      <summary className="cursor-pointer text-sm font-semibold text-slate-700">{detailedContent ? systemText('preInvestment.horizontalMetricComparison.detailedResearchReturnRiskQuadrantAndWithin') : systemText('preInvestment.horizontalMetricComparison.detailedResearchReturnRiskQuadrant')}</summary>
       {detailOpen && <div className="mt-3 space-y-4">
-        <section aria-label="收益风险象限图"><h4 className="mb-2 text-sm font-semibold">收益风险象限图</h4><PerformanceQuadrantChart columns={columns} rows={rows} /></section>
+        <section aria-label={systemText('preInvestment.horizontalMetricComparison.returnRiskQuadrantChart')}><h4 className="mb-2 text-sm font-semibold">{systemText('preInvestment.horizontalMetricComparison.returnRiskQuadrantChart')}</h4><PerformanceQuadrantChart columns={columns} rows={rows} /></section>
         {detailedContent}
       </div>}
     </details>
@@ -206,11 +208,12 @@ interface PerformanceQuadrantChartProps {
 export function PerformanceQuadrantChart({
   columns,
   rows,
-  defaultXAxis = '年化波动率(%)',
-  defaultYAxis = '累计收益率(%)',
+  defaultXAxis = systemText('preInvestment.horizontalMetricComparison.annualVolatility'),
+  defaultYAxis = systemText('preInvestment.horizontalMetricComparison.cumulativeReturn'),
   height = 320,
-  emptyText = '暂无可绘制的数据',
+  emptyText = systemText('preInvestment.horizontalMetricComparison.noDataAvailableToPlot'),
 }: PerformanceQuadrantChartProps) {
+  useI18n()
   interface SanitizedMetricRow {
     label: string;
     values: Array<number | null>;
@@ -254,10 +257,10 @@ export function PerformanceQuadrantChart({
   );
 
   const [xMetric, setXMetric] = useState<string>(() =>
-    resolveDefault(defaultXAxis, ['年化波动率(%)', '波动率(%)']),
+    resolveDefault(defaultXAxis, [systemText('preInvestment.horizontalMetricComparison.annualVolatility'), systemText('preInvestment.horizontalMetricComparison.volatility')]),
   );
   const [yMetric, setYMetric] = useState<string>(() =>
-    resolveDefault(defaultYAxis, ['累计收益率(%)', '年化收益率(%)']),
+    resolveDefault(defaultYAxis, [systemText('preInvestment.horizontalMetricComparison.cumulativeReturn'), systemText('preInvestment.horizontalMetricComparison.annualReturn')]),
   );
 
   useEffect(() => {
@@ -269,14 +272,14 @@ export function PerformanceQuadrantChart({
 
     const nextX = metricLabels.includes(xMetric)
       ? xMetric
-      : resolveDefault(defaultXAxis, ['年化波动率(%)', '波动率(%)']);
+      : resolveDefault(defaultXAxis, [systemText('preInvestment.horizontalMetricComparison.annualVolatility'), systemText('preInvestment.horizontalMetricComparison.volatility')]);
     if (nextX !== xMetric) {
       setXMetric(nextX);
     }
 
     const nextY = metricLabels.includes(yMetric)
       ? yMetric
-      : resolveDefault(defaultYAxis, ['累计收益率(%)', '年化收益率(%)']);
+      : resolveDefault(defaultYAxis, [systemText('preInvestment.horizontalMetricComparison.cumulativeReturn'), systemText('preInvestment.horizontalMetricComparison.annualReturn')]);
     if (nextY !== yMetric) {
       setYMetric(nextY);
     }
@@ -289,7 +292,7 @@ export function PerformanceQuadrantChart({
   const selectorControls = (
     <div className="flex flex-wrap gap-4 text-xs">
       <label className="flex flex-col gap-1 text-slate-600">
-        <span>X轴指标</span>
+        <span>{systemText('preInvestment.horizontalMetricComparison.xAxisMetric')}</span>
         <select
           className="rounded-lg border border-slate-300 px-2 py-1"
           value={xMetric}
@@ -303,7 +306,7 @@ export function PerformanceQuadrantChart({
         </select>
       </label>
       <label className="flex flex-col gap-1 text-slate-600">
-        <span>Y轴指标</span>
+        <span>{systemText('preInvestment.horizontalMetricComparison.yAxisMetric')}</span>
         <select
           className="rounded-lg border border-slate-300 px-2 py-1"
           value={yMetric}

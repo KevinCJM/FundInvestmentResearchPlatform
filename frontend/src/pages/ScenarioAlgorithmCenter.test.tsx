@@ -361,8 +361,8 @@ function makeFetch(
       });
     }
     if (
-      path.endsWith("/api/historical-regimes/runs") ||
-      path.endsWith("/historical-regimes/runs")
+      path.endsWith("/api/historical-regimes/runs?summary=true") ||
+      path.endsWith("/historical-regimes/runs?summary=true")
     ) return ok({ items: options?.historicalRuns ?? [] });
     if (
       path.endsWith("/definitions") && (!init?.method || init.method === "GET")

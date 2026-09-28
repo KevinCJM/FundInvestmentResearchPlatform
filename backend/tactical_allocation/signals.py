@@ -121,7 +121,7 @@ def build_composite(request, data, assets):
     for k, component in enumerate(request.signal_components):
         rows = []
         if component.kind == 'momentum':
-            windows = numeric.momentum_windows_kernel(data['available_at'], starts, ends, component.lookback,
+            windows = numeric.momentum_windows_kernel(data.get('signal_available_at', data['available_at']), starts, ends, component.lookback,
                                                        day(request.as_of), component.max_age_days)
             scores[k] = momentum_scores_kernel(data['returns'], windows, component.lookback)
             statuses[k] = windows[:, 4]

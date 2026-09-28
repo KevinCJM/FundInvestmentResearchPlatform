@@ -1,3 +1,4 @@
+import { ErrorPanel } from '../ui'
 import { useEffect, useRef, useState } from 'react'
 import type { ResolutionConfig, ResolutionPolicyRecord, ResolutionRun, ResolutionTableRule, SourceCatalog } from '../../services/dataSources'
 import { getResolutionPolicy, previewResolution, runResolution, saveResolutionPolicy } from '../../services/dataSources'
@@ -61,7 +62,7 @@ export default function ResolutionPanel({ catalog, onDirty }: { catalog: SourceC
     getResolutionPolicy().then(value => { if (!cancelled) { setSaved(value); setConfig(value.config); setError('') } }).catch(reason => { if (!cancelled) setError(reason instanceof Error ? reason.message : '规则加载失败。') })
     return () => { cancelled = true }
   }, [retry])
-  if (!saved || !config) return <section className="rounded-xl bg-white p-5">{error ? <p role="alert">{error}<button type="button" className={buttonClass} onClick={() => setRetry(v => v + 1)}>重新加载规则</button></p> : <p>正在读取多源取值规则…</p>}</section>
+  if (!saved || !config) return <section className="rounded-xl bg-white p-5">{error ? <ErrorPanel onRetry={() => { setError(''); setRetry(v => v + 1) }} /> : <p>正在读取多源取值规则…</p>}</section>
   const dirty = JSON.stringify(config) !== JSON.stringify(saved.config)
   const tables = catalog.targets.tables.filter(t => t.source_mappable && t.usage === 'external_import')
   const table = tables.find(t => t.table_id === selected) ?? tables[0]

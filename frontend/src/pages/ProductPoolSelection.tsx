@@ -1,198 +1,269 @@
-import StrategicScopeWorkspace from '../components/strategic-scope/StrategicScopeWorkspace'
 import { useEffect, useRef, useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useResearchDay } from '../app/ResearchContext'
-import { updateAllocationJourney, useAllocationDraft, useAllocationJourney, writeAllocationDraft } from '../app/allocationJourney'
+import { readAllocationJourney, updateAllocationJourney, useAllocationJourney } from '../app/allocationJourney'
 import {
-  createInvestableUniverseSnapshot,
-  getInvestableUniverse,
-  listProductPoolVersions,
-  poolVersionDataAsOf,
-  type InvestableUniverseSnapshot,
-  type ProductPoolVersion,
+  listInvestableUniverseSnapshots,
+  retireInvestableUniverseSnapshot,
+  type InvestableUniverseSummary,
 } from '../services/productPools'
-import { replayPoolVersion, type PoolReplayResult } from '../services/pit'
-
-const today = () => new Date().toISOString().slice(0, 10)
+import { getMandate, getStrategicCatalog, mandateCashFloor, type MandateVersion, type StrategicCatalog } from '../services/strategicAllocation'
+import { cashFloorIssue, retireUniverse } from '../services/strategicScope'
+import { actionClass, Badge, Button, DataTable, ErrorPanel, SectionHeader } from '../components/ui'
+import { Field, inputClass, sectionClass } from '../components/risk-models/ResearchUI'
+import { useI18n, systemText } from '../i18n/runtime'
+import { WarningMark } from '../components/WarningMark'
+import { UpstreamLink, UsabilityNote, VersionTag, upstreamOf } from '../components/versioning'
+import type { Versioned } from '../services/versioning'
 
 function messageOf(reason: unknown, fallback: string) {
   return reason instanceof Error && reason.message ? reason.message : fallback
 }
 
-export default function ProductPoolSelection() {
-  const [params] = useSearchParams()
-  const strategic = params.get('scope') === 'strategic'
-  const query = new URLSearchParams(params)
-  query.set('scope', 'strategic')
-  const products = new URLSearchParams(params)
-  products.delete('scope'); products.delete('strategic_universe'); products.delete('mapping')
-  return <div className="space-y-4">
-    <nav aria-label="投资范围路径" className="flex flex-wrap gap-3 px-4 pt-4 text-sm sm:px-6">
-      <Link aria-current={!strategic ? 'page' : undefined} className="inline-flex min-h-10 items-center rounded-lg px-3 font-semibold text-accent-800 underline" to={`?${products}`}>已有产品：选择产品池</Link>
-      <Link aria-current={strategic ? 'page' : undefined} className="inline-flex min-h-10 items-center rounded-lg px-3 font-semibold text-accent-800 underline" to={`?${query}`}>先做战略研究：独立资产范围</Link>
-    </nav>
-    {strategic ? <div className="mx-auto max-w-6xl p-4 sm:p-6"><StrategicScopeWorkspace /></div> : <ProductPoolWorkspace />}
-  </div>
+/** 研究日与页面 PIT 日期不一致的提醒。 */
+function ResearchDateWarning({ date, platformAsOf }: { date: string; platformAsOf: string }) {
+  useI18n()
+  return <WarningMark label={systemText('preInvestment.productPoolSelection.theResearchDateDiffersFromTheCurrent')}>
+    {systemText('preInvestment.productPoolSelection.researchDate') + " "}{date} {" " + systemText('preInvestment.productPoolSelection.andTheCurrentPagePitDate') + " "}{platformAsOf} {" " + systemText('preInvestment.productPoolSelection.differYouCanContinueResearch')}
+  </WarningMark>
 }
 
-function ProductPoolWorkspace() {
-  const generation = useRef(0)
-  useEffect(() => () => { ++generation.current }, [])
-  const navigate = useNavigate()
-  const [params, setParams] = useSearchParams()
+interface SavedScopeRow {
+  id: string
+  name: string
+  researchDate: string
+  mandateId?: string
+  mandateHash?: string
+  kind: string
+  count: number
+  countLabel: string
+  href: string
+  copyHref: string
+  editHref: string
+  selected: boolean
+  /** 战略范围的现金下限偏离所绑定投资目标时的提醒。 */
+  cashIssue?: string
+  /** 后端派生的版本、上游目标与可用性。 */
+  lineage: Versioned
+}
+
+export default function ProductPoolSelection() {
+  const { s } = useI18n()
+  const [params] = useSearchParams()
   const [journey] = useAllocationJourney()
+  const [mandates, setMandates] = useState<MandateVersion[]>([])
+  const [catalogLoading, setCatalogLoading] = useState(true)
+  const [catalogError, setCatalogError] = useState('')
+  const [catalog, setCatalog] = useState<StrategicCatalog | null>(null)
+  const [savedUniverses, setSavedUniverses] = useState<InvestableUniverseSummary[]>([])
+  const [savedLoading, setSavedLoading] = useState(true)
+  const [savedError, setSavedError] = useState('')
+  const [savedReload, setSavedReload] = useState(0)
+  const [catalogReload, setCatalogReload] = useState(0)
+  const [scopeQuery, setScopeQuery] = useState('')
+  const [deletingId, setDeletingId] = useState('')
+  const [deleteBusy, setDeleteBusy] = useState('')
+  const [deleteError, setDeleteError] = useState('')
+  const deleteToken = useRef(0)
+  const strategic = params.get('scope') === 'strategic'
+  // 地址栏没带目标就是未选择：侧栏裸路径进来不替用户认领上次的目标。
+  const mandateId = params.get('mandate') ?? ''
   const platformAsOf = useResearchDay()
-  const requestedVersion = params.get('version') || ''
-  const requestedUniverse = params.get('universe') || ''
-  const requestedMandate = params.get('mandate') || ''
+  const [historicalMandates, setHistoricalMandates] = useState<Record<string, MandateVersion | null>>({})
+
   useEffect(() => {
-    if (requestedMandate) updateAllocationJourney({ mandateId: requestedMandate })
-  }, [requestedMandate])
-  const [draft, setDraft] = useAllocationDraft(`pool:${requestedUniverse ? `universe:${requestedUniverse}` : requestedVersion || 'resume'}`, { researchDate: '', name: '投前研究可投资域', selectedIds: [] as string[], snapshotId: '', selectionEdited: false })
-  const researchDate = draft.researchDate || platformAsOf || journey.researchDate || today()
-  const name = draft.name
-  const selectedIds = draft.selectedIds
-  const [showHistory, setShowHistory] = useState(false)
-  const setName = (value: string) => { ++generation.current; setCreating(false); setDraft(current => ({ ...current, name: value })) }
-  const setResearchDate = (value: string) => { ++generation.current; setCreating(false); setDraft(current => ({ ...current, researchDate: value, snapshotId: '', selectedIds: [], selectionEdited: true })); setSnapshot(null) }
-  const [versions, setVersions] = useState<ProductPoolVersion[]>([])
-  const [loading, setLoading] = useState(true)
-  const [creating, setCreating] = useState(false)
-  const [error, setError] = useState('')
-  const [snapshot, setSnapshot] = useState<InvestableUniverseSnapshot | null>(null)
-  const [replays, setReplays] = useState<Record<string, PoolReplayResult | string>>({})
+    const controller = new AbortController()
+    setCatalogLoading(true); setCatalogError('')
+    getStrategicCatalog(controller.signal)
+      .then(value => {
+        if (controller.signal.aborted) return
+        setMandates(value.mandates); setCatalog(value)
+      })
+      .catch(reason => { if (!controller.signal.aborted) setCatalogError(messageOf(reason, systemText('preInvestment.productPoolSelection.unableToLoadTheInvestmentObjective'))) })
+      .finally(() => { if (!controller.signal.aborted) setCatalogLoading(false) })
+    return () => controller.abort()
+  }, [catalogReload])
 
-  // A version whose data cut is later than the research day was screened with
-  // information that day did not have. Reproducible is not the same as causal,
-  // and this is the one place the difference is still fixable.
-  const replay = async (versionId: string) => {
-    setReplays((current) => ({ ...current, [versionId]: '回放中…' }))
-    try {
-      const result = await replayPoolVersion(versionId, researchDate)
-      setReplays((current) => ({ ...current, [versionId]: result }))
-    } catch (reason) {
-      setReplays((current) => ({ ...current, [versionId]: messageOf(reason, '回放失败。') }))
-    }
-  }
-
+  // 产品范围库读取不可变摘要；战略范围库来自同一份战略目录，避免两套真相。
   useEffect(() => {
     let active = true
-    setLoading(true); setError(''); setReplays({})
-    listProductPoolVersions({ activeOn: researchDate })
-      .then((response) => {
-        if (!active) return
-        setVersions(response.items)
-        setDraft(current => ({ ...current, selectedIds: current.selectedIds.length ? current.selectedIds.filter(id => response.items.some(item => item.id === id)) : requestedVersion && response.items.some(item => item.id === requestedVersion) ? [requestedVersion] : [] }))
-      })
-      .catch((reason) => { if (active) setError(messageOf(reason, '无法加载有效产品池版本。')) })
-      .finally(() => { if (active) setLoading(false) })
+    setSavedLoading(true); setSavedError('')
+    listInvestableUniverseSnapshots()
+      .then(value => { if (active) setSavedUniverses(value.items) })
+      .catch(reason => { if (active) setSavedError(messageOf(reason, systemText('preInvestment.productPoolSelection.unableToLoadTheSavedResearchScope'))) })
+      .finally(() => { if (active) setSavedLoading(false) })
     return () => { active = false }
-  }, [researchDate, requestedVersion])
+  }, [savedReload])
 
-  const restoreId = draft.snapshotId || (!draft.selectionEdited ? requestedUniverse || (!requestedVersion ? journey.universeId : '') : '')
-  useEffect(() => {
-    setSnapshot(null)
-    if (!restoreId) return
-    let active = true
-    getInvestableUniverse(restoreId).then(result => {
-      if (!active) return
-      setSnapshot(result)
-      setDraft(current => ({ ...current, snapshotId: result.id, name: current.snapshotId === result.id ? current.name : result.name, researchDate: result.research_date, selectedIds: result.version_ids ?? current.selectedIds, selectionEdited: false }))
-      updateAllocationJourney({ universeId: result.id, name: result.name, researchDate: result.research_date, poolVersionIds: result.version_ids })
-    }).catch(() => { if (active) setError('之前锁定的产品范围无法恢复，请重新选择。') })
-    return () => { active = false }
-  }, [restoreId])
-
-  const toggle = (versionId: string) => {
-    ++generation.current; setCreating(false)
-    const target = versions.find(item => item.id === versionId)
-    setDraft(current => ({ ...current, snapshotId: '', selectionEdited: true, selectedIds: current.selectedIds.includes(versionId)
-      ? current.selectedIds.filter(id => id !== versionId)
-      : [...current.selectedIds.filter(id => versions.find(item => item.id === id)?.pool_id !== target?.pool_id), versionId] }))
-    setSnapshot(null)
+  const modeHref = (nextStrategic: boolean) => {
+    const next = new URLSearchParams(params)
+    // 路径切换清理另一条路径的恢复/复制/新建参数，避免带着旧身份进入。
+    next.delete('copy'); next.delete('new')
+    if (nextStrategic) { next.set('scope', 'strategic'); next.delete('version') }
+    else { next.delete('scope'); next.delete('strategic_universe'); next.delete('mapping') }
+    if (mandateId) next.set('mandate', mandateId)
+    const query = next.toString()
+    return `/pre-investment/product-pool${query ? `?${query}` : ''}`
   }
-  const visibleVersions = showHistory ? versions : versions.filter(version => selectedIds.includes(version.id) || !versions.some(other => other.pool_id === version.pool_id && other.version > version.version))
 
-  const createSnapshot = async () => {
-    if (!name.trim() || selectedIds.length === 0) {
-      setError('请填写名称并至少选择一个产品池版本。')
-      return
-    }
-    const token = ++generation.current
-    setCreating(true); setError('')
+  // 「新建」跳独立页面：new 必须每次渲染都重算，两次点击不能撞上同一个草稿 key。
+  const newScopeQuery = new URLSearchParams()
+  if (mandateId) newScopeQuery.set('mandate', mandateId)
+  if (strategic) newScopeQuery.set('scope', 'strategic')
+  newScopeQuery.set('new', String(Date.now()))
+  const newScopeHref = `/pre-investment/product-pool/new?${newScopeQuery.toString()}`
+  const clearScopeIdentity = () => updateAllocationJourney({ universeId: undefined, strategicUniverseId: undefined, implementationMappingId: undefined })
+
+  const scopeHref = (query: Record<string, string>, boundMandate?: string) => {
+    const next = new URLSearchParams(query)
+    if (boundMandate) next.set('mandate', boundMandate)
+    return `/pre-investment/product-pool/new?${next.toString()}`
+  }
+  const removeScope = async (row: SavedScopeRow) => {
+    if (deleteBusy) return
+    const token = ++deleteToken.current
+    setDeleteBusy(row.id); setDeleteError('')
     try {
-      const result = await createInvestableUniverseSnapshot({
-        name: name.trim(),
-        research_date: researchDate,
-        version_ids: selectedIds,
-      })
-      if (token !== generation.current) return
-      setSnapshot(result)
-      const savedDraft = { ...draft, snapshotId: result.id, selectionEdited: false, researchDate: result.research_date, selectedIds: result.version_ids ?? selectedIds }
-      if (requestedUniverse && requestedUniverse !== result.id) {
-        writeAllocationDraft(`pool:universe:${result.id}`, savedDraft)
-        setParams({ universe: result.id }, { replace: true })
-      } else setDraft(savedDraft)
-      updateAllocationJourney({ name: result.name, researchDate: result.research_date, universeId: result.id, poolVersionIds: result.version_ids })
+      if (strategic) await retireUniverse(row.id)
+      else await retireInvestableUniverseSnapshot(row.id)
+      if (token !== deleteToken.current) return
+      setDeletingId('')
+      // 用完成时的当前旅程判断：等待期间切换了选择就不清掉新选择。
+      const current = readAllocationJourney()
+      if (strategic && current.strategicUniverseId === row.id) {
+        updateAllocationJourney({ strategicUniverseId: undefined, implementationMappingId: undefined })
+      }
+      if (!strategic && current.universeId === row.id) {
+        updateAllocationJourney({ universeId: undefined })
+      }
+      if (strategic) setCatalogReload(n => n + 1)
+      else setSavedReload(n => n + 1)
     } catch (reason) {
-      if (token === generation.current) setError(messageOf(reason, '生成可投资域快照失败。'))
+      if (token === deleteToken.current) setDeleteError(messageOf(reason, systemText('preInvestment.productPoolSelection.unableToRemoveThisItemFromThe')))
     } finally {
-      if (token === generation.current) setCreating(false)
+      if (token === deleteToken.current) setDeleteBusy('')
     }
   }
+  // 路径切换或离开页面时作废在途删除，避免迟到结果清掉新选择。
+  useEffect(() => {
+    setDeletingId(''); setDeleteBusy(''); setDeleteError('')
+    return () => { ++deleteToken.current }
+  }, [strategic])
+  const normalizedQuery = scopeQuery.trim().toLowerCase()
+  const strategicScopes = catalog?.strategic_universes ?? []
+  const scopesLoading = strategic ? catalogLoading : savedLoading
+  const scopesError = strategic ? catalogError : savedError
+  const scopeRows: SavedScopeRow[] = strategic
+    ? strategicScopes
+      .filter(item => !normalizedQuery || item.name.toLowerCase().includes(normalizedQuery))
+      .map(item => ({
+        id: item.id,
+        name: item.name,
+        researchDate: item.definition.as_of,
+        mandateId: item.mandate_id, mandateHash: item.mandate_hash,
+        kind: systemText('preInvestment.productPoolSelection.strategicScope'),
+        count: item.definition.assets.length,
+        countLabel: systemText('preInvestment.productPoolSelection.strategicAssets'),
+        href: scopeHref({ scope: 'strategic', strategic_universe: item.id }, item.mandate_id),
+        copyHref: scopeHref({ scope: 'strategic', strategic_universe: item.id, copy: '1' }, item.mandate_id),
+        editHref: scopeHref({ scope: 'strategic', strategic_universe: item.id, edit: '1' }, item.mandate_id),
+        selected: journey.strategicUniverseId === item.id,
+        lineage: item,
+        cashIssue: cashFloorIssue(item.definition.assets, mandateCashFloor(mandates.find(mandate => mandate.id === item.mandate_id))),
+      }))
+    : savedUniverses
+      .filter(item => !normalizedQuery || item.name.toLowerCase().includes(normalizedQuery))
+      .map(item => ({
+        id: item.id,
+        name: item.name,
+        researchDate: item.research_date,
+        mandateId: item.mandate_id, mandateHash: item.mandate_hash,
+        kind: systemText('preInvestment.productPoolSelection.productPoolScope'),
+        // product_count 是冻结总数；只有确实存过 eligible_count 时才敢写“可投资”。
+        count: item.summary?.eligible_count ?? item.product_count ?? 0,
+        countLabel: item.summary?.eligible_count != null ? systemText('preInvestment.productPoolSelection.investableProducts') : systemText('preInvestment.productPoolSelection.products'),
+        href: scopeHref({ universe: item.id }, item.mandate_id),
+        copyHref: scopeHref({ universe: item.id, copy: item.id }, item.mandate_id),
+        editHref: scopeHref({ universe: item.id, edit: item.id }, item.mandate_id),
+        selected: journey.universeId === item.id,
+        lineage: item,
+      }))
 
-  return <div className="mx-auto max-w-7xl space-y-6 p-4 sm:p-6" aria-busy={loading || creating}>
-    <header className="rounded-xl bg-slate-900 px-5 py-6 text-white sm:px-7">
-      <p className="text-sm font-medium text-emerald-300">投前研究 · 研究边界</p>
-      <h1 className="mt-1 text-2xl font-semibold">选择产品池版本</h1>
-      <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-200">选择产品范围并命名本次研究，再继续构建大类。每个产品池选一个发布版本，之后各步骤使用同一范围。</p>
-    </header>
+  // 活动目录不含已停用目标；按保存时的精确 ID 补读，不能用当前目标或名称猜测。
+  useEffect(() => {
+    if (catalogLoading || catalogError) return
+    const controller = new AbortController()
+    const ids = [...new Set([...strategicScopes, ...savedUniverses].map(item => item.mandate_id)
+      .filter((id): id is string => Boolean(id) && !mandates.some(mandate => mandate.id === id)))]
+    setHistoricalMandates({})
+    void Promise.all(ids.map(async id => {
+      try {
+        const value = await getMandate(id, controller.signal)
+        return [id, value.id === id ? value : null] as const
+      } catch { return [id, null] as const }
+    })).then(entries => { if (!controller.signal.aborted) setHistoricalMandates(Object.fromEntries(entries)) })
+    return () => controller.abort()
+  }, [catalog, savedUniverses, catalogLoading, catalogError])
 
-    {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div>}
+  const mandateCell = (row: SavedScopeRow) => {
+    if (!row.mandateId) return s('researchScope.mandateUnbound')
+    if (catalogError) return s('researchScope.mandateUnavailable')
+    const mandate = mandates.find(item => item.id === row.mandateId) ?? historicalMandates[row.mandateId]
+    if (mandate === null || (mandate && row.mandateHash && mandate.content_hash !== row.mandateHash)) return s('researchScope.mandateUnavailable')
+    if (!mandate) return s('researchScope.mandateLoading')
+    const ref = upstreamOf(row.lineage, 'mandate')
+    if (ref?.id === row.mandateId) return <><UpstreamLink item={ref} /><UsabilityNote usable={row.lineage.usable} /></>
+    return <Link to={`/pre-investment/objectives/new?view=${encodeURIComponent(row.mandateId)}`}
+      className="inline-flex min-h-10 items-center font-medium text-accent-800 underline focus-visible:ring-2 focus-visible:ring-accent-500">{mandate.name}</Link>
+  }
 
-    <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="grid gap-4 md:grid-cols-[180px_minmax(0,1fr)_auto] md:items-end">
-        <label className="text-sm text-slate-700">研究日期<input type="date" value={researchDate} onChange={(event) => setResearchDate(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2" /></label>
-        <label className="text-sm text-slate-700">研究名称<input value={name} onChange={(event) => setName(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2" /></label>
-        <button type="button" disabled={creating || selectedIds.length === 0} onClick={() => void createSnapshot()} className="rounded-lg bg-emerald-800 px-5 py-2 text-sm font-semibold text-white disabled:bg-emerald-300">生成锁定快照</button>
+  return <div className="space-y-5">
+    <section aria-labelledby="research-start-heading" className={`${sectionClass} shadow-sm`}>
+      <h1 id="research-start-heading" className="text-lg font-semibold text-slate-900">{systemText('preInvestment.productPoolSelection.chooseResearchPathAndScope')}</h1>
+      <p className="mt-2 text-sm leading-6 text-slate-600">{s('researchScopeIntro.description')}</p>
+      <p className="mt-1 text-sm leading-6 text-slate-600">{s('researchScopeIntro.workflow')}</p>
+      <nav className="mt-3 grid gap-1 rounded-lg border border-slate-300 bg-slate-50 p-1 sm:inline-grid sm:grid-cols-2" aria-label={systemText('preInvestment.productPoolSelection.researchPath')}>
+        <Link aria-label={systemText('preInvestment.productPoolSelection.existingProductsChooseProductPools')} aria-current={!strategic ? 'page' : undefined} to={modeHref(false)} onClick={() => updateAllocationJourney({ strategicUniverseId: undefined, implementationMappingId: undefined })} className={`flex min-h-10 items-center rounded-lg px-3 text-sm font-semibold sm:justify-center ${!strategic ? 'bg-accent-600 text-white shadow-sm' : 'text-slate-700 hover:bg-white'}`}>{systemText('preInvestment.productPoolSelection.productFirstChooseProductPools')}</Link>
+        <Link aria-label={systemText('preInvestment.productPoolSelection.startWithStrategyIndependentAssetScope')} aria-current={strategic ? 'page' : undefined} to={modeHref(true)} className={`flex min-h-10 items-center rounded-lg px-3 text-sm font-semibold sm:justify-center ${strategic ? 'bg-accent-600 text-white shadow-sm' : 'text-slate-700 hover:bg-white'}`}>{systemText('preInvestment.productPoolSelection.strategyFirstDefineStrategicAssets')}</Link>
+      </nav>
+      {/* 只说明当前选中的路径。两条并排时各占半栏被迫折行，读者还要先分辨哪条与自己有关。 */}
+      <p aria-label={systemText('preInvestment.productPoolSelection.researchPathGuidance')} className="mt-3 text-sm leading-6 text-slate-600">
+        {strategic
+          ? <><strong className="font-semibold text-slate-800">Strategy first：</strong>{systemText('preInvestment.productPoolSelection.useThisWhenDefiningTheAllocationFramework')}</>
+          : <><strong className="font-semibold text-slate-800">Product first：</strong>{systemText('preInvestment.productPoolSelection.useThisWhenYouAlreadyHaveA')}</>}
+      </p>
+    </section>
+    <section className={`${sectionClass} shadow-sm`} aria-label={systemText('preInvestment.productPoolSelection.savedResearchScopes')}>
+      <SectionHeader title={systemText('preInvestment.productPoolSelection.savedResearchScopes')} description={systemText('preInvestment.productPoolSelection.resumeRestoresTheSavedVersionEditingSaves')} />
+      <div className="mt-3 flex flex-wrap items-end gap-3">
+        <Field label={systemText('preInvestment.productPoolSelection.searchScopeNames')}><input value={scopeQuery} onChange={event => setScopeQuery(event.target.value)} className={inputClass} /></Field>
+        <Link to={newScopeHref} onClick={clearScopeIdentity} className={actionClass('primary')}>{systemText('preInvestment.productPoolSelection.newResearchScope')}</Link>
       </div>
-      <p className="mt-3 text-xs text-slate-600">{platformAsOf === undefined ? '平台 PIT 口径尚未确认；本页研究日只定义产品范围，实际计算口径以服务端结果为准。' : platformAsOf ? `平台知识截止 ${platformAsOf}；本页日期用于筛选版本生效范围，不等于历史时点认证。` : '平台使用全部磁盘数据；产品池研究日只定义范围，历史可得性仍须单独验证。'}</p>
-      {platformAsOf && researchDate > platformAsOf && <p role="alert" className="mt-2 text-sm text-amber-800">产品范围研究日晚于平台知识截止。后续计算受平台口径限制，请先统一日期。</p>}
+      {((!strategic && catalogError) || Object.values(historicalMandates).some(value => value === null)) && <p role="alert" className="mt-2 text-sm text-rose-800">{s('researchScope.mandateLoadFailed')} <button type="button" className="min-h-10 font-semibold underline" onClick={() => setCatalogReload(n => n + 1)}>{s('preInvestment.scopeMandateSummary.retryLoadingObjective')}</button></p>}
+      {deleteError && <p role="alert" className="mt-2 text-sm text-rose-800">{deleteError}</p>}
+      {/* 范围库没读出来时表里一行都没有，空态文案会把读取失败说成「还没有范围」；整块换成公共错误态。 */}
+      {scopesError ? <ErrorPanel className="mt-3" message={scopesError} action={<Button onClick={() => strategic ? setCatalogReload(n => n + 1) : setSavedReload(n => n + 1)}>{systemText('preInvestment.productPoolSelection.retryLoadingScopes')}</Button>} />
+      : <div className="mt-3"><DataTable<SavedScopeRow>
+        caption={systemText('preInvestment.productPoolSelection.savedResearchScopes')}
+        rows={scopeRows}
+        rowKey={row => row.id}
+        minWidth="720px"
+        loading={scopesLoading ? systemText('preInvestment.productPoolSelection.loadingSavedResearchScopes') : undefined}
+        empty={normalizedQuery ? systemText('preInvestment.productPoolSelection.noMatchingResearchScopesClearTheSearch') : systemText('preInvestment.productPoolSelection.noSavedYetSelectNewResearchScope', { p0: strategic ? systemText('preInvestment.productPoolSelection.strategicScope') : systemText('preInvestment.productPoolSelection.productScope') })}
+        columns={[
+          { header: systemText('preInvestment.productPoolSelection.name'), cell: row => <span className="flex flex-wrap items-center gap-2"><Link to={row.href} aria-current={row.selected ? 'true' : undefined} className="inline-flex min-h-10 items-center font-medium text-accent-800 underline">{row.name}</Link><VersionTag version={row.lineage.version} />{row.selected && <Badge tone="neutral">{systemText('preInvestment.productPoolSelection.current')}</Badge>}{row.cashIssue && <WarningMark label={systemText('preInvestment.scopeCashFloor.label')}>{row.cashIssue}</WarningMark>}</span> },
+          { header: systemText('preInvestment.productPoolSelection.investmentObjectivesAndConstraints'), cell: row => <span className="block min-w-32 break-words text-slate-700">{mandateCell(row)}</span> },
+          { header: systemText('preInvestment.productPoolSelection.researchDate'), nowrap: true, cell: row => <span className="inline-flex items-center gap-1.5">
+            {row.researchDate}
+            {typeof platformAsOf === 'string' && row.researchDate !== platformAsOf && <ResearchDateWarning date={row.researchDate} platformAsOf={platformAsOf} />}
+          </span> },
+          { header: systemText('preInvestment.productPoolSelection.type'), nowrap: true, cell: row => row.kind },
+          { header: systemText('preInvestment.productPoolSelection.size'), nowrap: true, cell: row => systemText('preInvestment.productPoolSelection.text', { p0: row.count, p1: row.countLabel }) },
+          { header: systemText('preInvestment.productPoolSelection.actions'), nowrap: true, cell: row => deletingId === row.id
+            ? <span className="flex flex-wrap items-center gap-3"><span className="text-xs text-slate-700">{systemText('preInvestment.productPoolSelection.remove')}{row.name}{systemText('preInvestment.productPoolSelection.fromTheListHistoricalResearchReferencingIt')}</span><Button disabled={deleteBusy === row.id} onClick={() => void removeScope(row)}>{deleteBusy === row.id ? systemText('preInvestment.productPoolSelection.removing') : systemText('preInvestment.productPoolSelection.confirmRemoval')}</Button><Button disabled={deleteBusy === row.id} onClick={() => setDeletingId('')}>{systemText('preInvestment.productPoolSelection.cancel')}</Button></span>
+            : <span className="flex flex-wrap gap-3"><Link to={row.href} className="inline-flex min-h-10 items-center text-accent-800 underline">{systemText('preInvestment.productPoolSelection.continueResearch')}</Link><Link to={row.editHref} className="inline-flex min-h-10 items-center text-accent-800 underline">{systemText('preInvestment.productPoolSelection.edit')}</Link><Link to={row.copyHref} className="inline-flex min-h-10 items-center text-slate-600 underline">{systemText('preInvestment.productPoolSelection.copyAsNew')}</Link><button type="button" onClick={() => { setDeleteError(''); setDeletingId(row.id) }} className="inline-flex min-h-10 items-center text-rose-800 underline">{systemText('preInvestment.productPoolSelection.delete')}</button></span> },
+        ]}
+      /></div>}
     </section>
-
-    <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex items-end justify-between gap-3"><div><h2 className="text-lg font-semibold text-slate-900">有效产品池版本</h2><p className="mt-1 text-sm text-slate-600">已选择 {selectedIds.length} 个版本</p></div><span className="text-xs text-slate-600">研究日：{researchDate}</span></div>
-      <label className="mt-3 flex items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={showHistory} onChange={event => setShowHistory(event.target.checked)} />显示历史发布版本</label>
-      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{visibleVersions.map((version) => {
-        const selected = selectedIds.includes(version.id)
-        const dataAsOf = poolVersionDataAsOf(version)
-        const lookahead = Boolean(dataAsOf && dataAsOf > researchDate)
-        const replayed = replays[version.id]
-        return <div key={version.id} className={`rounded-xl border p-4 ${selected ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200'}`}>
-          <label className="flex cursor-pointer items-start gap-3"><input type="checkbox" checked={selected} onChange={() => toggle(version.id)} className="mt-1 h-4 w-4" /><div className="min-w-0"><h3 className="font-semibold text-slate-900">{version.pool_name} · V{version.version}</h3><p className="mt-1 text-xs text-slate-600">{version.effective_from} ～ {version.effective_to || '持续有效'}</p><p className="mt-2 text-sm text-slate-700">{version.evaluation_plans.length} 套评价方案 · {version.investable_count} 个可投资产品</p><details className="mt-2 text-xs text-slate-600"><summary className="cursor-pointer">版本标识</summary><p className="break-all font-mono">{version.id}</p></details></div></label>
-          <div className="mt-3 border-t border-slate-100 pt-2 text-xs leading-5">
-            <span className={`rounded-lg border px-1.5 py-0.5 font-semibold ${lookahead ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
-              评价数据截至 {dataAsOf ?? '未记录'}
-            </span>
-            {lookahead && <span className="ml-2 text-rose-700">晚于研究日 {researchDate}，名单含未来信息</span>}
-            <button type="button" onClick={() => void replay(version.id)} className="ml-2 underline hover:no-underline">按研究日回放</button>
-            {typeof replayed === 'string' && <p className="mt-1 text-slate-600">{replayed}</p>}
-            {replayed && typeof replayed !== 'string' && (
-              <p className="mt-1 text-slate-700">
-                回放到 {replayed.as_of}：保留 {replayed.summary.kept} · 新增 {replayed.summary.added} · 移出 {replayed.summary.removed}
-                {replayed.summary.manual_only > 0 && ` · 人工准入 ${replayed.summary.manual_only}（不可回放）`}
-              </p>
-            )}
-          </div>
-        </div>
-      })}</div>
-      {!loading && versions.length === 0 && <p className="mt-4 rounded-lg bg-slate-50 p-6 text-center text-sm text-slate-600">该日期没有已生效产品池版本。<Link to="/product-research/pools" className="ml-2 text-emerald-800 underline">去创建或发布产品池</Link></p>}
-    </section>
-
-    {snapshot && <section className="space-y-5 rounded-xl border border-emerald-200 bg-white p-5 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium text-emerald-700">可投资域快照已锁定</p><h2 className="mt-1 text-xl font-semibold text-slate-900">{snapshot.name}</h2></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => navigate(`/pre-investment/saa/auto-classification?universe=${encodeURIComponent(snapshot.id)}`)} className="rounded-lg bg-accent-700 px-4 py-2 text-sm font-semibold text-white">进入自动构建大类</button><button type="button" onClick={() => navigate(`/pre-investment/saa/asset-classes?universe=${encodeURIComponent(snapshot.id)}`)} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white">进入手动构建大类</button></div></div>
-      <dl className="grid grid-cols-2 gap-3 md:grid-cols-4"><div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-600">产品池版本</dt><dd className="mt-1 text-lg font-semibold">{snapshot.version_ids?.length ?? 0}</dd></div><div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-600">评价方案分组</dt><dd className="mt-1 text-lg font-semibold">{snapshot.groups?.length ?? 0}</dd></div><div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-600">可投资产品</dt><dd className="mt-1 text-lg font-semibold">{snapshot.product_count}</dd></div><div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-600">研究日期</dt><dd className="mt-1 text-sm font-semibold">{snapshot.research_date}</dd></div></dl>
-      <div className="grid gap-4 xl:grid-cols-2">{(snapshot.groups ?? []).map((group) => <div key={`${group.evaluation_plan_id}:${group.evaluation_plan_revision}`} className="rounded-xl border border-slate-200 p-4"><h3 className="font-semibold text-slate-900">{group.evaluation_plan_name}</h3><p className="mt-1 text-xs text-slate-600">评价方案 v{group.evaluation_plan_revision} · {group.product_count} 个产品</p><ul className="mt-3 max-h-56 divide-y divide-slate-100 overflow-auto">{group.products.map((product) => <li key={product.key} className="flex items-center justify-between gap-3 py-2 text-sm"><span><b>{product.name || product.code}</b><span className="ml-2 font-mono text-xs text-slate-600">{product.code}</span></span><span className="text-xs text-slate-600">{product.usage_status === 'limited' ? `限额 ${product.max_weight == null ? '—' : `${(product.max_weight * 100).toFixed(1)}%`}` : '正常'}</span></li>)}</ul></div>)}</div>
-    </section>}
   </div>
 }

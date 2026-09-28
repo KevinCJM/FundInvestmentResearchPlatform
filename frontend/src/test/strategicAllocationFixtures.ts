@@ -1,5 +1,5 @@
 // Offline interaction fixtures only. No fixture is imported by a production page.
-import type { CmaDefinition, CmaPreview, CmaVersion, MandateDefinition, MandateVersion, PolicyPreview, StrategicCatalog } from '../services/strategicAllocation'
+import type { CmaDefinition, CmaPreview, CmaVersion, MandateDefinition, MandateVersion, PolicyFrontierResult, PolicyPreview, PolicyRequest, StrategicCatalog } from '../services/strategicAllocation'
 import { taaBaseline, taaCatalog, taaExecution } from './tacticalAllocationFixtures'
 
 export const mandateDefinition: MandateDefinition = {
@@ -20,7 +20,7 @@ export const cmaPreview: CmaPreview = { preview_hash: 'a'.repeat(64), definition
   covariance: [[.0324, -.0009], [-.0009, .0025]], warnings: ['显式假设不是收益保证。'], execution: taaExecution }
 export const cmaVersion: CmaVersion = { ...cmaPreview, id: 'cma-1', name: cmaDefinition.name, created_at: '2026-09-12T00:00:00Z', content_hash: 'c'.repeat(64) }
 export const strategicCatalog: StrategicCatalog = { allocations: taaCatalog.allocations, mandates: [mandateVersion],
-  assumptions: [{ id: cmaVersion.id, name: cmaVersion.name, alloc_name: cmaDefinition.alloc_name, as_of: cmaDefinition.as_of, currency: 'CNY', horizon_years: 10 }], policies: [] }
+  assumptions: [{ id: cmaVersion.id, name: cmaVersion.name, alloc_name: cmaDefinition.alloc_name, as_of: cmaDefinition.as_of, currency: 'CNY' }], policies: [] }
 export const policyPreview: PolicyPreview = {
   preview_hash: 'p'.repeat(64), request: { mandate_id: 'mandate-1', cma_id: 'cma-1', constraints: {}, group_limits: [], uncertainty_penalty: 1, candidate_count: 2000, seed: 42 },
   mandate: mandateDefinition, assumptions: cmaDefinition, source_snapshot: taaBaseline, accepted_candidates: 1500,
@@ -28,6 +28,29 @@ export const policyPreview: PolicyPreview = {
     metrics: { expected_return: .046, volatility: .076, conservative_return: .035, nominal_utility: .03, robust_utility: .02 } }],
   warnings: ['候选比较不保证全局最优。'], execution: taaExecution,
 }
+
+// Synthetic reachable evidence for interaction tests; numerical accuracy is tested in the backend.
+export function policyFrontierFixture(request: PolicyRequest): PolicyFrontierResult {
+  const mode = request.mode ?? 'single'
+  const candidate = policyPreview.candidates[0]
+  const curve = { status: 'optimal_to_tolerance', complete: true, max_return: candidate.metrics.expected_return,
+    points: [{ status: 'optimal_to_tolerance', volatility: candidate.metrics.volatility,
+      expected_return: candidate.metrics.expected_return, weights: candidate.weights }] }
+  const sources = mode === 'compatible_all_models' ? request.cma_refs! : [{
+    cma_id: mode === 'parameter_average' ? 'parameter_average' : request.cma_id!, content_hash: cmaVersion.content_hash,
+  }]
+  return {
+    mode, basis: 'offline_interaction_fixture', research_only: true, execution: taaExecution,
+    target_check: { status: 'feasible', reason: null },
+    views: sources.map(source => ({ id: source.cma_id, name: source.cma_id, cma_hash: source.content_hash,
+      moment_basis: mode === 'parameter_average' ? 'parameter_average' : 'source_model',
+      reference: curve, configured: curve, constraint_error: null, cash_floor: mandateDefinition.min_cash_weight,
+      target_return: mandateDefinition.target_return, volatility_cap: mandateDefinition.max_volatility!,
+      limits: request.constraints, groups: request.group_limits })),
+    additional_checks: { benchmark: false, funding: false, all_models: mode === 'compatible_all_models' },
+  }
+}
+
 export const policyBaseline = { ...taaBaseline, id: 'POLICY-1', as_of: '2026-09-12', policy: {
   mandate_id: 'mandate-1', cma_id: 'cma-1', expires_on: '2099-09-12', reason: '采纳保守假设下的配置',
   mandate: mandateDefinition, independent_approval: false, execution: taaExecution,
