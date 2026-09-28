@@ -59,9 +59,12 @@ test('historical intersection to risk scale, five segmentation methods, publish 
       await expect(named.getByLabel('代理再平衡')).toHaveValue('daily')
       await named.getByRole('button', { name: '添加或更换代理' }).click()
       await named.getByLabel('来源类型').selectOption('etf')
-      await named.getByLabel('搜索名称或代码').fill(asset.components[0].series_id.split(':').at(-1))
+      const code = asset.components[0].series_id.split(':').at(-1)
+      await named.getByLabel('搜索名称或代码').fill(code)
       await expect(named.getByLabel('冻结产品池')).toHaveCount(0)
-      await named.getByRole('button', { name: '选择', exact: true }).click()
+      // 勾选进托盘后一次确认；清单限高在容器内滚动，不把后面的大类顶走。
+      await named.getByRole('checkbox', { name: new RegExp(code.replace('.', '\\.')) }).check()
+      await named.getByRole('button', { name: '确认选择', exact: true }).click()
     }
   }
   await page.getByRole('button', { name: '检查参考数据', exact: true }).click()

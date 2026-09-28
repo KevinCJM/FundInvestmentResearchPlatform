@@ -61,18 +61,18 @@ export default function ResearchIndicatorPanel({
       <div className="min-w-0">
         <h2 id="research-indicators-title" className="text-lg font-semibold text-slate-900">研究指标</h2>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600">
-          用指标中心已保存的版本计算，每个指标在每个区间内给出一个数。{s('indicatorParameters.runtimeHint')}
+          用行情指标中心已保存的版本计算，每个指标在每个区间内给出一个数。{s('indicatorParameters.runtimeHint')}
         </p>
       </div>
       <Link to={studioHref} className="inline-flex min-h-10 shrink-0 items-center justify-center rounded-lg bg-accent-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-accent-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2">
-        在指标中心分析
+        在行情指标中心分析
       </Link>
     </div>
 
     {catalog.length === 0
       ? <div className="border-t border-slate-100 px-5 py-10 text-center">
         <p className="text-sm font-semibold text-slate-700">指标目录里还没有适用于本产品的标量指标</p>
-        <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-600">先在指标中心新建，或复制一个内置指标另存为工作区版本，再回到本页选择。</p>
+        <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-600">先在行情指标中心新建，或复制一个内置指标另存为工作区版本，再回到本页选择。</p>
         {error && <p role="alert" className="mt-3 text-sm text-rose-700">{error}</p>}
       </div>
       : <>

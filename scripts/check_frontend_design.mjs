@@ -27,6 +27,8 @@ const BUDGET = {
   'homepage-subpixel-font': { budget: 0, target: 0 },
   'homepage-nonstandard-weight': { budget: 0, target: 0 },
   'unscoped-tables': { budget: 0, target: 0 },
+  // 表名缺口是存量：准则 6.6 一直要求，但没有任何检查拦过。预算按实测锁住，只降不升。
+  'unnamed-tables': { budget: 48, target: 0 },
   'bare-chart-hex': { budget: 57, target: 0 },
   'homepage-accent-variants': { budget: 3, target: 3 },
   'mascot-in-forbidden-zone': { budget: 0, target: 0 },
@@ -143,8 +145,19 @@ results['homepage-nonstandard-weight'] = (homepageCss.match(/font-weight:\s*(\d+
 // 12. 没有 scope 的 <th>。逐个数，不按文件数：文件里只要有一处 scope 就全放过的话，
 // 同一张表里漏标的表头永远查不出来。屏幕阅读器无法关联表头与单元格。
 export const unscopedTables = (text) =>
-  [...text.matchAll(/<th(?![a-z])([^>]*)>/g)].filter((m) => !/scope="(?:col|row)"/.test(m[1])).length
+  [...text.matchAll(/<th(?![a-z])([^>]*)>/g)].filter((m) => !/scope="(?:col|row|colgroup|rowgroup)"/.test(m[1])).length
 results['unscoped-tables'] = files.reduce((n, f) => n + unscopedTables(f.text), 0)
+
+// 12.1 没有可访问名的 <table>。准则 6.6 要求 `<caption>` 或 `aria-label` 必填：
+// 一页多张表时，屏幕阅读器只念得出"表格 1 / 2 / 3"，读者无从判断哪张是自己要的。
+// caption 按 HTML 规范是 <table> 的第一个子元素，所以只往后看到 <tbody> 为止，避免把下一张表的 caption 算进来。
+export const unnamedTables = (text) =>
+  [...text.matchAll(/<table\b[^>]*>/g)].filter((m) => {
+    if (/aria-label/.test(m[0])) return false
+    const head = text.slice(m.index + m[0].length, m.index + m[0].length + 400).split('<tbody')[0]
+    return !/<caption/.test(head)
+  }).length
+results['unnamed-tables'] = files.reduce((n, f) => n + unnamedTables(f.text), 0)
 
 // 13. 散落的图表十六进制色。应集中到单一 ECharts 主题。
 const hexes = distinct(/['"](#[0-9a-fA-F]{6})['"]/g)
@@ -166,8 +179,26 @@ results['homepage-accent-variants'] = [...new Set(homepageCss.match(/#[0-9a-fA-F
 
 // 15. 吉祥物出现在禁区文件中。装饰形象不得靠近数值、风险提示与核算差错。
 // EmptyState 默认带吉祥物，所以间接用法也要一起拦，否则禁区规则只挡得住直接引用。
-const mascotFiles = files.filter((f) => /<Mascot[\s/>]/.test(f.text) || /<EmptyState(?![^>]*mascot=\{false\})/.test(f.text))
-results['mascot-in-forbidden-zone'] = mascotFiles.filter((f) => MASCOT_FORBIDDEN.test(f.path)).length
+// 等待态与读取失败态的形象走 ui.tsx 的 LoadingPanel / ErrorPanel，按文件名的机械拦截本来看不到它们，这里一并算作使用处。
+const directMascot = (f) => /<Mascot[\s/>]/.test(f.text) || /<EmptyState(?![^>]*mascot=\{false\})/.test(f.text)
+const panelMascot = (f) => /<(LoadingPanel|ErrorPanel)(?![^>]*mascot=\{false\})/.test(f.text)
+const mascotFiles = files.filter((f) => directMascot(f) || panelMascot(f))
+// 15.3 第 8 条登记的面板例外：整块区域此刻没有业务数值时才允许，逐个列出并与准则同步。
+// 只豁免 LoadingPanel / ErrorPanel；同一文件里直接用 Mascot 或带形象的 EmptyState 仍然算违规。
+const MASCOT_PANEL_EXCEPTIONS = new Set([
+  'frontend/src/pages/StrategicAllocationWorkspace.tsx',
+  'frontend/src/pages/TacticalAllocationWorkspace.tsx',
+  'frontend/src/pages/RiskScaleCenter.tsx',
+  'frontend/src/pages/RiskScaleWorkspace.tsx',
+  'frontend/src/pages/RiskScaleCompare.tsx',
+  'frontend/src/pages/RiskScaleVersionView.tsx',
+  'frontend/src/pages/PitSnapshots.tsx',
+  'frontend/src/pages/RiskApplicationWorkspace.tsx',
+  'frontend/src/components/risk-models/PublishedRiskPanel.tsx',
+  'frontend/src/components/factor-research/AttributionWorkbench.tsx',
+])
+results['mascot-in-forbidden-zone'] = mascotFiles
+  .filter((f) => MASCOT_FORBIDDEN.test(f.path) && (directMascot(f) || !MASCOT_PANEL_EXCEPTIONS.has(f.path))).length
 detail['mascot-in-forbidden-zone'] = mascotFiles.length
   ? `使用处：${mascotFiles.map((f) => f.path.split('/').pop()).join(', ')}`
   : '尚未使用'
@@ -283,6 +314,12 @@ const SELFTEST = [
   ['duplicate-category-color 不误报互不相同的映射', () => duplicateCategoryColor(
     "const C = { a: 'bg-accent-600', b: 'bg-violet-500' }").length, 0],
   ['unscoped-tables 逐个 th 计数', () => unscopedTables('<th scope="col">A</th><th>B</th><th>C</th>'), 2],
+  ['unscoped-tables 接受分组作用域', () => unscopedTables('<th scope="rowgroup">A</th><th scope="colgroup">B</th><th scope="invalid">C</th>'), 1],
+  ['unnamed-tables 认得没有名字的表', () => unnamedTables('<table className="w-full"><thead>'), 1],
+  ['unnamed-tables 接受 caption', () => unnamedTables('<table><caption className="sr-only">明细</caption><thead>'), 0],
+  ['unnamed-tables 接受 aria-label', () => unnamedTables('<table aria-label="明细"><thead>'), 0],
+  ['unnamed-tables 不把下一张表的 caption 算作自己的', () => unnamedTables(
+    '<table><tbody><tr><td>x</td></tr></tbody></table><table><caption>明细</caption><tbody>'), 1],
 ]
 const selftestFailures = SELFTEST.filter(([, run, want]) => run() !== want)
 if (selftestFailures.length) {

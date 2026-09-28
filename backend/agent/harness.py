@@ -25,7 +25,7 @@ from .progress import ProgressGuard
 from .scopes import allowed_tools, require_tool
 from .sessions import (AgentSessionStore, ACTIVE_STATUSES, page_snapshot_identity,
                        public_draft, stable_hash, stable_json, stop_message)
-from .tools import TOOL_REGISTRY, execute_tool, parse_arguments, tool_specs, model_view
+from .tools import TOOL_REGISTRY, argument_error_message, execute_tool, parse_arguments, tool_specs, model_view
 from .views import Projection
 from .views import VIEW_TASK_STATE
 
@@ -311,6 +311,8 @@ class RunController:
                 result = future.result()
             except (AgentError, IndicatorDomainError) as exc:
                 error = {"code": exc.code, "message": "工具未完成；请根据错误代码核对参数或数据条件。"}
+                if exc.code == "AGENT_TOOL_ARGUMENTS_INVALID" and call["name"] in TOOL_REGISTRY:
+                    error["message"] = argument_error_message(call["name"])
                 result = data_policy.seal_notice(data_policy.notice(
                     source=call["name"], status="error", ok=False,
                     message=str(error.get("message") or "工具执行失败。"), extra={"error": error}), call["name"])
@@ -495,10 +497,13 @@ class RunController:
                     if uses_current_data and data_generation(service) != run["data_generation"]:
                         self.cancel(run["session_id"], run["run_id"], reason="context_changed", source="data")
                         raise RunStopped()
+                    argument_hint = None
                     try:
                         arguments = parse_arguments(call["name"], call["arguments"]).model_dump()
-                    except AgentError:
+                    except AgentError as exc:
                         arguments = call["arguments"]
+                        if exc.code == "AGENT_TOOL_ARGUMENTS_INVALID" and tool:
+                            argument_hint = argument_error_message(call["name"])
                     deps = {"context": run["request"]["page_context"], "catalog": run["catalog_version"]}
                     if tool and "data" in tool.dependencies:
                         deps.update(data_generation=run["data_generation"], effective_context=run.get("effective_context"))
@@ -513,6 +518,8 @@ class RunController:
                     if guard.check_call(call["name"], arguments, deps):
                         decision = guard.record_blocked(call["name"], arguments, deps)
                         blocked_error = {"code": "AGENT_NO_PROGRESS", "message": guard.recovery_prompt()}
+                        if argument_hint:
+                            blocked_error["message"] += argument_hint
                         result = data_policy.seal_notice(data_policy.notice(
                             source=call["name"], status="blocked", ok=False,
                             message=blocked_error["message"], extra={"error": blocked_error}), call["name"])

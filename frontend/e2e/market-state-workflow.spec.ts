@@ -52,7 +52,7 @@ async function visual(page: Page, path: string) {
 
 test('新实时模型先选精确参考，空白模型继承状态，步骤切换保留绑定', async ({ page }, info) => {
   const identity = await connect(page)
-  await page.goto('/settings/scenario-algorithms?center=market-state&stage=realtime')
+  await page.goto('/settings/scenario-algorithms?center=market-state&stage=realtime&new=1')
   await expect(page.getByText(/先完成历史参考选择与状态对应/)).toBeVisible()
   await expect(page.getByLabel('研究名称')).toBeHidden()
   await expect(page.getByLabel('历史参考版本')).toBeEnabled()
@@ -73,7 +73,7 @@ test('目录错误可重试，空目录能返回历史步骤或显式进入探�
   await page.route('**/historical-regimes/references', route => route.fulfill(fail
     ? { status: 503, json: { detail: '参考目录暂不可用' } }
     : { json: { items: [] } }))
-  await page.goto('/settings/scenario-algorithms?center=market-state&stage=realtime')
+  await page.goto('/settings/scenario-algorithms?center=market-state&stage=realtime&new=1')
   await expect(page.getByRole('alert').filter({ hasText: /参考目录/ })).toBeVisible()
   fail = false
   await page.getByRole('button', { name: '重试读取参考' }).click()

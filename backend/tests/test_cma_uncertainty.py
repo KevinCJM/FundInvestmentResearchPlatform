@@ -155,7 +155,7 @@ def test_niw_policy_uses_frozen_t_covariance_and_information(workspace, monkeypa
     mandate, _, _ = saved_inputs(service)
     raw = definition().model_dump(mode="json")
     raw.update(schema_version="2.0", moment_semantics="annualized_periodic_arithmetic",
-               fee_basis="explicit_assumption", fx_hedging_basis="explicit_assumption")
+               fee_basis="source_embedded_no_additional_fee", fx_hedging_basis="same_currency_no_conversion")
     prior = publish(service, CmaRequest.model_validate(raw), "ellipse-niw-prior")
     cma = publish(service, request("bayesian_niw",
         prior_ref={"id": prior["id"], "content_hash": prior["content_hash"]},

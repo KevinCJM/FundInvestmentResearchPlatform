@@ -1,3 +1,4 @@
+import { ErrorPanel } from '../components/ui'
 import { useEffect, useMemo, useState } from 'react'
 import { useResearchContext } from '../app/ResearchContext'
 import {
@@ -385,6 +386,8 @@ export default function PitSnapshots() {
   }
 
   const summary = audit?.summary
+
+  if (error && !audit && !loading) return <ErrorPanel onRetry={() => load(false)} />
 
   return (
     <div className="space-y-4">

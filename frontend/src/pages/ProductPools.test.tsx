@@ -422,7 +422,7 @@ describe('ProductPools', () => {
   it('已有池先展示复核，并提供已发布版本的直接研究入口', async () => {
     mocks.listProductPools.mockResolvedValue({ items: [{ ...researchedPool, current_version_id: 'published-3', state: 'active' }], total: 1 })
     render(<MemoryRouter><ProductPools /></MemoryRouter>)
-    expect(await screen.findByRole('link', { name: '使用已发布版本开展配置研究 →' })).toHaveAttribute('href', '/pre-investment/product-pool?version=published-3')
+    expect(await screen.findByRole('link', { name: '使用已发布版本开展配置研究 →' })).toHaveAttribute('href', '/pre-investment/product-pool/new?version=published-3')
     const review = screen.getByRole('heading', { name: '候选产品人工复核' })
     const rules = screen.getByText('产品池规则与基本信息', { selector: 'summary' })
     expect(review.compareDocumentPosition(rules) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import RegimeNodePreviewPanel from './RegimeNodePreviewPanel'
+import * as researchContext from '../../app/ResearchContext'
 import { comparisonOptions } from './RegimeComparisonPicker'
 import type { RegimeGraphDefinition, RegimeNodeSchema } from '../../services/regimeGraph'
 
@@ -178,4 +179,22 @@ it('候选按输出端口区分，实时限制沿输入及显式连线传播，�
   expect(choices.filter(item => item.node_id === 'after' && item.port !== 'state').every(item => item.reason.includes('事后分析'))).toBe(true)
   expect(choices.find(item => item.port === 'state')?.reason).toContain('不是连续数值序列')
   expect(choices.filter(item => item.node_id === 'cycle')).toHaveLength(3)
+})
+
+
+it('节点预览继承 PIT，切换口径后不沿用旧手动日期', async () => {
+  const day = vi.spyOn(researchContext, 'useResearchDay').mockReturnValue('2019-12-31')
+  const identity = vi.spyOn(researchContext, 'useResearchContextIdentity').mockReturnValue('PIT2019')
+  const { fetchMock, rerender } = setup()
+  const date = screen.getByLabelText('节点预览截至日')
+  expect(date).toHaveValue('2019-12-31')
+  await userEvent.click(screen.getByRole('button', { name: '预览节点数据' }))
+  await screen.findByText('已返回 3 / 3 条节点结果')
+  const submitted = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/preview-runs'))!
+  expect(JSON.parse(String(submitted[1]?.body)).as_of).toBe('2019-12-31')
+  fireEvent.change(date, { target: { value: '2018-12-31' } })
+  day.mockReturnValue('2017-12-31'); identity.mockReturnValue('PIT2017')
+  rerender(<RegimeNodePreviewPanel definition={definition} schemas={schemas} initialNodeId="market" initialMode="realtime" initialAsOf="" />)
+  expect(date).toHaveValue('2017-12-31')
+  expect(screen.getByRole('status')).toHaveTextContent('配置已变化')
 })

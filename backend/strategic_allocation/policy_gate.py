@@ -2,6 +2,8 @@
 from datetime import date
 from pathlib import Path
 
+
+from .return_targets import requirements, check_return
 import numpy as np
 
 from backend.custom_indicators.errors import IndicatorDomainError, ValidationError
@@ -64,11 +66,10 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
         violations.append("当前目标在冻结 CMA 下的预期主动风险超过投资目标的政策预算。")
     if metrics[1] > mandate["max_volatility"] + 1e-10:
         violations.append("当前目标在冻结 CMA 下的预期波动超过投资目标上限。")
-    return_floor = mandate.get("effective_target_return")
-    if return_floor is None and mandate.get("objective_kind", "absolute_return") == "absolute_return":
-        return_floor = mandate["target_return"]
-    if return_floor is not None and metrics[0] < return_floor - 1e-10:
-        violations.append("当前目标在冻结CMA下的预期收益低于投资授权下限。")
+    returns = requirements(mandate, means=means, ids=names)
+    return_check = check_return(returns, metrics[0], metrics[1])
+    if not return_check["within_limits"]:
+        violations.append("当前目标在冻结 CMA 下未达到同口径收益要求。")
     benchmark_check = None
     if mandate.get("benchmark"):
         benchmark = mandate["benchmark"]
@@ -143,7 +144,7 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
                 benchmark_check.update(expected_excess_return=float(benchmark_summary[0]),
                                        tracking_error=float(benchmark_summary[1]),
                                        metric_basis="worst_per_metric_not_one_distribution")
-    return {"within_limits": not violations, "violations": violations,
+    return {"within_limits": not violations, "violations": violations, "return_check": return_check,
             "current_application_eligible": str(date.today()) < expires and not violations and not reviews and not current_reviews and not mapping_blockers and not scale_blockers,
             "risk_scale_blockers": scale_blockers,
             "implementation_blockers": mapping_blockers,

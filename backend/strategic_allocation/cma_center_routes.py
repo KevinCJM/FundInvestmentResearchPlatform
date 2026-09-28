@@ -1,6 +1,10 @@
 """LTCMA catalog and lifecycle routes, installed before the generic ID route."""
+from datetime import date
+from typing import Literal
 from fastapi import Query
 from .cma_center_contracts import CmaDraftDelete, CmaDraftWrite, CmaRetire, CmaListResponse, CmaDraftView
+from .cma_center_contracts import CmaSampleRequest, CmaSampleSummary, CmaCenterUpdate
+from .common_contracts import Identifier
 
 
 def install_cma_center_routes(router, service, call):
@@ -15,8 +19,14 @@ def install_cma_center_routes(router, service, call):
         return call(service.cma.capabilities)
 
     @router.get("/cma/study-options")
-    def study_options():
-        return call(service.cma.study_options)
+    def study_options(as_of: date | None = None,
+                      section: Literal["all", "base", "priors", "regimes", "scenarios"] = "all",
+                      selected_prior_id: Identifier | None = None):
+        return call(service.cma.study_options, as_of, section, selected_prior_id)
+
+    @router.post("/cma/sample", response_model=CmaSampleSummary)
+    def sample(body: CmaSampleRequest):
+        return call(service.cma.sample, body)
 
     @router.get("/cma/drafts")
     def drafts():
@@ -41,6 +51,10 @@ def install_cma_center_routes(router, service, call):
     @router.get("/cma/{identifier}/view")
     def view(identifier: str):
         return call(service.cma.view, identifier)
+
+    @router.patch("/cma/{identifier}")
+    def update_cma(identifier: str, body: CmaCenterUpdate):
+        return call(service.cma.publish, body, identifier)
 
     @router.post("/cma/{identifier}/retire")
     def retire(identifier: str, body: CmaRetire):

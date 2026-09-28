@@ -96,6 +96,10 @@ def test_independent_scope_reaches_real_saa_without_any_market_files(tmp_path):
     assert baseline['strategic_universe_id'] == scope['id']
     assert baseline['implementation_status'] == 'incomplete'
     assert set(baseline['implementation_gaps']) == {'growth', 'cash'}
+    # 缺口提示给人读的是大类名称，内部 ID 不出现在用户可见文本里。
+    assert baseline['apply_reasons'] == ['战略资产 增长资产 缺少真实代理产品。',
+                                         '战略资产 经营储备 缺少真实代理产品。']
+    assert not any(gap in reason for gap in baseline['implementation_gaps'] for reason in baseline['apply_reasons'])
     assert all(not asset['products'] for asset in baseline['assets'])
     assert len(baseline['assets']) == 2
     assert baseline['policy']['cma_hash'] == cma['content_hash']
@@ -104,14 +108,14 @@ def test_independent_scope_reaches_real_saa_without_any_market_files(tmp_path):
     np.testing.assert_allclose(sum(asset['base_weight'] for asset in baseline['assets']), 1.)
 
 
-def test_unmapped_strategic_budget_cannot_enter_taa_or_disappear(tmp_path):
+def test_unmapped_taa_requires_research_proxies_instead_of_trading_products(tmp_path):
     service, _, baseline, _, _ = setup_journey(tmp_path)
     tactical = TacticalAllocationService(tmp_path / 'research', tmp_path / 'market')
     request = PreviewRequest(baseline_id=baseline['id'], start_date=date.today() - timedelta(days=160),
                              end_date=date.today(), as_of=date.today(),
                              train_end_date=date.today() - timedelta(days=60), signal_mode='manual',
                              manual_tilts={'growth': .05, 'cash': -.05})
-    with pytest.raises(ValidationError, match='映射缺口'):
+    with pytest.raises(ValidationError, match='增长资产、经营储备尚未设置研究代理'):
         tactical.preflight(request)
     assert service.baselines.get_baseline(baseline['id']) == baseline
 

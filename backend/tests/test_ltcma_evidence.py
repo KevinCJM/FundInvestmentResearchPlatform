@@ -24,7 +24,36 @@ def warmed_statistics():
 def modern_manual(**patch):
     return CmaRequest.model_validate({**definition().model_dump(mode="json"),
         "schema_version": "2.0", "moment_semantics": "annualized_periodic_arithmetic",
-        "fee_basis": "explicit_assumption", "fx_hedging_basis": "explicit_assumption", **patch})
+        "fee_basis": "source_embedded_no_additional_fee", "fx_hedging_basis": "same_currency_no_conversion", **patch})
+
+
+def test_list_distinguishes_frozen_history_without_reloading_sources(workspace, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from backend.strategic_allocation.routes import build_router
+
+    service, days = workspace
+    whole = publish(service, request(), "list-full-history")
+    recent = publish(service, request(window={"kind": "custom", "start_date": str(days[100].date()),
+                                             "end_date": str(days[-1].date())}), "list-recent-history")
+    monkeypatch.setattr(service.cma.evidence, "build", lambda *_: pytest.fail("list must use frozen evidence"))
+    monkeypatch.setattr(service.data, "_configuration", lambda *_: pytest.fail("list must not reload product names"))
+    app = FastAPI(); app.include_router(build_router(service))
+    response = TestClient(app).get("/api/strategic-allocation/cma?method=historical_statistics")
+    assert response.status_code == 200
+    rows = {row["id"]: row for row in response.json()["items"]}
+    # 同一资产范围下的两份研究靠名称区分，冻结历史仍各自独立。
+    assert rows[whole["id"]]["scope_name"] == rows[recent["id"]]["scope_name"]
+    assert rows[whole["id"]]["name"] != rows[recent["id"]]["name"]
+    assert rows[whole["id"]]["history"]["observations"] == 160
+    assert rows[recent["id"]]["history"]["observations"] == 60
+    for saved in (whole, recent):
+        summary = rows[saved["id"]]["history"]
+        assert summary["window"] == saved["definition"]["model"]["window"]
+        assert summary["start_date"] == saved["model_result"]["model_audit"]["evidence"]["actual_start"]
+        assert summary["end_date"] == str(days[-1].date())
+        assert summary["source_names"] == [p["name"] for a in saved["source_snapshot"]["assets"] for p in a["products"]]
+        assert service.get_cma(saved["id"]) == saved
 
 
 def dated_request(method, as_of, **params):
@@ -77,7 +106,7 @@ def test_saa_uses_frozen_statistical_moments_without_retraining(workspace, monke
     preview = service.preview_policy(PolicyRequest(mandate_id=mandate["id"], cma_id=cma["id"], candidate_count=300))
     np.testing.assert_allclose(preview["covariance"], cma["effective_covariance"])
     assert preview["cma_hash"] == cma["content_hash"]
-    assert len(preview["candidates"]) == 4
+    assert len(preview["candidates"]) == 6  # 四类代表组合 + 最大夏普 + 最小模拟回撤
 
 
 def test_new_manual_cash_does_not_invent_variance(workspace):
@@ -142,3 +171,70 @@ def test_model_axis_errors_are_validation_errors_not_key_errors():
     payload["model"]["asset_ids"] = ["other", "债券"]
     with pytest.raises(ValueError):
         CmaRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize("method", ["manual", "historical_statistics"])
+def test_optional_ltcma_notes_do_not_change_calculation_or_frozen_sources(workspace, method):
+    service, _ = workspace
+    original = modern_manual() if method == "manual" else request()
+    before = service.preview_cma(original)
+    raw = original.model_dump(mode="json")
+    raw["source"] = ""
+    for asset in raw["assets"]:
+        asset["rationale"] = ""
+    if raw["model"]:
+        raw["model"]["source"] = ""
+    candidate = CmaRequest.model_validate(raw)
+    result = service.preview_cma(candidate)
+    np.testing.assert_array_equal(result["covariance"], before["covariance"])
+    if method != "manual":
+        np.testing.assert_array_equal(result["effective_returns"], before["effective_returns"])
+    saved = publish(service, candidate, f"optional-notes-{method}")
+    restored = service.get_cma(saved["id"])
+    assert restored["definition"]["source"] == ""
+    assert all(a["rationale"] == "" for a in restored["definition"]["assets"])
+    assert restored["source_snapshot"] == before["source_snapshot"]
+    assert original.source
+
+
+def test_legacy_cma_still_requires_original_annotations():
+    from pydantic import ValidationError as ContractError
+    raw = definition().model_dump(mode="json")
+    raw["source"] = ""
+    with pytest.raises(ContractError, match="旧版 CMA"):
+        CmaRequest.model_validate(raw)
+
+
+@pytest.mark.parametrize("method", ["manual", "historical_statistics"])
+def test_retired_horizon_does_not_change_moments_or_new_saved_contract(workspace, method):
+    service, _ = workspace
+    original = modern_manual() if method == "manual" else request()
+    raw = original.model_dump(mode="json")
+    assert "horizon_years" not in raw
+    expected = service.preview_cma(original)
+    for years in (5, 10):
+        candidate = CmaRequest.model_validate({**raw, "horizon_years": years})
+        assert candidate.model_dump() == original.model_dump()
+        actual = service.preview_cma(candidate)
+        assert actual == expected
+    saved = publish(service, original, f"without-horizon-{method}")
+    assert "horizon_years" not in saved["definition"]
+    assert "horizon_years" not in service.cma.list()["items"][0]
+    assert "horizon_years" not in service.catalog()["assumptions"][0]
+    assert "horizon_years" not in CmaRequest.model_json_schema()["properties"]
+
+
+def test_old_horizon_snapshot_remains_readable_and_usable_for_saa_and_niw(workspace):
+    service, _ = workspace
+    mandate, _, _ = saved_inputs(service)
+    payload, arrays = service.cma.calculation(modern_manual())
+    payload["definition"]["horizon_years"] = 5
+    old = service.artifacts.save("series", {**payload, "artifact_type": "capital_market_assumptions",
+                                           "name": "旧五年标签", "research_only": True}, arrays)
+    result = service.preview_policy(PolicyRequest(mandate_id=mandate["id"], cma_id=old["id"], candidate_count=300))
+    np.testing.assert_array_equal(result["covariance"], old["covariance"])
+    niw = request("bayesian_niw", prior_ref={"id": old["id"], "content_hash": old["content_hash"]},
+                  mean_prior_observations=20., covariance_prior_observations=20.)
+    assert service.preview_cma(niw)["model_result"]["method"] == "bayesian_niw"
+    assert service.get_cma(old["id"]) == old
+    assert "horizon_years" not in CmaRequest.model_validate(old["definition"]).model_dump()

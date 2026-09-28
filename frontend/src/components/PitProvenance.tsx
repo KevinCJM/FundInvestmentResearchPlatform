@@ -1,3 +1,4 @@
+import { systemText, useI18n } from '../i18n/runtime'
 import { Link } from 'react-router-dom'
 import type { PitRunLineage } from '../services/pit'
 
@@ -10,6 +11,7 @@ import type { PitRunLineage } from '../services/pit'
  * not look identical to a strict point-in-time run.
  */
 export default function PitProvenance({ lineage }: { lineage?: PitRunLineage | null }) {
+  useI18n()
   if (!lineage) return null
 
   const applied = lineage.as_of_applied
@@ -23,30 +25,27 @@ export default function PitProvenance({ lineage }: { lineage?: PitRunLineage | n
       data-testid="pit-provenance"
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="font-semibold">口径</span>
+        <span className="font-semibold">{systemText('preInvestment.pitProvenance.dataContext')}</span>
         {applied ? (
           <>
-            <span className="tabular-nums">研究日 {lineage.as_of}</span>
-            <span>{strict ? '严格 PIT' : '研究模式'}</span>
+            <span className="tabular-nums">{systemText('preInvestment.pitProvenance.researchDate') + " "}{lineage.as_of}</span>
+            <span>{strict ? systemText('preInvestment.pitProvenance.strictPit') : systemText('preInvestment.pitProvenance.researchMode')}</span>
             <span className="tabular-nums">
-              按 {lineage.availability_field} 公告时点截断，剔除 {lineage.rows_dropped_by_as_of.toLocaleString()} 行当时尚未公告的净值
-            </span>
-            <span className="tabular-nums text-slate-600">可用 {lineage.rows_after_cut.toLocaleString()} 行</span>
+              {systemText('preInvestment.pitProvenance.cutOffAt') + " "}{lineage.availability_field} {" " + systemText('preInvestment.pitProvenance.byAnnouncementAvailabilityExcluded') + " "}{lineage.rows_dropped_by_as_of.toLocaleString()} {" " + systemText('preInvestment.pitProvenance.navRowsNotYetAnnounced')}</span>
+            <span className="tabular-nums text-slate-600">{systemText('preInvestment.pitProvenance.available') + " "}{lineage.rows_after_cut.toLocaleString()} {" " + systemText('preInvestment.pitProvenance.rows')}</span>
           </>
         ) : (
           <>
-            <span className="font-semibold">无 PIT 口径</span>
-            <span>使用全部磁盘数据，未按公告时点截断 —— 该结果不具备时点可复现性</span>
+            <span className="font-semibold">{systemText('preInvestment.pitProvenance.noPitContext')}</span>
+            <span>{systemText('preInvestment.pitProvenance.usesAllOnDiskDataWithoutAnnouncement')}</span>
             <Link to="/settings/pit-snapshots" className="underline hover:no-underline">
-              前往 PIT 设置应用一个数据版本
-            </Link>
+              {systemText('preInvestment.pitProvenance.applyADataVersionInPitSettings')}</Link>
           </>
         )}
       </div>
       {lineage.announcement_fallback && (
         <p className="mt-1 text-rose-700">
-          其中 {lineage.rows_without_announcement.toLocaleString()} 行缺少公告日，已按净值日期近似；该部分不具备严格时点证明。
-        </p>
+          {systemText('preInvestment.pitProvenance.ofThese') + " "}{lineage.rows_without_announcement.toLocaleString()} {" " + systemText('preInvestment.pitProvenance.rowsLackAnnouncementDatesAndUseNav')}</p>
       )}
       {/* 产品域的时点问题不在任何一条公式里，只在候选集合里，所以印在口径旁边而不是
           让读者自己去比对产品池的研究日期。 */}

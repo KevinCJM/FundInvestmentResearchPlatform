@@ -13,6 +13,8 @@ strategic_service = StrategicAllocationService(
     universe_dir=indicator_service.workspace_data_dir,
     tactical_repository=tactical_service.repository,
 )
+from services.historical_regime_routes import regime_graph_v2_service
+strategic_service.cma.evidence.bind_scenario_graph(regime_graph_v2_service)
 router = build_router(strategic_service)
 
 # One reference service is shared by settings and mandate diagnosis.

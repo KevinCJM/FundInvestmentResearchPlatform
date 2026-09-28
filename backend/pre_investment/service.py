@@ -65,6 +65,20 @@ class ImplementationService:
         refs = source["refs"]
         return digest_json({"candidate": raw, "dependencies": refs}), refs
 
+    def list_packages(self):
+        """研究包当前修订，带来源 SAA / TAA 的版本与可用性，见 docs/pre-investment/versioning.md。"""
+        from backend.strategic_allocation.versioning import single_version, source_state, usability
+        lineage = self.strategic.cma.versions()
+        baselines = {item["id"]: item for item in self.strategic.baselines.list_baselines()}
+        decisions = {item["id"]: item for item in self.strategic.baselines.list_decisions()}
+        items = []
+        for package in self.repository.list():
+            source = (package.get("candidate") or {}).get("source") or {}
+            upstream = [source_state(lineage, source["kind"], source["id"], baselines, decisions)] if source.get("id") else []
+            version = single_version(lineage_id=package.get("scheme_id"), number=package.get("revision") or 1)
+            items.append({**package, "version": version, "upstream": upstream, "usable": usability(version, upstream)})
+        return items
+
     def catalog(self):
         return {
             **self.sources.catalog(),

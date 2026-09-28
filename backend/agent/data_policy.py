@@ -49,7 +49,7 @@ SUMMARY_PURPOSE = "summary"
 # Top-level keys the server-composed system prompt may embed as JSON fragments
 # (validated calculation context, session draft, page-snapshot metadata).
 SYSTEM_TOP_KEYS = frozenset({
-    "context_kind", "targets", "period", "as_of", "run_id",
+    "context_kind", "targets", "period", "as_of", "run_id", "mode", "editor_token",
     "draft_revision", "definition", "definition_hash", "valid", "context_hash", "result_kind",
     "display_latex", "editable_latex", "dependencies", "diagnostics", "stale", "updated_at",
     "available", "page", "snapshot_id", "captured_at", "sections", "read_tool", "reason",
@@ -285,6 +285,8 @@ def check_system_text(text: Any) -> None:
             raise _blocked("system", "unregistered_system_payload")
         if "definition" in parsed and parsed["definition"] is not None:
             from .views import definition_view
+            if "graph" in parsed["definition"]:
+                from .regimes import definition_view
             if definition_view(parsed["definition"]) != parsed["definition"]:
                 raise _blocked("system", "unregistered_definition")
         check(parsed, "system")
@@ -557,6 +559,8 @@ def enforce_arguments(tool: Optional[str], raw: Any) -> bool:
             return False
         if isinstance(parsed.get("definition"), dict):
             from .views import definition_view
+            if tool == "regimes.validate":
+                from .regimes import definition_view
             allowed = definition_view(parsed["definition"])
             if any(key not in allowed for key in parsed["definition"]
                    if parsed["definition"][key] is not None):

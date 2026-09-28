@@ -31,6 +31,9 @@ const placeholders = text => [...new Set([...text.matchAll(/\{\{\s*([A-Za-z][A-Z
 for (const [scope, entries] of Object.entries(catalogs)) {
   for (const [key, translations] of Object.entries(entries)) {
     if (!translations['zh-CN']) errors.push(`${scope}:${key}: missing default translation`)
+    if (scope === 'system' && (key.startsWith('preInvestment.') || key.startsWith('navigation.routes.'))) {
+      if (!translations['en-US']?.trim() || /[\u3400-\u9fff]/u.test(translations['en-US'])) errors.push(`${scope}:${key}: missing English translation`)
+    }
     for (const [locale, text] of Object.entries(translations)) {
       if (!['zh-CN', 'en-US'].includes(locale) || typeof text !== 'string') errors.push(`${scope}:${key}: invalid language entry`)
       else if (placeholders(text) !== placeholders(translations['zh-CN'])) errors.push(`${scope}:${key}: placeholder mismatch in ${locale}`)

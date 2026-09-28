@@ -12,7 +12,7 @@ from . import cma_model_kernels as kernels
 from .kernels import mean_covariance_diagnostics_kernel
 from .cma_model_contracts import (
     BlackLittermanRequest, CMA_MODEL_ADAPTER, CmaModelRequest, ScenarioMixtureRequest,
-    HistoricalCmaRequest, BayesianCmaRequest, RegimeCmaRequest,
+    HistoricalCmaRequest, BayesianCmaRequest, RegimeCmaRequest, LongTermScenarioCmaRequest,
 )
 
 
@@ -71,6 +71,17 @@ def evaluate_cma_model(
         raise ValueError("CMA_MODEL_CONTEXT_DATE")
     if currency is not None and currency != model.currency:
         raise ValueError("CMA_MODEL_CONTEXT_CURRENCY")
+    if isinstance(model, LongTermScenarioCmaRequest):
+        from .cma_scenario_models import scenario_result
+        from .cma_scenario_kernels import execution_audit
+        means, covariance, half_width, audit, estimation_covariance = scenario_result(model, evidence)
+        if estimation_covariance is not None:
+            standard_error, _, _ = mean_covariance_diagnostics_kernel(estimation_covariance)
+            audit["mean_standard_error"] = standard_error.tolist()
+        return CmaModelResult(tuple(model.asset_ids), model.method, readonly_float64(means, 1),
+            readonly_float64(covariance, 2), None, audit, execution_audit(), model.model_dump(mode="json"),
+            None if half_width is None else readonly_float64(half_width, 1),
+            None if estimation_covariance is None else readonly_float64(estimation_covariance, 2))
     if isinstance(model, (HistoricalCmaRequest, BayesianCmaRequest, RegimeCmaRequest)):
         from .cma_statistical_models import statistical_result
         from .cma_statistical_kernels import execution_audit

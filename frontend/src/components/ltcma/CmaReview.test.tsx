@@ -62,9 +62,10 @@ describe('CMA model review controls',()=>{
     expect(screen.getByText(/无法确认唯一平稳分布/)).toBeVisible()
     expect(screen.queryByText('Infinity')).not.toBeInTheDocument()
   })
-  it('does not describe an incremental NIW batch as its complete sample',()=>{
-    render(<LtcmaModelDiagnostics assets={[]} names={new Map()} audit={{evidence:{sample_horizon:{observation_years:.5,forecast_years:10,scope:'incremental_evidence_batch'}}}}/>)
+  it.each(['sample_window', 'sample_horizon'])('reads %s without treating an incremental NIW batch as its complete sample', key=>{
+    render(<LtcmaModelDiagnostics assets={[]} names={new Map()} audit={{evidence:{[key]:{observation_years:.5,forecast_years:10,scope:'incremental_evidence_batch'}}}}/>)
     expect(screen.getByText(/仅显示 NIW 新增证据批次/)).toBeVisible()
-    expect(screen.getByLabelText('样本窗口与预测期限')).toHaveTextContent('0.500')
+    expect(screen.getByLabelText('历史样本覆盖')).toHaveTextContent('0.500')
+    expect(screen.queryByText(/预测期限/)).not.toBeInTheDocument()
   })
 })

@@ -24,7 +24,7 @@ def statistical_result(model, evidence):
              "uncertainty_status": "not_estimated", "limitations": [
                 *metadata.get("warnings", []),
                 "历史数据与模型假设不保证未来结果；不构成经认证的历史可交易记录。",
-                "日频均值和协方差采用独立增量年化近似；预测期限不等于历史估计窗口。",
+                "日频均值和协方差采用独立增量年化近似；历史估计窗口不代表未来预测能力。",
                 "后续资金测算仍须声明分布适配，两个矩不能唯一确定资金成功率或尾部损失。"]}
     if isinstance(model, HistoricalCmaRequest):
         means, covariance, estimation_covariance, half_width = numeric.historical_estimate(returns, float(model.shrinkage))
@@ -97,12 +97,15 @@ def statistical_result(model, evidence):
             conditional_base_covariances=risks[estimated].tolist(),
             within_base_covariance=within.tolist(), between_base_covariance=between.tolist(),
             regime=regime_audit, shrinkage=float(model.shrinkage))
-        transition_counts, transition, duration, stationary, transition_status = numeric.regime_transition_diagnostics_kernel(states, len(state_ids))
+        contiguous = evidence["period_contiguous"]
+        gaps = int(np.count_nonzero(contiguous[1:] == 0))
+        transition_counts, transition, duration, stationary, transition_status = numeric.regime_transition_diagnostics_kernel(states, len(state_ids), contiguous)
         statuses = ("unique_irreducible_stationary", "missing_outgoing_observations", "reducibility_not_certified", "stationary_solve_unavailable")
         audit["transition_diagnostics"] = {"counts": transition_counts.tolist(),
             "matrix": clean(transition.tolist()), "markov_duration_observations": clean(duration.tolist()),
             "stationary_probabilities": clean(stationary.tolist()), "stationary_status": statuses[transition_status],
-            "adjacency": "adjacent_known_return_end_states", "code_vector_abi_copy_bytes": states.nbytes,
+            "adjacency": "contiguous_return_intervals_and_known_states", "excluded_gap_transitions": gaps,
+            "code_vector_abi_copy_bytes": states.nbytes + gaps * states.itemsize,
             "forecast_used": False}
         audit["limitations"].extend(["状态占用率不是状态转移概率；本次未建立多年 Markov 路径。",
             "转移与持续期仅为历史诊断；状态持续不必然意味着收益正自相关，不自动上调长期风险。",

@@ -9,7 +9,9 @@ from . import compatibility_kernels as numeric
 from .compatibility_solver import solve, MAX_SECONDS
 from .multi_cma import METRICS, cross_model_results, require_calculation_budget
 from .planning import funding_inputs
-from .mandate_inputs import cash_success_required
+from .return_targets import requirements, required_mean
+from .mandate_inputs import cash_success_required, effective_return_floor
+from .scope_facts import cma_scope_weight_limits
 from . import goal_kernels
 
 
@@ -23,7 +25,7 @@ def calculate(service, request, mandate, cma, *, paths, simulation_seed):
     multi = cma['multi_cma']
     definition = multi['assumptions']
     names = [a['id'] for a in definition['assets']]
-    groups, limits = service._constraints(request, definition, mandate)
+    groups, limits = service._constraints(request, definition, mandate, cma_scope_weight_limits(cma))
     bounds = np.asarray([[limits[n]['min_weight'], limits[n]['max_weight']] for n in names], dtype=np.float64)
     membership = np.asarray([[int(n in g['assets']) for n in names] for g in groups], dtype=np.float64).reshape(len(groups), len(names))
     lows = np.asarray([g['lo'] for g in groups], dtype=np.float64)
@@ -35,9 +37,14 @@ def calculate(service, request, mandate, cma, *, paths, simulation_seed):
             benchmark.get('source', 'explicit') == 'explicit' and benchmark['alloc_name'] != definition['alloc_name']):
         raise ValidationError('MANDATE_BENCHMARK_AXIS', '授权基准须与所选模型使用一致的资产轴与大类方案。')
     benchmark_weights = np.asarray([benchmark['weights'][n] for n in names] if benchmark else [], dtype=np.float64)
-    floor = mandate.get('effective_target_return')
-    if floor is None:
-        floor = mandate['target_return'] if mandate.get('objective_kind', 'absolute_return') == 'absolute_return' else -np.inf
+    returns = requirements(mandate, means=means[0], ids=names)
+    if returns["status"] != "resolved":
+        raise ValidationError("MANDATE_RETURN_UNRESOLVED", "请先补齐基准或调整资金计划。")
+    # Only a necessary zero-risk floor belongs in the convex relaxation. The
+    # actual compound requirement is checked under every model after solving.
+    independent = {**returns, "arithmetic_floor": effective_return_floor(mandate, None)}
+    value = required_mean(independent, 0.)
+    floor = value if value is not None else -np.inf
     for array in (bounds, membership, lows, highs, means, risks, benchmark_weights):
         array.flags.writeable = False
     deadline = time.monotonic() + MAX_SECONDS
@@ -98,8 +105,10 @@ def calculate(service, request, mandate, cma, *, paths, simulation_seed):
                      'anchors': anchors, 'joint_solver': joint,
                      'gate': 'all_frozen_models', 'funding_search_domain': 'one_joint_candidate_with_anchor_cross_diagnostics',
                      'enforcement': {'linear_and_risk_constraints': 'solver_and_gate',
+                                     'compound_return': 'necessary_floor_in_solver_and_actual_risk_gate' if returns['compound_floor'] is not None else 'not_applicable',
                                      'funding_success': 'candidate_filter_and_gate' if cash_success_required(mandate) else 'not_applicable'},
-                     'limitations': ['资金成功率只检查已生成的共同配置；失败不等于资金目标在全部权重空间无解。',
+                     'limitations': ['复利要求先用零波动下限作必要条件，再按共同候选的实际波动逐模型检查；候选失败不证明所有权重无解。',
+                                     '资金成功率只检查已生成的共同配置；失败不等于资金目标在全部权重空间无解。',
                                      '汇总指标分别取各模型最不利值，不代表一个联合分布；具体资金模拟使用各自原始矩。']}
     return {'constraints': limits, 'group_limits': groups, 'covariance': multi['effective_covariance'],
             'candidates': candidates, 'accepted_candidates': int(any(c['available'] for c in candidates)),

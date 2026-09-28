@@ -2,6 +2,63 @@ import { test, expect } from '@playwright/test'
 import { taaBaseline, taaCatalog, taaExecution, taaPreview, taaPreflight } from '../src/test/tacticalAllocationFixtures'
 import { auditTextContrast } from './helpers/contrast'
 
+test('SAA 无产品映射可进入 TAA、保存并重开大类研究', async ({ page }, info) => {
+  const alignment = { method: 'common_observation_intervals/1.0.0', common_observations: 801, return_periods: 800,
+    non_common_dates: 39, multi_observation_periods: 28, max_calendar_days: 11, day_count: 'ACT/365.25', calendar_verified: false,
+    sources: [{ series_id: 'index:SPX', name: 'SPX', observations: 822, not_observed_dates: 18,
+      start_date: '2023-01-03', end_date: '2026-09-10', date_examples: ['2025-07-04', '2025-12-25'] }] }
+  const baseline = { ...taaBaseline, alloc_name: null, strategic_universe_id: 'scope-proxies',
+    implementation_mapping_id: null, implementation_status: 'incomplete', apply_eligible: false,
+    assets: taaBaseline.assets.map(asset => ({ ...asset, products: [] })) }
+  let preview = { ...taaPreview, baseline, data: { ...taaPreview.data, alignment } }, saved: any = null
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const body = route.request().method() === 'POST' ? route.request().postDataJSON() : null
+    let value: unknown
+    if (path.endsWith('/catalog')) value = { ...taaCatalog, allocations: [], baselines: [baseline], decisions: saved ? [saved] : [] }
+    else if (path.endsWith('/baselines/SAA-1')) value = baseline
+    else if (path.endsWith('/preflight')) value = { ...taaPreflight, alignment }
+    else if (path.endsWith('/preview')) { preview = { ...preview, request: body }; value = preview }
+    else if (path.endsWith('/decisions') && body) { saved = { id: 'unmapped-research', created_at: '2026-09-12', name: body.name, preview, scenarios: [] }; value = saved }
+    else if (path.endsWith('/decisions/unmapped-research')) value = saved
+    else return route.fulfill({ status: 404, json: { detail: 'Offline browser fixture.' } })
+    return route.fulfill({ json: value })
+  })
+  await page.goto('/pre-investment/saa/policy?baseline=SAA-1')
+  await expect(page.getByRole('link', { name: '返回此政策的 TAA 研究' })).toBeVisible()
+  await page.getByRole('link', { name: '返回此政策的 TAA 研究' }).click()
+  await expect(page).toHaveURL(/taa\?baseline=SAA-1/)
+  await expect(page.getByText(/无需先配置实际交易产品/)).toBeVisible()
+  await expect(page.getByText(/801 个价格观察日、800 个收益区间/)).toBeVisible()
+  const detail = page.locator('summary').filter({ hasText: '查看日期对齐明细' })
+  await detail.focus(); await page.keyboard.press('Enter')
+  await expect(page.getByText('2025-07-04, 2025-12-25')).toBeVisible()
+  await page.locator('header select').selectOption('en-US')
+  await expect(page.getByText(/801 common price dates/)).toBeVisible()
+  await expect(page.getByText(/complete market calendars have not verified the cause/)).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()
+  await expect.poll(() => page.evaluate(auditTextContrast)).toEqual([])
+  await page.screenshot({ path: info.outputPath('taa-common-calendar-english.png'), fullPage: true })
+  await page.locator('header select').selectOption('zh-CN')
+  await page.getByLabel('调仓口径').selectOption('daily_target')
+  await page.getByRole('button', { name: '计算并比较方案' }).click()
+  await expect(page.getByRole('region', { name: 'SAA 与战术方案对照' })).toBeVisible()
+  await page.getByRole('tab', { name: '版本与审计' }).click()
+  await page.getByRole('button', { name: '保存研究版本', exact: true }).click()
+  await expect(page.getByRole('button', { name: '当前研究版本已保存' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '带入产品配置' })).toBeDisabled()
+  await expect(page.getByText(/尚未配置实际交易产品：权益、债券/)).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()
+  await expect.poll(() => page.evaluate(auditTextContrast)).toEqual([])
+  await page.screenshot({ path: info.outputPath('unmapped-taa-research.png'), fullPage: true })
+  await page.reload()
+  await expect(page.getByRole('button', { name: '当前研究版本已保存' })).toBeVisible()
+  await expect(page.getByText(/801 个价格观察日、800 个收益区间/)).toBeVisible()
+  expect(errors).toEqual([])
+})
+
 test('非恒等状态映射使用精确参考轴编辑并提交 TAA 偏离', async ({ page }, info) => {
   const hash = 'a'.repeat(64), refHash = 'b'.repeat(64)
   const run = {

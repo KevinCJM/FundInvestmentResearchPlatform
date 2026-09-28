@@ -27,7 +27,7 @@
 
 三个算子输入与输出都是同轴 `float64` 一维数值序列。间隔按**观测数**解释，假定样本在观测轴等间隔；不是对任意日历空隙作连续时间滤波。日频交易日、周频、月频应分别选择参数；缺失数据不填零、不跨缺口。指数、净值、数值特征均可输入；只有后续价格区间算子另要求正价格。
 
-通用内核与唯一元数据位于 `computation_graph/smoothing_numba.py`、`smoothing_operators.py`，通过现有 Regime Graph `NODE_REGISTRY` 适配；不在不同中心复制算法。画布、参数表、公式作者模式、执行计划、节点预览共用相同节点契约。当前接入市场状态工作台，不声称已加入指标中心的另一套标量 DSL。
+通用内核与唯一元数据位于 `computation_graph/smoothing_numba.py`、`smoothing_operators.py`，通过现有 Regime Graph `NODE_REGISTRY` 适配；不在不同中心复制算法。画布、参数表、公式作者模式、执行计划、节点预览共用相同节点契约。当前接入市场状态工作台，不声称已加入行情指标中心的另一套标量 DSL。
 
 ## 1. Butterworth 双向零相位低通
 

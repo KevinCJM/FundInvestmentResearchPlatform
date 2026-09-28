@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { i18n } from '../i18n/runtime'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -460,4 +461,15 @@ describe('AutoAssetClassification', () => {
     expect(screen.queryByLabelText('批量粘贴代码')).not.toBeInTheDocument()
     expect(screen.getByText(/不允许粘贴任意代码/)).toBeInTheDocument()
   })
+})
+
+it('translates server catalog options without changing selected algorithm IDs', async () => {
+  renderPage()
+  await screen.findByRole('option', { name: '相关性层次聚类' })
+  try {
+    await act(async () => { await i18n.changeLanguage('en-US') })
+    expect(screen.getByRole('option', { name: 'Correlation hierarchical clustering' })).toHaveValue('hierarchical')
+    expect(screen.getByRole('combobox', { name: 'Algorithm' })).toHaveValue('hierarchical')
+    expect(META.algorithms[0].label).toBe('相关性层次聚类')
+  } finally { await act(async () => { await i18n.changeLanguage('zh-CN') }) }
 })

@@ -1,3 +1,4 @@
+import { ErrorPanel } from '../ui'
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { fetchSourceCatalog, type SourceCatalog } from '../../services/dataSources'
@@ -208,7 +209,7 @@ export default function DataDownloadWorkspace() {
     if (!detail.definition) throw new Error('历史运行缺少流程定义。')
     setDraft(detail.template_definition ?? detail.definition); setRunOptions(detail.options ?? { mode: 'incremental', parameters: {} }); setSaved(null); setView('workflow'); setValidation(null)
   })} />
-  if (!catalog) return <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5">{error ? <p role="alert">{error}<button className={buttonClass} onClick={() => setRetry(v => v + 1)}>重新加载</button></p> : <p role="status">正在读取数据源与 ETL 流程…</p>}{statusReady || runs.length ? <><p className="text-xs text-slate-600">任务进度独立读取；来源配置加载完成前仅可查看，不能操作下载。</p>{runHistory}</> : null}</section>
+  if (!catalog) return <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5">{error ? <ErrorPanel mascot={!runs.length} onRetry={() => { setError(''); setRetry(v => v + 1) }} /> : <p role="status">正在读取数据源与 ETL 流程…</p>}{statusReady || runs.length ? <><p className="text-xs text-slate-600">任务进度独立读取；来源配置加载完成前仅可查看，不能操作下载。</p>{runHistory}</> : null}</section>
   return <form ref={form} noValidate onSubmit={e => e.preventDefault()} className="min-w-0 space-y-5">
     <nav className="flex flex-wrap gap-2" aria-label="下载工作方式">{(['auto', 'quick', 'workflow', 'runs'] as const).map(key => <button type="button" key={key} aria-pressed={view === key} className={view === key ? primaryClass : buttonClass} onClick={() => { setView(key); setValidation(null); setError('') }}>{({ auto: '自动增量（无需日期）', quick: '按数据源下载', workflow: 'ETL 任务编排', runs: '运行记录与恢复' })[key]}</button>)}</nav>
     {view === 'auto' ? <AutoIncrementalWorkspace catalog={catalog} canRun={!busy && statusReady && !executing && catalog.editing_enabled} onEditPlan={(definition, options) => {

@@ -1,3 +1,4 @@
+import { ErrorPanel } from '../components/ui'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { fetchSourceCatalog, type ConfigRecord, type InterfaceConfig, type SourceCatalog, type SourceConfig } from '../services/dataSources'
@@ -87,7 +88,7 @@ export default function DataSourceCenter() {
   const editSource = () => navigateEditor(() => { setInterfaceId(null); setNewKind(null); setEditingSource(true) })
 
   if (loading) return <p role="status" className="rounded-xl bg-white p-6 text-sm">正在读取数据源与映射配置…</p>
-  if (error || !catalog) return <section role="alert" className="rounded-xl bg-rose-50 p-6 text-rose-800"><p>{error || '配置不可用。'}</p><button type="button" className={`${buttonClass} mt-3`} onClick={() => setRefresh(v => v + 1)}>重新加载</button></section>
+  if (error || !catalog) return <ErrorPanel onRetry={() => setRefresh(v => v + 1)} />
 
   const sourceRecord: ConfigRecord<SourceConfig> | undefined = newKind === 'source'
     ? { config: { ...catalog.templates.source, id: '' }, revision: 0, builtin: false, updated_at: '' } : source

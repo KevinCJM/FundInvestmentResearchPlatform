@@ -90,7 +90,7 @@ const preInvestment = withAccent({
   tone: 'teal',
   nodes: [
     { id: 'objectives', label: '投资目标与约束', description: '设置收益目标、最大风险等级与现金需求；风险标尺提供冻结参考参数和C1–C5，正式CMA留到后续研究。', path: '/pre-investment/objectives', status: 'partial' },
-    { id: 'product-pool', label: '选择产品池版本', description: '选择已生效产品池版本并冻结为本次投前可投资域。', path: '/pre-investment/product-pool', status: 'available' },
+    { id: 'product-pool', label: '选择研究路径与范围', description: '选定投资目标，选择 Product first 或 Strategy first 研究路径，并锁定本次投前研究的对应范围。', path: '/pre-investment/product-pool', status: 'available' },
     { id: 'ltcma', label: 'LTCMA 中心', description: '独立研究长期资本市场假设，管理冻结版本，供 SAA 选择引用。', path: '/pre-investment/ltcma', status: 'available' },
     { id: 'saa', label: '战略资产配置（SAA）', description: '确定大类资产中枢权重、偏离区间与长期风险预算。', path: '/pre-investment/saa', status: 'partial' },
     { id: 'taa', label: '战术资产配置（TAA）', description: '锁定 SAA，研究相对强弱或观点偏离，比较含成本回测与情景影响，并将已保存的大类预算传入产品配置。', path: '/pre-investment/taa', status: 'partial' },
@@ -100,7 +100,7 @@ const preInvestment = withAccent({
     { id: 'approval', label: '研究定稿', description: '核对同一份验证报告，记录理由与复核日期，冻结并导出研究包。', path: '/pre-investment/approval', status: 'partial' },
   ],
   tools: [
-    { label: '长期政策配置', description: '经济大类、长期资本市场假设、稳健候选与政策确认。', path: '/pre-investment/saa/policy' },
+    { label: '战略资产配置', description: '经济大类、长期资本市场假设、稳健候选与政策确认。', path: '/pre-investment/saa/policy' },
     { label: '大类资产构建', description: '定义大类及其 ETF/公募基金代理。', path: '/pre-investment/saa/asset-classes' },
     { label: '自动构建大类', description: '按收益相关性、风险画像或主成分自动划分大类，并给出代表产品、类内权重与分类诊断。', path: '/pre-investment/saa/auto-classification' },
     { label: '大类资产配置与策略回测', description: '效率前沿、风险预算、目标权重、调仓与回测。', path: '/pre-investment/saa/allocation-lab' },
@@ -241,7 +241,8 @@ const settings = withAccent({
     { id: 'pit-snapshots', label: 'PIT 时点快照', description: '体检每张表的事件时间与可得时间、公告滞后与 PIT 等级，并对数据整体封版，供研究上下文引用。', path: '/settings/pit-snapshots', status: 'available' },
     { id: 'research-parameters', label: '研究口径与参数中心', description: '维护可复用、版本化的基准、无风险利率、数据处理和计算口径模板，供产品与组合研究引用。', path: '/settings/research-parameters', status: 'prototype' },
     { id: 'risk-scales', label: '风险等级配置中心', description: '以参考资产与市场假设建立可追溯的 C1–C5 风险标尺，管理不可变版本和当前默认。', path: '/settings/risk-scales', status: 'available' },
-    { id: 'indicators-models', label: '指标与模型管理', description: '维护标量、矩阵及组合指标的定义、公式、范围和版本。', path: '/settings/indicators-models', status: 'partial' },
+    { id: 'indicators-models', label: '行情指标中心', description: '基于净值、价格和指数等行情序列，维护标量、矩阵及组合指标的定义、公式、范围和版本。', path: '/settings/indicators-models', status: 'partial' },
+    { id: 'position-metrics', label: '持仓指标中心', description: '基于交易记录、持仓和现金流，定义持仓成本、已实现与未实现损益、TWR/MWR 等投中投后指标。', path: '/settings/position-metrics', status: 'prototype' },
     { id: 'llm-api', label: 'LLM API 配置', description: '管理 AI 助手的大模型 API 配置，指定当前使用的服务；密钥仅显示脱敏结果。', path: '/settings/llm-api', status: 'available' },
     { id: 'factor-research', label: '因子研究中心', description: '构建和检验共享因子，区分比较基准、模型与数据来源，发布研究版本并接入产品池和投研证据。', path: '/settings/factor-research', status: 'available' },
     { id: 'risk-models', label: '风险模型中心', description: '研究并验证产品敏感度、现金流久期与凸度；发布到统一数据磁盘，供产品与组合直接读取。', path: '/settings/risk-models', status: 'available' },

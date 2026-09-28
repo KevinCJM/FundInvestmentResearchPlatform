@@ -574,3 +574,29 @@ def test_existing_v1_runs_can_still_be_compared(client: TestClient) -> None:
 
     assert response.status_code == 200, response.text
     assert response.json()["run_ids"] == [first["id"], second["id"]]
+
+
+def test_run_summary_api_keeps_exact_legacy_detail_and_selector_bindings(client, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from historical_regimes.repository import RegimeRunRepository
+    from historical_regimes.v2_service import RegimeGraphV2Service
+    service = _service(client)
+    run = service.runs.create({'name': 'summary-source', 'schema_version': '1.0', 'definition_id': 'def-list',
+        'states': [{'id': 'up'}], 'causality': {'is_causal': True}, 'series': [{'value': i} for i in range(100)],
+        'calculation_audit': {'large': list(range(100))}, 'content_hash': 'frozen'})
+    empty = SimpleNamespace(runs=RegimeRunRepository(service.workspace_data_dir / 'empty-runs.json'))
+    empty.list_runs = lambda definition_id=None, summary=False: RegimeGraphV2Service.list_runs(empty, definition_id, summary)
+    empty.get_run = empty.runs.get
+    monkeypatch.setattr(historical_regime_routes, 'regime_graph_v2_service', empty)
+    url = '/api/historical-regimes/runs'
+    full = client.get(url).json()['items']
+    summary = client.get(url, params={'summary': 'true', 'definition_id': 'def-list'}).json()['items']
+    assert len(full) == len(summary) == 1
+    assert full[0]['series'] == run['series']
+    assert 'series' not in summary[0] and 'calculation_audit' not in summary[0]
+    assert summary[0]['series_included'] is False
+    for key in ('id', 'content_hash', 'causality', 'states', 'publications'):
+        assert summary[0][key] == full[0][key]
+    assert client.get(summary[0]['series_detail_endpoint']).json() == full[0]
+    assert len(json.dumps(summary)) < len(json.dumps(full)) / 2

@@ -19,7 +19,7 @@ export default function RegimeResourceLibrary({ schemas, onAdd, onOpenDataLab, b
       <optgroup label="按用途选择算子">{operatorCategories.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</optgroup>
     </select></label>
     <label className="mt-3 block text-xs font-semibold text-slate-700">搜索节点<input type="search" aria-label="搜索计算节点" value={query} onChange={event => setQuery(event.target.value)} className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 px-2 font-normal" placeholder="指数、均线、布林带、滤波…" /></label>
-    {category === 'indicator_calculation' && <p className="mt-2 text-xs leading-5 text-slate-600">来自指标中心的内置和自定义版本。添加后连接所需数据；多输出指标可分别连接下游。</p>}
+    {category === 'indicator_calculation' && <p className="mt-2 text-xs leading-5 text-slate-600">来自行情指标中心的内置和自定义版本。添加后连接所需数据；多输出指标可分别连接下游。</p>}
     <p className="mt-3 text-xs text-slate-600">{visible.length} 个可选节点</p>
     <div className="mt-2 max-h-[520px] space-y-2 overflow-y-auto pr-1">{visible.map(schema => {
       const available = schema.available !== false && (!schema.status || schema.status === 'available')

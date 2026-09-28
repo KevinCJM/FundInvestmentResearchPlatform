@@ -5,16 +5,21 @@ export async function fillLtcmaAsset(page: Page, asset: string, values: {
   role?: string; rationale?: string; annualReturn?: string; volatility?: string; uncertainty?: string
 }) {
   if (values.role) {
+    const role = page.getByRole('combobox', { name: `${asset} · 经济用途`, exact: true })
+    if (!await role.isVisible()) await page.getByRole('group', { name: asset, exact: true }).getByText('资产分类（沿用已有设置）', { exact: true }).click()
     await page.getByRole('combobox', { name: `${asset} · 经济用途`, exact: true }).selectOption(values.role)
     await page.getByRole('combobox', { name: `${asset} · 流动性`, exact: true }).selectOption('liquid')
   }
-  if (values.rationale) await page.getByLabel(`${asset} · 分类与代理依据`, { exact: true }).fill(values.rationale)
+  if (values.rationale) {
+    const note = page.getByLabel(`${asset} · 分类与代理依据`, { exact: true })
+    if (!await note.isVisible()) await page.getByText('备注（选填）', { exact: true }).click()
+    await note.fill(values.rationale)
+  }
   if (values.annualReturn !== undefined) await page.getByLabel(`${asset} · 预期年收益（%）`, { exact: true }).fill(values.annualReturn)
   if (values.volatility !== undefined) await page.getByLabel(`${asset} · 年化波动（%）`, { exact: true }).fill(values.volatility)
   if (values.uncertainty !== undefined) {
     const input = page.getByLabel(`${asset} · 均值不确定半宽（百分点）`, { exact: false })
-    const group = page.getByRole('group', { name: asset, exact: true })
-    if (!await input.isVisible()) await group.locator('summary').filter({ hasText: '均值不确定半宽' }).click()
+    if (!await input.isVisible()) await page.locator('summary').filter({ hasText: '均值不确定半宽' }).click()
     await input.fill(values.uncertainty)
   }
 }

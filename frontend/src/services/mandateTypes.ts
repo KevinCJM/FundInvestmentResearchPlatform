@@ -1,3 +1,4 @@
+import { systemText } from '../i18n/runtime'
 import type { CapitalTarget, CashBudget as WireBudget, CashProtection, MandatePolicy as WirePolicy, RiskAuthorization } from './mandateContract.generated'
 import type { FundingMetrics, FundingFlow, MandateDefinition, MandateAssessment } from './strategicAllocation'
 import type { NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
@@ -34,6 +35,8 @@ export interface Reachability {
   binding: 'none' | 'volatility_cap' | 'unreachable_at_any_level'; basis: string
 }
 export interface ReferenceDiagnosis {
+  return_requirements?: import('./strategicAllocation').ReturnRequirements
+  target_curve?: Array<{ volatility: number; expected_return: number | null }>
   status: 'reference_pending' | 'awaiting_actual_scope' | 'constraint_conflict'
     | 'solver_failed' | 'no_validated_candidate_in_search' | 'validation_failed' | 'validated'
   minimum_tested_feasible_level: number | null
@@ -59,7 +62,7 @@ export const fundingThreshold = (d: MandateDefinition) => d.schema_version === '
 /** Fail closed on corrupt reference advice; never render a missing check as success. */
 export function checkReferenceAssessment(value: MandateAssessment, checkMetrics: (m: FundingMetrics, threshold: number, allowMissingAlert?: boolean) => void) {
   if (value.definition.schema_version !== '2.0') return
-  const fail = () => { throw new Error('风险授权或独立验证记录不完整，请重新诊断。') }
+  const fail = () => { throw new Error(systemText('preInvestment.mandateTypes.riskAuthorizationOrIndependentValidationRecordsAre')) }
   const d = value.risk_decision, r = value.reference_diagnosis
   if (!d || typeof d.selection_pending !== 'boolean') return fail()
   if (d.selection_pending ? value.definition.max_volatility !== null :
@@ -72,7 +75,7 @@ export function checkReferenceAssessment(value: MandateAssessment, checkMetrics:
     if (d.risk_scale_ref) return fail()
     return
   }
-  assertNativeNumericalExecution(r.execution, '目标参考诊断')
+  assertNativeNumericalExecution(r.execution, systemText('preInvestment.mandateTypes.objectiveReferenceDiagnosis'))
   if (!Array.isArray(r.candidates) || !Array.isArray(r.blockers) || !Array.isArray(r.limitations)
     || r.search_seed !== value.request.seed || r.validation_seed !== value.request.validation_seed
     || r.search_seed === r.validation_seed) return fail()

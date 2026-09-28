@@ -1,19 +1,20 @@
 import { percentText } from '../risk-models/ResearchUI'
 import type { FundingSummary, PolicyCandidate } from '../../services/strategicAllocation'
 import { amountText } from './model'
-import { useI18n } from '../../i18n/runtime'
+import { useI18n, systemText } from '../../i18n/runtime'
 
 export function FundingOverview({ value }: { value: FundingSummary }) {
-  return <div className="space-y-3" aria-label="资金测算结果">
+  useI18n()
+  return <div className="space-y-3" aria-label={systemText('preInvestment.mandateResults.fundingCalculationResults')}>
     <dl className="grid gap-4 sm:grid-cols-3">
-      <div><dt className="text-xs text-slate-600">可投资本金（{value.currency}）</dt><dd className="mt-1 text-lg font-semibold tabular-nums">{amountText(value.investable_capital)}</dd></div>
-      <div><dt className="text-xs text-slate-600">所需固定年复合收益（扣费前）</dt><dd className="mt-1 text-lg font-semibold tabular-nums">{value.root_status === 'solved' ? percentText(value.required_effective_return) : value.root_status === 'at_lower_bound' ? '不高于−99%搜索下界' : value.root_status === 'not_applicable' ? '未定义资金成功条件' : '超出500%搜索上界'}</dd></div>
-      <div><dt className="text-xs text-slate-600">前{value.liquidity_months}月组合内流动性底线</dt><dd className="mt-1 text-lg font-semibold tabular-nums">{amountText(value.required_liquid_capital)} / {percentText(value.required_liquid_weight)}</dd></div>
+      <div><dt className="text-xs text-slate-600">{systemText('preInvestment.mandateResults.investablePrincipal')}{value.currency}）</dt><dd className="mt-1 text-lg font-semibold tabular-nums">{amountText(value.investable_capital)}</dd></div>
+      <div><dt className="text-xs text-slate-600">{systemText('preInvestment.mandateResults.requiredConstantAnnualCompoundReturnBeforeFees')}</dt><dd className="mt-1 text-lg font-semibold tabular-nums">{value.root_status === 'solved' ? percentText(value.required_effective_return) : value.root_status === 'at_lower_bound' ? systemText('preInvestment.mandateResults.atOrBelowThe99SearchFloor') : value.root_status === 'not_applicable' ? systemText('preInvestment.mandateResults.fundingSuccessConditionsNotDefined') : systemText('preInvestment.mandateResults.aboveThe500SearchCeiling')}</dd></div>
+      <div><dt className="text-xs text-slate-600">{systemText('preInvestment.mandateResults.first')}{value.liquidity_months}{systemText('preInvestment.mandateResults.monthsInPortfolioLiquidityFloor')}</dt><dd className="mt-1 text-lg font-semibold tabular-nums">{amountText(value.required_liquid_capital)} / {percentText(value.required_liquid_weight)}</dd></div>
     </dl>
-    <p className="text-xs leading-5 text-slate-600">期末名义目标 {amountText(value.nominal_terminal_target)}；期间投入 {amountText(value.total_contributions)}、必要支付 {amountText(value.total_withdrawals)}。所需收益是为覆盖已填费用而要求的扣费前固定复合收益，不会自动变成CMA算术预期收益。流动性底线不从本金再扣一次。</p>
-    {value.liquidity_payment_buffer !== undefined && <p className="text-sm leading-6 text-slate-700" aria-label="近期支付缓冲">按零收益、压力投入计算，覆盖前{value.liquidity_months}月必要支付后，组合内本金缓冲为 {amountText(value.liquidity_payment_buffer)} {value.currency}（{percentText(value.liquidity_payment_buffer_ratio)}）。{Number(value.liquidity_shortfall_capital) > 0 ? `仍有支付缺口 ${amountText(value.liquidity_shortfall_capital)} ${value.currency}。` : ''}这是支付覆盖测算，不是可承受回撤上限。</p>}
-    <details className="border-t border-slate-200 pt-3"><summary className="cursor-pointer text-sm">逐月投入与支付计划</summary>
-      <div className="mt-3 overflow-x-auto"><table aria-label="逐月现金流" className="w-full text-sm"><caption className="sr-only">逐月现金流</caption><thead><tr><th scope="col" className="p-2 text-left">月份</th><th scope="col" className="p-2 text-right">投入</th><th scope="col" className="p-2 text-right">必要支付</th></tr></thead><tbody>{value.monthly_cashflows.map(row => <tr key={row.month} className="border-b border-slate-200"><th scope="row" className="p-2 text-left font-normal">第{row.month}月</th><td className="p-2 text-right tabular-nums">{amountText(row.contribution)}</td><td className="p-2 text-right tabular-nums">{amountText(row.withdrawal)}</td></tr>)}</tbody></table></div>
+    <p className="text-xs leading-5 text-slate-600">{systemText('preInvestment.mandateResults.nominalTerminalTarget') + " "}{amountText(value.nominal_terminal_target)}{systemText('preInvestment.mandateResults.contributionsDuringThePeriod') + " "}{amountText(value.total_contributions)}{systemText('preInvestment.mandateResults.requiredPayments') + " "}{amountText(value.total_withdrawals)}{systemText('preInvestment.mandateResults.requiredReturnIsTheConstantPreFee')}</p>
+    {value.liquidity_payment_buffer !== undefined && <p className="text-sm leading-6 text-slate-700" aria-label={systemText('preInvestment.mandateResults.nearTermPaymentBuffer')}>{systemText('preInvestment.mandateResults.assumingZeroReturnsAndStressedContributionsAfter')}{value.liquidity_months}{systemText('preInvestment.mandateResults.monthsTheRemainingInPortfolioPrincipalBuffer') + " "}{amountText(value.liquidity_payment_buffer)} {value.currency}（{percentText(value.liquidity_payment_buffer_ratio)}）。{Number(value.liquidity_shortfall_capital) > 0 ? systemText('preInvestment.mandateResults.aPaymentShortfallRemains', { p0: amountText(value.liquidity_shortfall_capital), p1: value.currency }) : ''}{systemText('preInvestment.mandateResults.thisMeasuresPaymentCoverageNotMaximumTolerable')}</p>}
+    <details className="border-t border-slate-200 pt-3"><summary className="cursor-pointer text-sm">{systemText('preInvestment.mandateResults.monthlyContributionsAndPaymentPlan')}</summary>
+      <div className="mt-3 overflow-x-auto"><table aria-label={systemText('preInvestment.mandateResults.monthlyCashFlows')} className="w-full text-sm"><caption className="sr-only">{systemText('preInvestment.mandateResults.monthlyCashFlows')}</caption><thead><tr><th scope="col" className="p-2 text-left">{systemText('preInvestment.mandateResults.month')}</th><th scope="col" className="p-2 text-right">{systemText('preInvestment.mandateResults.contribution')}</th><th scope="col" className="p-2 text-right">{systemText('preInvestment.mandateResults.requiredPayment')}</th></tr></thead><tbody>{value.monthly_cashflows.map(row => <tr key={row.month} className="border-b border-slate-200"><th scope="row" className="p-2 text-left font-normal">{systemText('preInvestment.mandateResults.month2')}{row.month}{systemText('preInvestment.mandateResults.monthS')}</th><td className="p-2 text-right tabular-nums">{amountText(row.contribution)}</td><td className="p-2 text-right tabular-nums">{amountText(row.withdrawal)}</td></tr>)}</tbody></table></div>
     </details>
   </div>
 }
@@ -22,11 +23,15 @@ export function GoalCandidateSummary({ candidate }: { candidate: PolicyCandidate
   const { s } = useI18n()
   const goal = candidate.goal_check
   return <div className="space-y-2 text-sm leading-6">
+    {candidate.return_check && <p className={candidate.return_check.within_limits ? 'text-slate-800' : 'text-amber-800'}>
+      {s(candidate.return_check.within_limits ? 'mandate.candidateReturnPass' : 'mandate.candidateReturnFail', {
+        actual: percentText(candidate.return_check.arithmetic_return), required: percentText(candidate.return_check.required_arithmetic_return) })}
+    </p>}
     {goal && <>
-      <p className={goal.within_limits ? 'text-slate-800' : 'text-amber-800'}>目标成功概率 {percentText(goal.central.success_probability)}；95%模拟采样区间 {percentText(goal.central.probability_lower)} 至 {percentText(goal.central.probability_upper)}。{goal.within_limits ? '区间下界达到' : '区间下界未达到'} {percentText(goal.threshold)} 门槛。</p>
-      <p className="text-xs text-slate-600">这里的“通过”仅限所选模型和CMA假设，不代表实际收益保证。当前TAA预算不承诺维持整段资金目标概率。</p>
+      <p className={goal.within_limits ? 'text-slate-800' : 'text-amber-800'}>{systemText('preInvestment.mandateResults.targetSuccessProbability') + " "}{percentText(goal.central.success_probability)}{systemText('preInvestment.mandateResults.95SimulationSamplingInterval') + " "}{percentText(goal.central.probability_lower)} {" " + systemText('preInvestment.mandateResults.to') + " "}{percentText(goal.central.probability_upper)}。{goal.within_limits ? systemText('preInvestment.mandateResults.theIntervalSLowerBoundMeetsThe') : systemText('preInvestment.mandateResults.theIntervalSLowerBoundDoesNot')} {percentText(goal.threshold)} {" " + systemText('preInvestment.mandateResults.threshold')}</p>
+      <p className="text-xs text-slate-600">{systemText('preInvestment.mandateResults.passAppliesOnlyToTheSelectedModel')}</p>
       <p className="text-xs leading-5 text-slate-600">{s('ltcma.fundingDistributionHint')}</p>
     </>}
-    {candidate.benchmark_check && <p className="text-slate-700">相对 {candidate.benchmark_check.name}：预期年超额 {percentText(candidate.benchmark_check.expected_excess_return)}；主动风险 {percentText(candidate.benchmark_check.tracking_error)} / 上限 {percentText(candidate.benchmark_check.max_tracking_error)}。</p>}
+    {candidate.benchmark_check && <p className="text-slate-700">{systemText('preInvestment.mandateResults.relativeTo') + " "}{candidate.benchmark_check.name}{systemText('preInvestment.mandateResults.expectedAnnualExcessReturn') + " "}{percentText(candidate.benchmark_check.expected_excess_return)}{systemText('preInvestment.mandateResults.activeRisk') + " "}{percentText(candidate.benchmark_check.tracking_error)} {" " + systemText('preInvestment.mandateResults.limit') + " "}{percentText(candidate.benchmark_check.max_tracking_error)}。</p>}
   </div>
 }

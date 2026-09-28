@@ -1,4 +1,6 @@
-# 指标中心：独立定义与共享执行
+# 行情指标中心：独立定义与共享执行
+
+本中心只负责基于净值、价格、指数等行情序列的指标，路由仍为 `/settings/indicators-models`。基于交易记录、持仓和现金流的指标归持仓指标中心（`/settings/position-metrics`，当前为占位页）；两者边界与依赖方向见[领域语言](../product/domain-language.md#指标中心)。两类指标的目标归属是独立项目 [CalMetricsCenter](https://github.com/KevinCJM/CalMetricsCenter)（当前仅初始化）；本仓现有行情指标实现尚未迁移，迁移前仍以本页契约为准。
 
 显式接入 C++ 原生计算时，先读 [C++ AOT 接入契约](cpp-aot-contracts.md)。本次提供单产品标量适配和双后端门禁；既有服务仍默认使用 NJIT，尚未切换启动预热与路由。
 
@@ -61,7 +63,7 @@
 
 Availability 使用与正式运行相同的真实数据和切窗规则。公式编译后按 `required_variables` 检查实际数据源、字段、有效值、覆盖率及共同样本；`applicable_product_kinds` 只保留为目录提示，不再提前拒绝计算。稀疏可选字段不会缩短无关变量的窗口，缺失值不会前值填充或补零。
 
-指标中心的公式构建阶段与产品选择解耦：资源目录和算子参数抽屉不请求、筛选或展示具体产品的 availability，只依据变量定义和当前计算域展示资源。变量条目展示含义、类型、Shape、来源、口径、频率、单位和适用范围，不出现“所选产品可用性”、覆盖率、观察数、数据最新日期或产品级错误。只有在用户选择产品并执行预览或正式计算后，系统才按实际产品、周期和 `as_of` 判断能否计算，并通过 `input_requirements` 和 `target_data` 返回中文字段原因、当前已有数据和技术明细；混合批次中单个产品缺字段不会影响其他产品。`POST /api/custom-indicators/variables/availability` 仍可供确有运行前预检需求的其他消费者使用，但指标中心构建目录不依赖该接口。组合域目前没有独立的 availability 请求，变量是否可执行由锁定快照、类型校验和组合运行诊断共同确定。
+行情指标中心的公式构建阶段与产品选择解耦：资源目录和算子参数抽屉不请求、筛选或展示具体产品的 availability，只依据变量定义和当前计算域展示资源。变量条目展示含义、类型、Shape、来源、口径、频率、单位和适用范围，不出现“所选产品可用性”、覆盖率、观察数、数据最新日期或产品级错误。只有在用户选择产品并执行预览或正式计算后，系统才按实际产品、周期和 `as_of` 判断能否计算，并通过 `input_requirements` 和 `target_data` 返回中文字段原因、当前已有数据和技术明细；混合批次中单个产品缺字段不会影响其他产品。`POST /api/custom-indicators/variables/availability` 仍可供确有运行前预检需求的其他消费者使用，但行情指标中心构建目录不依赖该接口。组合域目前没有独立的 availability 请求，变量是否可执行由锁定快照、类型校验和组合运行诊断共同确定。
 
 ### 无数据时的日期说明
 
@@ -209,9 +211,9 @@ result_kind 仅 scalar/time_series。标量结果新增/确认 value_type（numb
 - `GET/PUT/DELETE /api/evaluation-plans/{id}`
 - `POST /api/evaluation-plans/{id}/run`
 
-产品研究通过 `kind` 和 `ids` 深链到指标中心；产品详情、产品对比和评价方案只列出 `context_kind=single_product` 的指标。组合指标只运行在不可变组合快照上，不与产品混合排名。
+产品研究通过 `kind` 和 `ids` 深链到行情指标中心；产品详情、产品对比和评价方案只列出 `context_kind=single_product` 的指标。组合指标只运行在不可变组合快照上，不与产品混合排名。
 
-指标中心的 Excel 导出使用与预览完全相同的产品、周期、`as_of`、数据窗口和固定签名 NJIT 计划。时间序列直接入参按“日期 + 实际传入值”写入产品 Sheet，Typed DAG 中的算子逐节点转换为 Excel 函数；工作簿同时保留 Excel 结果、NJIT 正式结果及一致性检查。详细契约见 `docs/indicators/excel-export.md`。
+行情指标中心的 Excel 导出使用与预览完全相同的产品、周期、`as_of`、数据窗口和固定签名 NJIT 计划。时间序列直接入参按“日期 + 实际传入值”写入产品 Sheet，Typed DAG 中的算子逐节点转换为 Excel 函数；工作簿同时保留 Excel 结果、NJIT 正式结果及一致性检查。详细契约见 `docs/indicators/excel-export.md`。
 
 ## 持久化、并发与规模
 
@@ -229,6 +231,6 @@ result_kind 仅 scalar/time_series。标量结果新增/确认 value_type（numb
 
 最大回撤并列规则变更不能回写旧运行。另一工作区若发现真实多标量旧引用，须单独制定迁移；本工作区历史扫描为空不证明所有部署都没有旧引用。
 
-市场归因不再作为指标中心内置黑盒；自定义 math／regression 原语仍可组合研究，风格暴露和收益贡献由[因子研究](../factor-research.md)负责，不因清理旧说明而移除现有能力。
+市场归因不再作为行情指标中心内置黑盒；自定义 math／regression 原语仍可组合研究，风格暴露和收益贡献由[因子研究](../factor-research.md)负责，不因清理旧说明而移除现有能力。
 
 验收包括独立数值参考、状态／缺失、参数身份、共享节点只算一次、缓存命中零计算、准备不足失败、签名不增长、画布与 Excel 一致。历史证据见[工程验收纪要](../verification/engineering.md)。

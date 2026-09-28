@@ -13,13 +13,15 @@ from numba import float64, int64, njit, types
 from backend.cal_indicators.typed_numba_kernels import covariance_2d
 from backend.optimizer import repair_weights_kernel
 
+from .goal_kernels import funding_monthly_parameters_kernel, funding_compound_return_kernel
+
 V = types.Array(float64, 1, "A", readonly=True)
 M = types.Array(float64, 2, "A", readonly=True)
 CV = float64[::1]
 CM = float64[:, ::1]
 GM = types.uint8[:, ::1]
 _WARMED_PID: int | None = None
-VERSION = "forward-policy-moments/1.3.0"
+VERSION = "forward-policy-moments/1.5.0"
 
 
 @njit((M, float64, int64), cache=True, nogil=True)
@@ -237,13 +239,61 @@ def risk_budget_error_kernel(contributions, budget):
     return error
 
 
-@njit((V, M, V, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64, V, M, float64, types.boolean),
-      cache=True, nogil=True)
+@njit((float64, float64, M), cache=True, nogil=True)
+def mean_max_drawdown_kernel(annual_return, annual_volatility, draws):
+    """Mean worst peak-to-trough loss on shared monthly lognormal paths (months x paths).
+
+    Every candidate reuses the same standard-normal draws, so rankings compare
+    portfolios rather than sampling noise. This is a model estimate, not history.
+    """
+    months, paths = draws.shape
+    if months < 1 or paths < 1:
+        raise ValueError("POLICY_DRAWDOWN_DRAWS")
+    drift, scale = funding_monthly_parameters_kernel(annual_return, annual_volatility, 0.0, 0, 1)
+    total = 0.0
+    for path in range(paths):
+        level, peak, worst = 0.0, 0.0, 0.0
+        for month in range(months):
+            z = draws[month, path]
+            if not np.isfinite(z):
+                raise ValueError("POLICY_DRAWDOWN_DRAWS")
+            # Log wealth avoids one exp per month; the loss is mapped back once per path.
+            level += drift + scale * z
+            if level > peak:
+                peak = level
+            elif peak - level > worst:
+                worst = peak - level
+        total += 1.0 - np.exp(-worst)
+    return total / paths
+
+
+@njit((M, float64, M), cache=True, nogil=True)
+def risk_adjusted_metrics_kernel(metrics, risk_free, draws):
+    """Per row [Sharpe ratio, mean simulated max drawdown]; NaN where undefined."""
+    if not np.isfinite(risk_free) or metrics.shape[1] < 2:
+        raise ValueError("POLICY_PARAMETERS")
+    result = np.full((metrics.shape[0], 2), np.nan)
+    for row in range(metrics.shape[0]):
+        mean, volatility = metrics[row, 0], metrics[row, 1]
+        if not np.isfinite(mean) or not np.isfinite(volatility):
+            continue
+        if volatility > 1e-12:
+            result[row, 0] = (mean - risk_free) / volatility
+        result[row, 1] = mean_max_drawdown_kernel(mean, volatility, draws)
+    return result
+
+
+@njit((V, M, V, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64, V, M, float64, types.boolean,
+       float64, M, float64), cache=True, nogil=True)
 def _policy_candidates_uncertainty_kernel(means, covariance, uncertainty, bounds, groups, group_low, group_high,
                                          aversion, penalty, min_return, max_volatility, benchmark_weights,
                                          benchmark_te_limit, target_excess, samples, seed, risk_budget,
-                                         mean_covariance, kappa, ellipsoidal):
-    """One finite search for all objectives; optional risk-budget fit is not an exact solution."""
+                                         mean_covariance, kappa, ellipsoidal, risk_free, drawdown_draws, compound_floor):
+    """One finite search for all objectives; optional risk-budget fit is not an exact solution.
+
+    Rows: four base methods, then the risk-budget fit when declared, then maximum
+    Sharpe and minimum simulated drawdown when drawdown draws are supplied.
+    """
     count = means.size
     if (count < 1 or count > 30 or bounds.shape != (count, 2) or groups.shape[1] != count
             or groups.shape[0] != group_low.size or group_low.size != group_high.size
@@ -263,7 +313,11 @@ def _policy_candidates_uncertainty_kernel(means, covariance, uncertainty, bounds
             budget_total += risk_budget[i]
         if abs(budget_total - 1.0) > 1e-8:
             raise ValueError("POLICY_RISK_BUDGET_INVALID")
-    method_count = 4 + has_budget
+    has_extended = int(drawdown_draws.size > 0)
+    if has_extended and not np.isfinite(risk_free):
+        raise ValueError("POLICY_PARAMETERS")
+    extended = 4 + has_budget
+    method_count = extended + 2 * has_extended
     selected_weights = np.zeros((method_count, count), dtype=np.float64)
     selected_metrics = np.full((method_count, 5), np.nan)
     selected_contributions = np.full((method_count, count), np.nan)
@@ -316,6 +370,8 @@ def _policy_candidates_uncertainty_kernel(means, covariance, uncertainty, bounds
             metrics, contributions = portfolio_moments_kernel(weights, means, covariance, uncertainty, aversion, penalty)
         if metrics[0] < min_return - 1e-10 or metrics[1] > max_volatility + 1e-10:
             continue
+        if np.isfinite(compound_floor) and funding_compound_return_kernel(metrics[0], metrics[1], 0, 1) < compound_floor - 1e-10:
+            continue
         if has_benchmark:
             if expected_active_risk_kernel(weights, benchmark_weights, covariance) > benchmark_te_limit + 1e-10:
                 continue
@@ -343,28 +399,43 @@ def _policy_candidates_uncertainty_kernel(means, covariance, uncertainty, bounds
                 selected_weights[4, :] = weights
                 selected_metrics[4, :] = metrics
                 selected_contributions[4, :] = contributions
+        if has_extended:
+            # Zero volatility has no Sharpe ratio; it can still win the drawdown row.
+            sharpe = (metrics[0] - risk_free) / metrics[1] if metrics[1] > 1e-12 else -np.inf
+            drawdown = mean_max_drawdown_kernel(metrics[0], metrics[1], drawdown_draws)
+            for row, score in ((extended, sharpe), (extended + 1, -drawdown)):
+                if score > best[row] + 1e-14:
+                    best[row] = score
+                    selected_weights[row, :] = weights
+                    selected_metrics[row, :] = metrics
+                    selected_contributions[row, :] = contributions
     return selected_weights, selected_metrics, selected_contributions, accepted
 
 
-@njit((V, M, V, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64, V),
+@njit((V, M, V, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64, V, float64, M),
       cache=True, nogil=True)
 def policy_candidates_with_budget_kernel(means, covariance, uncertainty, bounds, groups, group_low, group_high,
                                          aversion, penalty, min_return, max_volatility, benchmark_weights,
-                                         benchmark_te_limit, target_excess, samples, seed, risk_budget):
-    """Unchanged box ABI and sampling; both uncertainty sets use the same search body."""
+                                         benchmark_te_limit, target_excess, samples, seed, risk_budget,
+                                         risk_free, drawdown_draws):
+    """Unchanged box sampling; both uncertainty sets use the same search body.
+
+    Empty drawdown draws omit the Sharpe/drawdown rows and reproduce the prior output.
+    """
     return _policy_candidates_uncertainty_kernel(means, covariance, uncertainty, bounds, groups, group_low, group_high,
         aversion, penalty, min_return, max_volatility, benchmark_weights, benchmark_te_limit, target_excess,
-        samples, seed, risk_budget, np.empty((0, 0), dtype=np.float64), 0.0, False)
+        samples, seed, risk_budget, np.empty((0, 0), dtype=np.float64), 0.0, False, risk_free, drawdown_draws, -np.inf)
 
 
-@njit((V, M, M, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64, V),
+@njit((V, M, M, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64, V, float64, M),
       cache=True, nogil=True)
 def policy_candidates_ellipsoidal_kernel(means, covariance, mean_covariance, bounds, groups, group_low, group_high,
                                          aversion, kappa, min_return, max_volatility, benchmark_weights,
-                                         benchmark_te_limit, target_excess, samples, seed, risk_budget):
+                                         benchmark_te_limit, target_excess, samples, seed, risk_budget,
+                                         risk_free, drawdown_draws):
     return _policy_candidates_uncertainty_kernel(means, covariance, np.empty(0), bounds, groups, group_low, group_high,
         aversion, 0.0, min_return, max_volatility, benchmark_weights, benchmark_te_limit, target_excess,
-        samples, seed, risk_budget, mean_covariance, kappa, True)
+        samples, seed, risk_budget, mean_covariance, kappa, True, risk_free, drawdown_draws, -np.inf)
 
 
 @njit((V, M, V, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64),
@@ -376,14 +447,16 @@ def policy_candidates_kernel(means, covariance, uncertainty, bounds, groups, gro
     return policy_candidates_with_budget_kernel(
         means, covariance, uncertainty, bounds, groups, group_low, group_high,
         aversion, penalty, min_return, max_volatility, benchmark_weights,
-        benchmark_te_limit, target_excess, samples, seed, np.empty(0, dtype=np.float64))
+        benchmark_te_limit, target_excess, samples, seed, np.empty(0, dtype=np.float64),
+        0.0, np.empty((0, 0), dtype=np.float64))
 
 
 KERNELS = (historical_risk_kernel, cma_covariance_kernel, portfolio_moments_kernel,
            expected_active_risk_kernel, expected_excess_return_kernel,
            policy_candidates_with_budget_kernel, policy_candidates_kernel, risk_budget_error_kernel,
            mean_covariance_diagnostics_kernel, _ellipsoidal_metrics_kernel, portfolio_moments_ellipsoidal_kernel,
-           _policy_candidates_uncertainty_kernel, policy_candidates_ellipsoidal_kernel)
+           _policy_candidates_uncertainty_kernel, policy_candidates_ellipsoidal_kernel,
+           mean_max_drawdown_kernel, risk_adjusted_metrics_kernel)
 for dispatcher in KERNELS:
     dispatcher.disable_compile()
 
@@ -417,13 +490,18 @@ def warm_strategic_kernels():
     policy_candidates_with_budget_kernel(np.array([0.06, 0.03]), cov, np.array([0.02, 0.005]),
                              np.array([[0., 1.], [0., 1.]]), np.zeros((0, 2), dtype=np.uint8),
                              np.empty(0), np.empty(0), 5., 1., 0., 1., np.empty(0), 1., 0., 200, 42,
-                             np.array([0.5, 0.5]))
+                             np.array([0.5, 0.5]), 0.01, np.zeros((12, 4)))
+    risk_adjusted_metrics_kernel(np.array([[0.06, 0.1, 0., 0., 0.]]), 0.01, np.zeros((12, 4)))
     risk_budget_error_kernel(np.array([0.6, 0.4]), np.array([0.5, 0.5]))
     expected_excess_return_kernel(np.array([0.6, 0.4]), np.array([0.5, 0.5]), np.array([0.06, 0.03]))
     portfolio_moments_ellipsoidal_kernel(np.array([.6, .4]), np.array([.06, .03]), cov, cov * .05, 5., 2.)
     policy_candidates_ellipsoidal_kernel(np.array([.06, .03]), cov, cov * .05,
         np.array([[0., 1.], [0., 1.]]), np.zeros((0, 2), dtype=np.uint8), np.empty(0), np.empty(0),
-        5., 2., 0., 1., np.empty(0), 1., 0., 200, 42, np.empty(0))
+        5., 2., 0., 1., np.empty(0), 1., 0., 200, 42, np.empty(0), 0.01, np.zeros((12, 4)))
+    _policy_candidates_uncertainty_kernel(np.array([.06, .03]), cov, np.array([.02, .005]),
+        np.array([[0., 1.], [0., 1.]]), np.zeros((0, 2), dtype=np.uint8), np.empty(0), np.empty(0),
+        5., 1., 0., 1., np.empty(0), 1., 0., 200, 42, np.empty(0), np.empty((0, 0)),
+        0., False, 0., np.empty((0, 0)), .02)
     from .goal_kernels import warm_goal_kernels
     warm_goal_kernels()
     _WARMED_PID = os.getpid()

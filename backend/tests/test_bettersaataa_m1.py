@@ -47,8 +47,8 @@ def universe_request():
         {'id': 'cash', 'name': '现金', 'currency': 'CNY', 'role': 'liquidity', 'liquidity': 'liquid', 'rationale': '必要现金储备', 'source': '研究定义二'}])
 
 
-def universe(service):
-    request = universe_request()
+def universe(service, name='无产品战略'):
+    request = universe_request().model_copy(update={'name': name})
     preview = service.scopes.preview_universe(request)
     return service.scopes.confirm_universe(ConfirmUniverseRequest(request=request, preview_hash=preview['preview_hash']))
 
@@ -86,7 +86,7 @@ def policy(service, scope, mapping=None, ctx=None):
     return preview, baseline
 
 
-def test_true_no_products_complete_forward_research_and_taa_refusal(service):
+def test_no_products_saa_preserves_budget_and_taa_requires_research_data(service):
     scope = universe(service)
     preview, baseline = policy(service, scope, ctx=context())
     assert not service.data.data_dir.exists()
@@ -94,13 +94,13 @@ def test_true_no_products_complete_forward_research_and_taa_refusal(service):
     assert baseline['alloc_name'] is None
     assert [a['id'] for a in baseline['assets']] == ['equity', 'cash']
     assert all(not a['products'] for a in baseline['assets'])
-    assert len(preview['candidates']) == 4
+    assert len(preview['candidates']) == 6  # four base methods + maximum Sharpe + minimum drawdown
     assert preview['current_application_eligible'] is False
     assert any(g['id'] == 'policy-cash-reserve' and g['lo'] == .4 for g in baseline['group_limits'])
     assert all(c['weights']['cash'] >= .4 - 1e-8 for c in preview['candidates'])
     with pytest.raises(ValidationError) as rejected:
         service.data.load_data(baseline, '2024-01-01', '2024-01-06', TODAY)
-    assert rejected.value.code == 'SAA_IMPLEMENTATION_INCOMPLETE'
+    assert rejected.value.code == 'TAA_RESEARCH_PROXY_REQUIRED'
     with pytest.raises(ValidationError):
         service.data.validate_application(baseline)
     assert service.baselines.get_baseline(baseline['id']) == baseline
@@ -302,14 +302,14 @@ def test_mapping_partial_domain_duplicates_source_change_and_wrong_universe(mapp
     _, baseline = policy(service, scope, saved['id'])
     with pytest.raises(ValidationError) as error:
         service.data.load_data(baseline, '2024-01-01', '2024-01-06', TODAY)
-    assert error.value.code == 'SAA_IMPLEMENTATION_INCOMPLETE'
+    assert error.value.code == 'TAA_RESEARCH_PROXY_REQUIRED'
     raw = request.model_dump(mode='json'); raw['assignments'][1]['proxy_asset_id'] = raw['assignments'][0]['proxy_asset_id']
     with pytest.raises(InputError):
         ImplementationMapRequest.model_validate(raw)
     with pytest.raises(ValidationError) as error:
         service.scopes.preview_mapping(request.model_copy(update={'universe_snapshot_id': 'another-domain'}))
     assert error.value.code == 'SAA_MAPPING_DOMAIN'
-    other = universe(service)
+    other = universe(service, name='另一个战略范围')
     with pytest.raises(ValidationError) as error:
         service.preview_cma(cma_request(other, saved['id']))
     assert error.value.code == 'SAA_MAPPING_UNIVERSE'

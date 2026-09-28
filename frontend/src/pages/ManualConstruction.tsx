@@ -1,3 +1,4 @@
+import { systemText, useI18n, i18n } from '../i18n/runtime'
 import React, { useMemo, useState, useEffect } from 'react'
 import ReactECharts from 'echarts-for-react'
 import {
@@ -21,6 +22,7 @@ import {
   type NativeNumericalExecutionAudit,
 } from '../utils/fixedNjitExecution'
 import { apiErrorMessage } from '../utils/apiError'
+import { Button, DataTable } from '../components/ui'
 import PitProvenance from '../components/PitProvenance'
 import type { PitRunLineage } from '../services/pit'
 import { useResearchDay } from '../app/ResearchContext'
@@ -70,15 +72,17 @@ function productKind(item: ETFItem): 'etf' | 'fund' {
 }
 
 export default function AssetClassConstructionPage() {
+  useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const [searchParams] = useSearchParams()
-  const universeId = searchParams.get('universe') ?? readAllocationJourney().universeId ?? ''
+  // 地址栏没带可投资域就是未选择，不回落到上次研究。
+  const universeId = searchParams.get('universe') ?? ''
   const platformAsOf = useResearchDay()
   const [draft, setDraft] = useAllocationDraft(`classes:${universeId || 'new'}`, () => ({
     classes: [
-      { id: uid(), name: '权益类', mode: 'custom', etfs: [], riskMetric: 'vol', maxLeverage: 0 },
-      { id: uid(), name: '固收类', mode: 'equal', etfs: [], riskMetric: 'vol', maxLeverage: 0 },
+      { id: uid(), name: systemText('preInvestment.manualConstruction.equities'), mode: 'custom', etfs: [], riskMetric: 'vol', maxLeverage: 0 },
+      { id: uid(), name: systemText('preInvestment.manualConstruction.fixedIncome'), mode: 'equal', etfs: [], riskMetric: 'vol', maxLeverage: 0 },
     ] as AssetClass[], startDate: '2020-01-01', allocName: '', savedName: '', rollWindow: 60, rollTargetClass: '',
   }))
   const classes = draft.classes
@@ -88,18 +92,18 @@ export default function AssetClassConstructionPage() {
     for (const assetClass of classes) for (const product of assetClass.etfs) {
       const key = `${productKind(product)}:${product.code}`
       const owner = owners.get(key)
-      if (owner) conflicts.push(`${product.name} 同时出现在 ${owner}、${assetClass.name}，请保留一个归属。`)
+      if (owner) conflicts.push(systemText('preInvestment.manualConstruction.appearsInBothAndRetainOneAssignment', { p0: product.name, p1: owner, p2: assetClass.name }))
       else owners.set(key, assetClass.name)
     }
     return conflicts
-  }, [classes])
+  }, [classes, i18n.language])
   const setClasses: React.Dispatch<React.SetStateAction<AssetClass[]>> = action => setDraft(current => ({ ...current, savedName: '', classes: typeof action === 'function' ? action(current.classes) : action }))
   const [actionMessage, setActionMessage] = useState('')
   const [actionError, setActionError] = useState('')
   const [selectedProducts, setSelectedProducts] = useState<ETFItem[]>([])
   const productReturnState = useMemo(
-    () => buildReturnNavigationState(location, '返回手动构建大类'),
-    [location.hash, location.pathname, location.search],
+    () => buildReturnNavigationState(location, systemText('preInvestment.manualConstruction.returnToManualAssetConstruction')),
+    [location.hash, location.pathname, location.search, i18n.language],
   )
   const [equalWeightCache, setEqualWeightCache] = useState<Record<number, number[]>>({})
   const [classControls, setClassControls] = useState<Record<string, NumericControlResult>>({})
@@ -117,6 +121,7 @@ export default function AssetClassConstructionPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
+  const [productSearchBusy, setProductSearchBusy] = useState(false)
   const [fitLoading, setFitLoading] = useState(false)
   const startDate = draft.startDate
   const setStartDate = (value: string) => setDraft(current => ({ ...current, startDate: value }))
@@ -146,7 +151,7 @@ export default function AssetClassConstructionPage() {
       .catch((caught) => {
         if (active) {
           setUniverse(null)
-          setUniverseError(caught instanceof Error ? caught.message : '无法加载可投资域快照。')
+          setUniverseError(caught instanceof Error ? caught.message : systemText('preInvestment.manualConstruction.unableToLoadTheInvestableUniverseSnapshot'))
         }
       })
       .finally(() => { if (active) setUniverseLoading(false) })
@@ -173,7 +178,7 @@ export default function AssetClassConstructionPage() {
       })
       .catch((reason) => {
         if ((reason as DOMException)?.name !== 'AbortError') {
-          console.error('等权 NJIT 结果加载失败', reason)
+          console.error(systemText('preInvestment.manualConstruction.unableToLoadNjitEqualWeights'), reason)
         }
       })
     return () => controller.abort()
@@ -203,7 +208,7 @@ export default function AssetClassConstructionPage() {
     evaluateNumericControls(groups, controller.signal)
       .then((response) => setClassControls(Object.fromEntries(response.items.map((item) => [item.key, item]))))
       .catch((reason) => {
-        if ((reason as DOMException)?.name !== 'AbortError') setClassControlError('NJIT 权重校验暂不可用')
+        if ((reason as DOMException)?.name !== 'AbortError') setClassControlError(systemText('preInvestment.manualConstruction.njitWeightValidationIsTemporarilyUnavailable'))
       })
     return () => controller.abort()
   }, [classes, equalWeightCache])
@@ -216,18 +221,18 @@ export default function AssetClassConstructionPage() {
     const cumulativeValues = fitResult.metrics.map(metric => Number(metric.cumulative_return ?? NaN))
     const cumulativePercentValues = cumulativeValues.map(v => Number.isFinite(v) ? v * 100 : NaN)
     const rows = [
-      { label: '累计收益率(%)', values: cumulativePercentValues },
-      { label: '年化收益率(%)', values: fitResult.metrics.map(m => Number((m.annual_return ?? NaN) * 100)) },
-      { label: '年化波动率(%)', values: fitResult.metrics.map(m => Number((m.annual_vol ?? NaN) * 100)) },
-      { label: '夏普比率', values: fitResult.metrics.map(m => Number(m.sharpe ?? NaN)) },
-      { label: '99%VaR(日)(%)', values: fitResult.metrics.map(m => Number((m.var99 ?? NaN) * 100)) },
-      { label: '99%ES(日)(%)', values: fitResult.metrics.map(m => Number((m.es99 ?? NaN) * 100)) },
-      { label: '最大回撤(%)', values: fitResult.metrics.map(m => Number((m.max_drawdown ?? NaN) * 100)) },
-      { label: '卡玛比率', values: fitResult.metrics.map(m => Number(m.calmar ?? NaN)) },
+      { label: systemText('preInvestment.manualConstruction.cumulativeReturn'), values: cumulativePercentValues },
+      { label: systemText('preInvestment.manualConstruction.annualReturn'), values: fitResult.metrics.map(m => Number((m.annual_return ?? NaN) * 100)) },
+      { label: systemText('preInvestment.manualConstruction.annualVolatility'), values: fitResult.metrics.map(m => Number((m.annual_vol ?? NaN) * 100)) },
+      { label: systemText('preInvestment.manualConstruction.sharpeRatio'), values: fitResult.metrics.map(m => Number(m.sharpe ?? NaN)) },
+      { label: systemText('preInvestment.manualConstruction.99VarDaily'), values: fitResult.metrics.map(m => Number((m.var99 ?? NaN) * 100)) },
+      { label: systemText('preInvestment.manualConstruction.99EsDaily'), values: fitResult.metrics.map(m => Number((m.es99 ?? NaN) * 100)) },
+      { label: systemText('preInvestment.manualConstruction.maximumDrawdown'), values: fitResult.metrics.map(m => Number((m.max_drawdown ?? NaN) * 100)) },
+      { label: systemText('preInvestment.manualConstruction.calmarRatio'), values: fitResult.metrics.map(m => Number(m.calmar ?? NaN)) },
     ]
     const annualRows = buildAnnualMetricRows(columns, fitResult.annual_metrics)
     return { columns, rows, annualRows }
-  }, [fitResult])
+  }, [fitResult, i18n.language])
 
   const metricColumns = metricsSummary.columns
   const metricRows = metricsSummary.rows
@@ -264,14 +269,14 @@ export default function AssetClassConstructionPage() {
 
   function addProductsToClass(classId: string, products: ETFItem[]) {
     const occupied = products.find(product => classes.some(assetClass => assetClass.id !== classId && assetClass.etfs.some(item => productKind(item) === productKind(product) && item.code === product.code)))
-    if (occupied) { setActionError(`${occupied.name} 已属于其他大类。请先移出原大类，避免重复配置。`); return }
+    if (occupied) { setActionError(systemText('preInvestment.manualConstruction.alreadyBelongsToAnotherAssetClassRemove', { p0: occupied.name })); return }
     updateClass(classId, assetClass => {
       const added = products.filter(product => !assetClass.etfs.some(item => productKind(item) === productKind(product) && item.code === product.code))
       const single = assetClass.etfs.length === 0 && added.length === 1
       return { ...assetClass, etfs: [...assetClass.etfs, ...added.map(product => ({ ...product, weight: assetClass.mode === 'custom' ? (single ? 100 : 0) : undefined, riskContribution: assetClass.mode === 'risk' ? (single ? 100 : 0) : undefined, solved: false }))] }
     })
     setSelectedProducts([]); setSearchOpen({ open: false }); setSearchQuery('')
-    setActionMessage(products.length > 1 ? `已加入 ${products.length} 只产品。可选择等权重，或填写类内权重。` : '产品已加入；单产品大类的类内权重为 100%。')
+    setActionMessage(products.length > 1 ? systemText('preInvestment.manualConstruction.addedProductsChooseEqualWeightsOrEnter', { p0: products.length }) : systemText('preInvestment.manualConstruction.productAddedASingleProductClassHas'))
   }
 
   function removeETF(classId: string, idx: number) {
@@ -279,7 +284,7 @@ export default function AssetClassConstructionPage() {
   }
 
   function addAssetClass() {
-    setClasses((prev) => [...prev, { id: uid(), name: '新大类', mode: 'custom', etfs: [], riskMetric: 'vol', maxLeverage: 0 }])
+    setClasses((prev) => [...prev, { id: uid(), name: systemText('preInvestment.manualConstruction.newAssetClass'), mode: 'custom', etfs: [], riskMetric: 'vol', maxLeverage: 0 }])
   }
 
   function deleteAssetClass(id: string) {
@@ -290,16 +295,16 @@ export default function AssetClassConstructionPage() {
     const ac = classes.find((c) => c.id === classId)
     if (!ac) return
     if (ac.mode !== 'risk') {
-      alert('请先切换到“风险平价”模式')
+      alert(systemText('preInvestment.manualConstruction.switchToRiskParityFirst'))
       return
     }
     const riskControl = classControls[`${ac.id}:risk`]
     if (!riskControl) {
-      alert(classControlError || '风险贡献正在由 NJIT 内核校验，请稍候')
+      alert(classControlError || systemText('preInvestment.manualConstruction.theNjitKernelIsValidatingRiskContributions'))
       return
     }
     if (!riskControl.within_tolerance) {
-      alert('风险贡献合计需等于 100%，请调整后再计算')
+      alert(systemText('preInvestment.manualConstruction.riskContributionsMustTotal100AdjustThem'))
       return
     }
     try {
@@ -315,11 +320,11 @@ export default function AssetClassConstructionPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
-      if (!resp.ok) throw new Error(`后端返回错误状态 ${resp.status}`)
+      if (!resp.ok) throw new Error(systemText('preInvestment.manualConstruction.backendReturnedErrorStatus', { p0: resp.status }))
       const data: { weights: number[]; execution: NativeNumericalExecutionAudit } = await resp.json()
-      assertNativeNumericalExecution(data.execution, '风险平价权重求解')
+      assertNativeNumericalExecution(data.execution, systemText('preInvestment.manualConstruction.riskParityWeightSolution'))
       if (!Array.isArray(data.weights) || data.weights.length !== ac.etfs.length || data.weights.some((weight) => typeof weight !== 'number' || !Number.isFinite(weight) || weight < 0)) {
-        throw new Error('后端权重数量或数值不符合契约')
+        throw new Error(systemText('preInvestment.manualConstruction.returnedWeightCountOrValuesViolateThe'))
       }
       updateClass(classId, (c) => ({
         ...c,
@@ -328,7 +333,7 @@ export default function AssetClassConstructionPage() {
       // 成功后直接回显（不弹窗）
     } catch (err: any) {
       console.error(err)
-      alert('计算失败：' + err.message + '\n请确认已启动 Python 后端 (POST /api/risk-parity/solve)。')
+      alert(systemText('preInvestment.manualConstruction.calculationFailed') + err.message + "\n" + systemText('preInvestment.manualConstruction.confirmThatThePythonBackendIsRunning'))
     } finally {
       setLoading(false)
     }
@@ -337,10 +342,10 @@ export default function AssetClassConstructionPage() {
   async function onFit() {
     setActionError('')
     if (duplicateProducts.length) { setActionError(duplicateProducts[0]); return }
-    if (platformAsOf && startDate > platformAsOf) { setActionError(`开始日期 ${startDate} 晚于平台知识截止 ${platformAsOf}。请调整日期或切换顶部数据口径；草稿会保留。`); return }
+    if (platformAsOf && startDate > platformAsOf) { setActionError(systemText('preInvestment.manualConstruction.startDateIsLaterThanPlatformCutoff', { p0: startDate, p1: platformAsOf })); return }
     // 校验参数
     if (!startDate) {
-      alert('请选择开始日期')
+      alert(systemText('preInvestment.manualConstruction.selectAStartDate'))
       return
     }
     try {
@@ -362,10 +367,10 @@ export default function AssetClassConstructionPage() {
       const payloadClasses = classWeights.map(({ assetClass: ac, weights }) => {
         const control = validationById[ac.id]
         if (ac.mode === 'custom' && !control?.within_tolerance) {
-          throw new Error(`大类【${ac.name}】资金权重合计应为 100%`)
+          throw new Error(systemText('preInvestment.manualConstruction.fundingWeightsForAssetClassMustTotal', { p0: ac.name }))
         }
         if (ac.mode === 'risk' && !control?.positive) {
-          throw new Error(`大类【${ac.name}】请先完成“反推资金权重”计算`)
+          throw new Error(systemText('preInvestment.manualConstruction.completeInferFundingWeightsForAssetClass', { p0: ac.name }))
         }
         return {
           id: ac.id,
@@ -380,12 +385,12 @@ export default function AssetClassConstructionPage() {
       })
       // 严格 PIT 模式下产品域前视会被后端判掉，理由只在 detail 里；
       // 原来的 `后端错误 400` 把它吃掉了。
-      if (!resp.ok) throw new Error(apiErrorMessage(await resp.json().catch(() => null), `后端错误 ${resp.status}`))
+      if (!resp.ok) throw new Error(apiErrorMessage(await resp.json().catch(() => null), systemText('preInvestment.manualConstruction.backendError', { p0: resp.status })))
       const data = await resp.json() as NonNullable<typeof fitResult>
-      assertNativeNumericalExecutionLanes(data.execution, '资产大类拟合')
+      assertNativeNumericalExecutionLanes(data.execution, systemText('preInvestment.manualConstruction.assetClassFitting'))
       setFitResult(data)
     } catch (e: any) {
-      setActionError('拟合失败：' + (e?.message || e))
+      setActionError(systemText('preInvestment.manualConstruction.fittingFailed') + (e?.message || e))
     } finally {
       setFitLoading(false)
     }
@@ -393,7 +398,7 @@ export default function AssetClassConstructionPage() {
 
   async function onRoll() {
     if (!rollTargetClass) {
-      alert('请选择研究对象大类')
+      alert(systemText('preInvestment.manualConstruction.selectTheAssetClassToStudy'))
       return
     }
     try {
@@ -415,12 +420,12 @@ export default function AssetClassConstructionPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ startDate, window: rollWindow, targetClassName: rollTargetClass, classes: payloadClasses })
       })
-      if (!resp.ok) throw new Error(`后端错误 ${resp.status}`)
+      if (!resp.ok) throw new Error(systemText('preInvestment.manualConstruction.backendError', { p0: resp.status }))
       const data = await resp.json() as NonNullable<typeof rollResult>
-      assertNativeNumericalExecution(data.execution, '大类滚动相关性')
+      assertNativeNumericalExecution(data.execution, systemText('preInvestment.manualConstruction.rollingAssetClassCorrelations'))
       setRollResult(data)
     } catch (e:any) {
-      alert('滚动相关性计算失败：' + (e?.message||e))
+      alert(systemText('preInvestment.manualConstruction.rollingCorrelationCalculationFailed') + (e?.message||e))
     } finally {
       setRollLoading(false)
     }
@@ -442,7 +447,7 @@ export default function AssetClassConstructionPage() {
       asset_class_name: assetClass.name,
     })))
     sessionStorage.setItem('portfolioResearchImport', JSON.stringify({
-      name: '来自手动大类的研究组合',
+      name: systemText('preInvestment.manualConstruction.researchPortfolioFromManualAssetClasses'),
       method: 'equal_weight',
       universe_snapshot_id: universe.id,
       constituents,
@@ -470,43 +475,49 @@ export default function AssetClassConstructionPage() {
       setTotal(0)
       return () => controller.abort()
     }
-    searchInvestableUniverseProducts(universeId, {
-      query: searchQuery,
-      eligibleOnly: true,
-      page,
-      pageSize,
-      signal: controller.signal,
-    })
-      .then((response) => {
-        const mapped = response.items.map((item) => {
-          const sources = Array.isArray(item.evaluation_sources)
-            ? item.evaluation_sources
-            : []
-          return {
-            code: item.product_id,
-            name: item.name || item.code || item.product_id,
-            instrument_type: item.kind,
-            evaluation_plan_names: [...new Set(sources.map((source) => source.evaluation_plan_name).filter(Boolean))],
-            pool_names: [...new Set(sources.map((source) => source.pool_name).filter(Boolean))],
-            max_weight: item.max_weight,
+    setProductSearchBusy(true)
+    // 与风险等级配置中心的选择器一致，防抖 180ms 再发请求，不随打字逐键调用接口。
+    const timer = window.setTimeout(() => {
+      searchInvestableUniverseProducts(universeId, {
+        query: searchQuery,
+        eligibleOnly: true,
+        page,
+        pageSize,
+        signal: controller.signal,
+      })
+        .then((response) => {
+          const mapped = response.items.map((item) => {
+            const sources = Array.isArray(item.evaluation_sources)
+              ? item.evaluation_sources
+              : []
+            return {
+              code: item.product_id,
+              name: item.name || item.code || item.product_id,
+              instrument_type: item.kind,
+              evaluation_plan_names: [...new Set(sources.map((source) => source.evaluation_plan_name).filter(Boolean))],
+              pool_names: [...new Set(sources.map((source) => source.pool_name).filter(Boolean))],
+              max_weight: item.max_weight,
+            }
+          })
+          mapped.sort((left, right) => {
+            const leftValue = sortBy === 'code' ? left.code : left.name
+            const rightValue = sortBy === 'code' ? right.code : right.name
+            return leftValue.localeCompare(rightValue) * (sortDir === 'asc' ? 1 : -1)
+          })
+          setSearchResults(mapped)
+          setTotal(response.total)
+          setProductSearchBusy(false)
+        })
+        .catch((caught) => {
+          if ((caught as DOMException)?.name !== 'AbortError') {
+            setSearchResults([])
+            setTotal(0)
+            setUniverseError(caught instanceof Error ? caught.message : systemText('preInvestment.manualConstruction.unableToLoadInvestableUniverseProducts'))
+            setProductSearchBusy(false)
           }
         })
-        mapped.sort((left, right) => {
-          const leftValue = sortBy === 'code' ? left.code : left.name
-          const rightValue = sortBy === 'code' ? right.code : right.name
-          return leftValue.localeCompare(rightValue) * (sortDir === 'asc' ? 1 : -1)
-        })
-        setSearchResults(mapped)
-        setTotal(response.total)
-      })
-      .catch((caught) => {
-        if ((caught as DOMException)?.name !== 'AbortError') {
-          setSearchResults([])
-          setTotal(0)
-          setUniverseError(caught instanceof Error ? caught.message : '无法读取可投资域产品。')
-        }
-      })
-    return () => controller.abort()
+    }, 180)
+    return () => { window.clearTimeout(timer); controller.abort() }
   }, [page, pageSize, searchQuery, sortBy, sortDir, universe, universeId])
 
   const busy = loading || fitLoading || rollLoading || universeLoading
@@ -516,11 +527,11 @@ export default function AssetClassConstructionPage() {
     if (duplicateProducts.length) { setActionError(duplicateProducts[0]); setSaveModal(false); return }
     const name = allocName.trim()
     if (!name) {
-      alert('配置名称不能为空')
+      alert(systemText('preInvestment.manualConstruction.configurationNameCannotBeBlank'))
       return
     }
     if (allocList.includes(name)) {
-      setActionError(`配置名称“${name}”已存在。请使用新名称保存，已有研究不会被覆盖。`)
+      setActionError(systemText('preInvestment.manualConstruction.configurationAlreadyExistsSaveUnderANew', { p0: name }))
       return
     }
     try {
@@ -541,16 +552,16 @@ export default function AssetClassConstructionPage() {
         body: JSON.stringify({ asset_alloc_name: name, classes: payloadClasses, universe_snapshot_id: universe?.id ?? null }),
       })
       const data = await resp.json()
-      if (!resp.ok) throw new Error(apiErrorMessage(data, `错误 ${resp.status}`))
+      if (!resp.ok) throw new Error(apiErrorMessage(data, systemText('preInvestment.manualConstruction.error', { p0: resp.status })))
       setActionError('')
-      setActionMessage(`大类配置“${name}”已保存，可以继续长期配置。`)
+      setActionMessage(systemText('preInvestment.manualConstruction.assetConfigurationSavedContinueToLongTerm', { p0: name }))
       setDraft(current => ({ ...current, savedName: name, allocName: name }))
       updateAllocationJourney({ allocationName: name, universeId: universe?.id, baselineId: undefined, taaRunId: undefined })
       setSaveModal(false)
       setAllocList(p => Array.from(new Set([...p, name])).sort())
       if (continueToSaa) navigate(allocationJourneyPath('saa', { ...readAllocationJourney(), allocationName: name, universeId }))
     } catch (e: any) {
-      setActionError('保存失败：' + (e.message || e))
+      setActionError(systemText('preInvestment.manualConstruction.saveFailed') + (e.message || e))
       setSaveModal(false)
     } finally {
       setLoading(false)
@@ -563,15 +574,15 @@ export default function AssetClassConstructionPage() {
       setLoading(true)
       const resp = await fetch(`/api/load-allocation?name=${encodeURIComponent(name)}`)
       const data = await resp.json()
-      if (!resp.ok) throw new Error(apiErrorMessage(data, `错误 ${resp.status}`))
-      if (!Array.isArray(data)) throw new Error('保存的大类配置格式不正确')
+      if (!resp.ok) throw new Error(apiErrorMessage(data, systemText('preInvestment.manualConstruction.error', { p0: resp.status })))
+      if (!Array.isArray(data)) throw new Error(systemText('preInvestment.manualConstruction.savedAssetConfigurationHasAnInvalidFormat'))
       setClasses(data.map(assetClass => ({ ...assetClass, mode: assetClass.mode || 'custom' })))
       setAllocName(name)
-      setActionMessage(`已导入“${name}”。请核对产品是否属于当前范围，再保存。`)
+      setActionMessage(systemText('preInvestment.manualConstruction.importedCheckThatProductsBelongToThe', { p0: name }))
       setLoadModal(false)
       setAllocSearch('')
     } catch (e: any) {
-      alert('加载失败：' + (e.message || e))
+      alert(systemText('preInvestment.manualConstruction.loadingFailed') + (e.message || e))
     } finally {
       setLoading(false)
     }
@@ -592,39 +603,94 @@ export default function AssetClassConstructionPage() {
     fetchAllocations()
   }, [])
 
+  // 内嵌批量选择器：托盘随搜索词、排序与翻页保留，只在确认时一次性写回所属大类。
+  const productPicker = searchOpen.open && universe && (
+    <section className="mt-2 space-y-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3" aria-label={systemText('preInvestment.manualConstruction.addProductsFromTheInvestableUniverse')}>
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-sm font-semibold text-slate-800">{systemText('preInvestment.manualConstruction.addProductsFromTheInvestableUniverse')}</h4>
+        <button type="button" className="text-slate-600" aria-label={systemText('preInvestment.manualConstruction.cancelAddingProducts')} onClick={() => setSearchOpen({ open: false })}>✕</button>
+      </div>
+      <input
+        autoFocus
+        value={searchQuery}
+        onChange={(e) => { setSearchQuery(e.target.value); setPage(1) }}
+        placeholder={systemText('preInvestment.manualConstruction.searchByCodeNameOrEvaluationPlan')}
+        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+      />
+      <DataTable<ETFItem>
+        caption={systemText('preInvestment.manualConstruction.investableUniverseProductResults')}
+        rows={searchResults}
+        rowKey={(item) => `${productKind(item)}:${item.code}`}
+        minWidth="480px"
+        maxHeight="24rem"
+        loading={productSearchBusy ? systemText('preInvestment.manualConstruction.searching') : undefined}
+        empty={systemText('preInvestment.manualConstruction.noMatches')}
+        columns={[
+          { header: systemText('preInvestment.manualConstruction.products'), cell: (etf) => <span className="block min-w-0"><span className="block break-words font-medium text-slate-900">{etf.name}</span><span className="block break-all text-xs text-slate-600">{etf.code} · {etf.instrument_type === 'etf' ? 'ETF' : systemText('preInvestment.manualConstruction.mutualFund')}</span></span> },
+          { header: systemText('preInvestment.manualConstruction.evaluationPlanProductPool'), cell: (etf) => <span className="block break-words text-xs text-slate-600"><span className="block truncate">{systemText('preInvestment.manualConstruction.evaluationPlan')}{etf.evaluation_plan_names?.join('、') || '—'}</span><span className="block truncate">{systemText('preInvestment.manualConstruction.productPool')}{etf.pool_names?.join('、') || '—'}</span></span> },
+          { header: systemText('preInvestment.manualConstruction.select'), cell: (etf) => {
+            const owner = classes.find((assetClass) => assetClass.etfs.some((item) => productKind(item) === productKind(etf) && item.code === etf.code))
+            const selected = selectedProducts.some((item) => item.code === etf.code && productKind(item) === productKind(etf))
+            return <label className="flex min-h-10 items-center gap-2"><input type="checkbox" aria-label={`${etf.name} ${etf.code}`} disabled={Boolean(owner)} checked={Boolean(owner) || selected} onChange={() => setSelectedProducts((current) => current.some((item) => item.code === etf.code && productKind(item) === productKind(etf)) ? current.filter((item) => item.code !== etf.code || productKind(item) !== productKind(etf)) : [...current, etf])} /><span className="text-xs text-slate-600">{owner ? systemText('preInvestment.manualConstruction.alreadyAssignedTo', { p0: owner.name }) : selected ? systemText('preInvestment.manualConstruction.selected') : systemText('preInvestment.manualConstruction.select')}</span></label>
+          } },
+        ]}
+      />
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+        <div className="flex flex-wrap items-center gap-2">
+          <label>{systemText('preInvestment.manualConstruction.sort')}</label>
+          <select className="rounded-lg border border-slate-300 px-2 py-1" value={sortBy} onChange={(e) => { setSortBy(e.target.value as any); setPage(1) }}><option value="name">{systemText('preInvestment.manualConstruction.name')}</option><option value="code">{systemText('preInvestment.manualConstruction.code')}</option></select>
+          <select className="rounded-lg border border-slate-300 px-2 py-1" value={sortDir} onChange={(e) => { setSortDir(e.target.value as any); setPage(1) }}><option value="asc">{systemText('preInvestment.manualConstruction.ascending')}</option><option value="desc">{systemText('preInvestment.manualConstruction.descending')}</option></select>
+          <label>{systemText('preInvestment.manualConstruction.perPage')}</label>
+          <select className="rounded-lg border border-slate-300 px-2 py-1" value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1) }}>{[5, 10, 20, 50].map((n) => <option key={n} value={n}>{n}</option>)}</select>
+        </div>
+        <div className="flex items-center gap-2">
+          <span>{systemText('preInvestment.manualConstruction.total') + " "}{total} {" " + systemText('preInvestment.manualConstruction.items')}</span>
+          <button type="button" className="rounded-lg border border-slate-300 px-2 py-1 disabled:opacity-40" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>{systemText('preInvestment.manualConstruction.previous')}</button>
+          <span>{systemText('preInvestment.manualConstruction.month') + " "}{page} {" " + systemText('preInvestment.manualConstruction.pageS')}</span>
+          <button type="button" className="rounded-lg border border-slate-300 px-2 py-1 disabled:opacity-40" disabled={page * pageSize >= total} onClick={() => setPage((p) => p + 1)}>{systemText('preInvestment.manualConstruction.next')}</button>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-3">
+        <span className="text-xs text-slate-600">{systemText('preInvestment.manualConstruction.selected') + " "}{selectedProducts.length} {" " + systemText('preInvestment.manualConstruction.productsProductsAlreadyAssignedCannotBeAdded')}</span>
+        <div className="flex flex-wrap gap-2">
+          <Button tone="primary" disabled={!selectedProducts.length} onClick={() => searchOpen.classId && addProductsToClass(searchOpen.classId, selectedProducts)}>{systemText('preInvestment.manualConstruction.addSelectedProducts')}{selectedProducts.length}）</Button>
+          <Button onClick={() => setSearchOpen({ open: false })}>{systemText('preInvestment.manualConstruction.cancel')}</Button>
+        </div>
+      </div>
+    </section>
+  )
 
   return (
     <div className="mx-auto min-w-0 max-w-5xl p-2 sm:p-4 relative">
       {busy && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="rounded-xl bg-white px-6 py-4 shadow text-sm">正在计算，请稍候...</div>
+          <div className="rounded-xl bg-white px-6 py-4 shadow text-sm">{systemText('preInvestment.manualConstruction.calculatingPleaseWait')}</div>
         </div>
       )}
-      <h1 className="text-2xl font-semibold">资产大类构建模块</h1>
-      <p className="text-sm text-slate-600 mt-1">先把产品分入大类，再设置每个大类内部的产品比例。类内合计 100%；大类之间的比例在下一步 SAA 设置。</p>
-      <p className="mt-2 text-xs text-slate-600">输入自动保存在此浏览器。返回页面或切换 PIT 后可继续；计算结果需要按当前口径重算。</p>
+      <h1 className="text-2xl font-semibold">{systemText('preInvestment.manualConstruction.assetClassConstruction')}</h1>
+      <p className="text-sm text-slate-600 mt-1">{systemText('preInvestment.manualConstruction.assignProductsToAssetClassesThenSet')}</p>
+      <p className="mt-2 text-xs text-slate-600">{systemText('preInvestment.manualConstruction.inputsAreSavedAutomaticallyInThisBrowser')}</p>
       {(actionMessage || actionError) && <div role={actionError ? 'alert' : 'status'} className={`mt-3 rounded-lg border p-3 text-sm ${actionError ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>{actionError || actionMessage}</div>}
       {duplicateProducts.length > 0 && <div role="alert" className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">{duplicateProducts.map(message => <p key={message}>{message}</p>)}</div>}
-      {draft.savedName && <Link to={allocationJourneyPath('saa', { ...readAllocationJourney(), allocationName: draft.savedName, universeId })} className="mt-3 inline-block rounded-lg bg-emerald-800 px-4 py-2 text-sm font-semibold text-white">继续 SAA：{draft.savedName} →</Link>}
+      {draft.savedName && <Link to={allocationJourneyPath('saa', { ...readAllocationJourney(), allocationName: draft.savedName, universeId })} className="mt-3 inline-block rounded-lg bg-emerald-800 px-4 py-2 text-sm font-semibold text-white">{systemText('preInvestment.manualConstruction.continueToSaa')}{draft.savedName} →</Link>}
       {universe ? (
         <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-          已锁定可投资域：<b>{universe.name}</b> · {investableUniverseEligibleCount(universe)} 只可用产品 · 研究日期 {universe.research_date}
+          {systemText('preInvestment.manualConstruction.lockedInvestableUniverse')}<b>{universe.name}</b> · {investableUniverseEligibleCount(universe)} {" " + systemText('preInvestment.manualConstruction.availableProductsResearchDate') + " "}{universe.research_date}
         </div>
       ) : (
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          <span>{universeError || '尚未锁定产品池版本，不能从全市场直接加入产品。'}</span>
-          <Link to="/pre-investment/product-pool" className="rounded-lg bg-amber-800 px-3 py-2 font-medium text-white">选择产品池版本</Link>
+          <span>{universeError || systemText('preInvestment.manualConstruction.noProductPoolVersionIsLockedProducts')}</span>
+          <Link to="/pre-investment/product-pool" className="rounded-lg bg-amber-800 px-3 py-2 font-medium text-white">{systemText('preInvestment.manualConstruction.selectProductPoolVersions')}</Link>
         </div>
       )}
 
       <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
         <div className="flex justify-between items-center">
-          <SectionTitle title="构建资产大类" />
+          <SectionTitle title={systemText('preInvestment.manualConstruction.buildAssetClasses')} />
           <button 
             className="rounded-lg bg-slate-100 px-3 py-1 text-xs text-slate-700 hover:bg-slate-200"
             onClick={() => setLoadModal(true)} >
-              导入大类配置
-          </button>
+              {systemText('preInvestment.manualConstruction.importAssetConfiguration')}</button>
         </div>
         <div className="space-y-6">
           {classes.map((ac) => (
@@ -640,6 +706,7 @@ export default function AssetClassConstructionPage() {
               onRiskMetricChange={(metric) => updateClass(ac.id, (c) => ({ ...c, riskMetric: metric }))}
               on删除={() => deleteAssetClass(ac.id)}
               onAddETF={() => { setSelectedProducts([]); setPage(1); return universe ? setSearchOpen({ open: true, classId: ac.id }) : navigate('/pre-investment/product-pool') }}
+              picker={searchOpen.classId === ac.id ? productPicker : undefined}
               onRemoveETF={(idx) => removeETF(ac.id, idx)}
               onSetCustomWeight={(idx, v) => setCustomWeight(ac.id, idx, v)}
               onSetRiskContribution={(idx, v) => setRiskContribution(ac.id, idx, v)}
@@ -657,43 +724,40 @@ export default function AssetClassConstructionPage() {
           ))}
 
           <button className="w-full rounded-xl border border-dashed border-slate-300 py-3 text-sm bg-accent-50/50 hover:bg-accent-50" onClick={addAssetClass}>
-            + 添加新大类
-          </button>
+            {systemText('preInvestment.manualConstruction.addAssetClass')}</button>
         </div>
       </div>
 
       <div className="sticky bottom-0 z-20 mt-6 flex flex-wrap justify-center gap-3 rounded-xl border border-slate-200 bg-white/95 p-3 text-center shadow-sm">
-          <button type="button" onClick={onFit} disabled={busy} className="rounded-lg border border-accent-600 bg-white px-4 py-2 text-sm font-semibold text-accent-700">检查大类数据</button>
+          <button type="button" onClick={onFit} disabled={busy} className="rounded-lg border border-accent-600 bg-white px-4 py-2 text-sm font-semibold text-accent-700">{systemText('preInvestment.manualConstruction.checkAssetClassData')}</button>
           <button 
             className="rounded-lg bg-accent-600 px-6 py-2 text-sm font-semibold text-white shadow-sm hover:bg-accent-700"
             onClick={() => setSaveModal(true)} >
-              保存当前大类配置
-          </button>
-          <details className="text-sm text-slate-600"><summary className="cursor-pointer px-3 py-2">其他研究用途</summary><button
+              {systemText('preInvestment.manualConstruction.saveCurrentAssetConfiguration')}</button>
+          <details className="text-sm text-slate-600"><summary className="cursor-pointer px-3 py-2">{systemText('preInvestment.manualConstruction.otherResearchUses')}</summary><button
             className="rounded-lg border border-emerald-700 bg-white px-6 py-2 text-sm font-semibold text-emerald-800 hover:bg-accent-50 disabled:cursor-not-allowed disabled:opacity-50"
             onClick={enterPortfolioResearch}
             disabled={!universe || !classes.some((assetClass) => assetClass.etfs.length > 0)}
           >
-            保存为研究组合 / 进入组合指标
-          </button></details>
+            {systemText('preInvestment.manualConstruction.saveAsResearchPortfolioOpenPortfolioMetrics')}</button></details>
       </div>
 
       {/* Save Modal */}
       {saveModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl">
-            <h3 className="text-lg font-semibold">保存大类配置</h3>
+            <h3 className="text-lg font-semibold">{systemText('preInvestment.manualConstruction.saveAssetConfiguration')}</h3>
             <input
               autoFocus
               value={allocName}
               onChange={(e) => setAllocName(e.target.value)}
-              placeholder="请输入配置名称..."
+              placeholder={systemText('preInvestment.manualConstruction.enterAConfigurationName')}
               className="mt-3 w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:ring-2 focus:ring-accent-500"
             />
             <div className="mt-4 flex justify-end gap-3">
-              <button className="rounded-lg bg-slate-100 px-4 py-2 text-sm hover:bg-slate-200" onClick={() => setSaveModal(false)}>取消</button>
-              <button className="rounded-lg bg-accent-600 px-4 py-2 text-sm text-white hover:bg-accent-700" onClick={() => void handleSave()}>保存</button>
-              <button className="rounded-lg bg-emerald-800 px-4 py-2 text-sm text-white" onClick={() => void handleSave(true)}>保存并继续 SAA</button>
+              <button className="rounded-lg bg-slate-100 px-4 py-2 text-sm hover:bg-slate-200" onClick={() => setSaveModal(false)}>{systemText('preInvestment.manualConstruction.cancel')}</button>
+              <button className="rounded-lg bg-accent-600 px-4 py-2 text-sm text-white hover:bg-accent-700" onClick={() => void handleSave()}>{systemText('preInvestment.manualConstruction.save')}</button>
+              <button className="rounded-lg bg-emerald-800 px-4 py-2 text-sm text-white" onClick={() => void handleSave(true)}>{systemText('preInvestment.manualConstruction.saveAndContinueToSaa')}</button>
             </div>
           </div>
         </div>
@@ -704,14 +768,14 @@ export default function AssetClassConstructionPage() {
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-xl rounded-xl bg-white p-5 shadow-xl">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold">导入大类配置</h3>
+              <h3 className="text-lg font-semibold">{systemText('preInvestment.manualConstruction.importAssetConfiguration')}</h3>
               <button className="text-slate-600" onClick={() => setLoadModal(false)}>✕</button>
             </div>
             <input
               autoFocus
               value={allocSearch}
               onChange={(e) => setAllocSearch(e.target.value)}
-              placeholder="按名称搜索..."
+              placeholder={systemText('preInvestment.manualConstruction.searchByName')}
               className="mt-3 w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:ring-2 focus:ring-accent-500"
             />
             <div className="mt-3 max-h-80 overflow-auto rounded-lg border border-slate-100">
@@ -722,7 +786,7 @@ export default function AssetClassConstructionPage() {
                   className="flex w-full items-center justify-between border-b px-4 py-2 text-left hover:bg-slate-50"
                 >
                   <span className="text-sm text-slate-800">{name}</span>
-                  <span className="text-xs text-slate-600">导入</span>
+                  <span className="text-xs text-slate-600">{systemText('preInvestment.manualConstruction.import')}</span>
                 </button>
               ))}
             </div>
@@ -730,92 +794,16 @@ export default function AssetClassConstructionPage() {
         </div>
       )}
 
-      {searchOpen.open && universe && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-xl rounded-xl bg-white p-5 shadow-xl">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold">从可投资域添加产品</h3>
-              <button className="text-slate-600" onClick={() => setSearchOpen({ open: false })}>✕</button>
-            </div>
-            <input
-              autoFocus
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="按代码、名称或评价方案搜索..."
-              className="mt-3 w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:ring-2 focus:ring-accent-500"
-            />
-            <div className="mt-3 max-h-80 overflow-auto rounded-lg border border-slate-100">
-              {searchResults.length === 0 && <div className="p-4 text-sm text-slate-600">无匹配结果</div>}
-              {searchResults.map((etf) => {
-                const owner = classes.find(assetClass => assetClass.etfs.some(item => productKind(item) === productKind(etf) && item.code === etf.code))
-                const selected = selectedProducts.some(item => item.code === etf.code && productKind(item) === productKind(etf))
-                return <button
-                  type="button"
-                  aria-pressed={selected}
-                  disabled={Boolean(owner)}
-                  key={etf.code + etf.name}
-                  onClick={() => {
-                    setSelectedProducts(current => current.some(item => item.code === etf.code && productKind(item) === productKind(etf)) ? current.filter(item => item.code !== etf.code || productKind(item) !== productKind(etf)) : [...current, etf])
-                  }}
-                  className={`flex w-full min-w-0 items-center justify-between gap-2 border-b px-3 py-3 text-left disabled:opacity-50 ${selected ? 'bg-emerald-50' : 'hover:bg-slate-50'}`}
-                >
-                  <div className="min-w-0 flex-1 flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-sm">{etf.code}</span>
-                    <span className="truncate px-2 text-sm text-slate-700">{etf.name}</span>
-                    {etf.instrument_type && (
-                      <span className="rounded-lg bg-accent-50 px-2 py-0.5 text-xs font-semibold text-accent-600">
-                        {etf.instrument_type === 'etf' ? 'ETF' : '公募基金'}
-                      </span>
-                    )}
-                  </div>
-                  <div className="hidden md:block max-w-56 text-right text-xs text-slate-600 mr-3">
-                    <div className="truncate">评价方案：{etf.evaluation_plan_names?.join('、') || '—'}</div>
-                    <div className="truncate">产品池：{etf.pool_names?.join('、') || '—'}</div>
-                  </div>
-                  <span className="shrink-0 text-xs text-slate-600">{owner ? `已属于${owner.name}` : selected ? '已选' : '选择'}</span>
-                </button>
-              })}
-            </div>
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><span className="text-sm text-slate-600">已选 {selectedProducts.length} 只；已有归属的产品不可重复加入。</span><button type="button" disabled={!selectedProducts.length} onClick={() => searchOpen.classId && addProductsToClass(searchOpen.classId, selectedProducts)} className="rounded-lg bg-emerald-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">加入所选产品（{selectedProducts.length}）</button></div>
-            {/* 分页与排序控制 */}
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-slate-600">排序</label>
-                <select className="border rounded-lg px-2 py-1 text-xs" value={sortBy} onChange={(e) => { setSortBy(e.target.value as any); setPage(1) }}>
-                  <option value="name">名称</option>
-                  <option value="code">代码</option>
-                </select>
-                <select className="border rounded-lg px-2 py-1 text-xs" value={sortDir} onChange={(e) => { setSortDir(e.target.value as any); setPage(1) }}>
-                  <option value="asc">升序</option>
-                  <option value="desc">降序</option>
-                </select>
-              </div>
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-slate-600">每页</label>
-                <select className="border rounded-lg px-2 py-1 text-xs" value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1) }}>
-                  {[5,10,20,50].map(n => <option key={n} value={n}>{n}</option>)}
-                </select>
-                <span className="text-xs text-slate-600">共 {total} 条</span>
-                <button className="border rounded-lg px-2 py-1 text-xs" disabled={page<=1} onClick={() => setPage(p=>Math.max(1,p-1))}>上一页</button>
-                <span className="text-xs">第 {page} 页</span>
-                <button className="border rounded-lg px-2 py-1 text-xs" disabled={page*pageSize>=total} onClick={() => setPage(p=>p+1)}>下一页</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* 拟合区域 */}
       <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4">
-        <SectionTitle title="大类收益率拟合" />
+        <SectionTitle title={systemText('preInvestment.manualConstruction.assetClassReturnFitting')} />
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 text-sm">
-            <label htmlFor="class-start-date" className="text-slate-700">选择开始日期</label>
+            <label htmlFor="class-start-date" className="text-slate-700">{systemText('preInvestment.manualConstruction.selectStartDate')}</label>
             <input id="class-start-date" type="date" max={platformAsOf || undefined} className="border rounded-lg px-2 py-1" value={startDate} onChange={(e)=>setStartDate(e.target.value)} />
           </div>
           <button className="rounded-lg bg-accent-600 px-3 py-1 text-xs text-white hover:bg-accent-700" onClick={onFit} disabled={busy}>
-            拟合大类收益率
-          </button>
+            {systemText('preInvestment.manualConstruction.fitAssetClassReturns')}</button>
         </div>
         {fitResult && (
           <div className="mt-4 space-y-6">
@@ -826,7 +814,7 @@ export default function AssetClassConstructionPage() {
                 const keys = Object.keys(fitResult.navs)
                 return (
                   <ReactECharts style={{ height: 360 }} option={{
-                    title: { text: '虚拟净值走势（起始=1）', left: 0, top: 0, textStyle: { fontSize: 13, fontWeight: 600 } },
+                    title: { text: systemText('preInvestment.manualConstruction.syntheticNavStartsAt1'), left: 0, top: 0, textStyle: { fontSize: 13, fontWeight: 600 } },
                     tooltip: { trigger: 'axis', valueFormatter: (v:any)=> Number(v).toFixed(2) },
                     legend: { top: 0, right: 0 },
                     grid: { left: 56, right: 16, top: 36, bottom: 86 },
@@ -856,7 +844,7 @@ export default function AssetClassConstructionPage() {
               })()}
             </div>
             <div>
-              <h3 className="text-sm font-semibold mb-2">相关系数矩阵</h3>
+              <h3 className="text-sm font-semibold mb-2">{systemText('preInvestment.manualConstruction.correlationMatrix')}</h3>
               <ReactECharts style={{ height: 320 }} option={(function(){
                 const labels = fitResult.corr_labels
                 const data: any[] = []
@@ -890,15 +878,15 @@ export default function AssetClassConstructionPage() {
               annualRows={metricsSummary.annualRows}
               detailedContent={Array.isArray(fitResult.consistency) && fitResult.consistency.length > 0 ? (
                 <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-                  <h4 className="mb-3 text-sm font-semibold">同类资产一致性</h4>
+                  <h4 className="mb-3 text-sm font-semibold">{systemText('preInvestment.manualConstruction.withinClassConsistency')}</h4>
                   <div className="overflow-auto">
                     <table className="text-xs border" style={{ width: '100%', tableLayout: 'fixed' }}>
                       <thead>
                         <tr>
-                          <th scope="col" className="border px-2 py-2">大类</th>
-                          <th scope="col" className="border px-2 py-2">相关性均值</th>
-                          <th scope="col" className="border px-2 py-2">主成分解释度(%)</th>
-                          <th scope="col" className="border px-2 py-2">最大跟踪误差(%)</th>
+                          <th scope="col" className="border px-2 py-2">{systemText('preInvestment.manualConstruction.assetClass')}</th>
+                          <th scope="col" className="border px-2 py-2">{systemText('preInvestment.manualConstruction.meanCorrelation')}</th>
+                          <th scope="col" className="border px-2 py-2">{systemText('preInvestment.manualConstruction.principalComponentExplainedVariance')}</th>
+                          <th scope="col" className="border px-2 py-2">{systemText('preInvestment.manualConstruction.maximumTrackingError')}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -930,22 +918,21 @@ export default function AssetClassConstructionPage() {
 
       {/* 滚动相关性研究 */}
       <details className="mt-6 rounded-xl border border-slate-200 bg-white p-4">
-        <summary className="mb-3 cursor-pointer text-lg font-semibold">滚动相关性研究</summary>
+        <summary className="mb-3 cursor-pointer text-lg font-semibold">{systemText('preInvestment.manualConstruction.rollingCorrelationResearch')}</summary>
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 text-sm">
-            <label className="text-slate-700">滚动天数</label>
+            <label className="text-slate-700">{systemText('preInvestment.manualConstruction.rollingWindowDays')}</label>
             <input type="number" min={5} step={1} className="border rounded-lg px-2 py-1 w-24 text-right" value={rollWindow} onChange={(e)=> setRollWindow(Number(e.target.value)||60)} />
           </div>
           <div className="flex items-center gap-2 text-sm">
-            <label className="text-slate-700">研究对象</label>
+            <label className="text-slate-700">{systemText('preInvestment.manualConstruction.researchTarget')}</label>
             <select className="border rounded-lg px-2 py-1" value={rollTargetClass} onChange={(e)=> setRollTargetClass(e.target.value)}>
-              <option value="">请选择大类</option>
+              <option value="">{systemText('preInvestment.manualConstruction.selectAnAssetClass')}</option>
               {classOptions.map(n=> <option key={n} value={n}>{n}</option>)}
             </select>
           </div>
           <button className="rounded-lg bg-accent-600 px-3 py-1 text-xs text-white hover:bg-accent-700" onClick={onRoll} disabled={busy}>
-            计算滚动相关性
-          </button>
+            {systemText('preInvestment.manualConstruction.calculateRollingCorrelations')}</button>
         </div>
         {rollResult && (
           <div className="mt-4 space-y-4">
@@ -962,13 +949,13 @@ export default function AssetClassConstructionPage() {
               <table className="text-xs border" style={{ width: '100%', tableLayout: 'fixed' }}>
                 <thead>
                   <tr>
-                    <th scope="col" className="border px-2 py-2">大类</th>
-                    <th scope="col" className="border px-2 py-2">整体相关系数</th>
-                    <th scope="col" className="border px-2 py-2">均值</th>
-                    <th scope="col" className="border px-2 py-2">中位数</th>
-                    <th scope="col" className="border px-2 py-2">标准差</th>
-                    <th scope="col" className="border px-2 py-2">偏度</th>
-                    <th scope="col" className="border px-2 py-2">峰度</th>
+                    <th scope="col" className="border px-2 py-2">{systemText('preInvestment.manualConstruction.assetClass')}</th>
+                    <th scope="col" className="border px-2 py-2">{systemText('preInvestment.manualConstruction.overallCorrelation')}</th>
+                    <th scope="col" className="border px-2 py-2">{systemText('preInvestment.manualConstruction.mean')}</th>
+                    <th scope="col" className="border px-2 py-2">{systemText('preInvestment.manualConstruction.median')}</th>
+                    <th scope="col" className="border px-2 py-2">{systemText('preInvestment.manualConstruction.standardDeviation')}</th>
+                    <th scope="col" className="border px-2 py-2">{systemText('preInvestment.manualConstruction.skewness')}</th>
+                    <th scope="col" className="border px-2 py-2">{systemText('preInvestment.manualConstruction.kurtosis')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -994,6 +981,7 @@ export default function AssetClassConstructionPage() {
 }
 
 function SectionTitle({ title }: { title: string }) {
+  useI18n()
   return (
     <div className="mb-3 flex items-center gap-2">
       <span className="text-accent-600">◆</span>
@@ -1003,6 +991,7 @@ function SectionTitle({ title }: { title: string }) {
 }
 
 function ModePill({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  useI18n()
   return (
     <button
       onClick={onClick}
@@ -1025,6 +1014,7 @@ function AssetClassCard({
   onRiskMetricChange,
   on删除,
   onAddETF,
+  picker,
   onRemoveETF,
   onSetCustomWeight,
   onSetRiskContribution,
@@ -1044,6 +1034,8 @@ function AssetClassCard({
   onRiskMetricChange: (metric: RiskMetric) => void
   on删除: () => void
   onAddETF: () => void
+  /** 打开时渲染在「+ 添加新的产品」下方的内嵌选择器；只有当前大类有值，其余大类为 undefined。 */
+  picker?: React.ReactNode
   onRemoveETF: (idx: number) => void
   onSetCustomWeight: (idx: number, val: number) => void
   onSetRiskContribution: (idx: number, val: number) => void
@@ -1053,6 +1045,7 @@ function AssetClassCard({
   returnState: ReturnNavigationState
   loading: boolean
 }) {
+  useI18n()
   const [editing, setEditing] = useState(false)
   const [tempName, setTempName] = useState(ac.name)
   useEffect(() => setTempName(ac.name), [ac.name])
@@ -1077,14 +1070,14 @@ function AssetClassCard({
           ) : (
             <div className="text-sm font-medium">{ac.name}</div>
           )}
-          <button className="text-xs text-accent-600 underline" onClick={() => setEditing((v) => !v)} title="重命名">
-            {editing ? '保存' : '重命名'}
+          <button className="text-xs text-accent-600 underline" onClick={() => setEditing((v) => !v)} title={systemText('preInvestment.manualConstruction.rename')}>
+            {editing ? systemText('preInvestment.manualConstruction.save') : systemText('preInvestment.manualConstruction.rename')}
           </button>
 
           <div className="flex flex-wrap items-center gap-2 lg:ml-3">
-            <ModePill label="自定义权重" active={ac.mode === 'custom'} onClick={() => onModeChange('custom')} />
-            <ModePill label="等权重" active={ac.mode === 'equal'} onClick={() => onModeChange('equal')} />
-            <ModePill label="风险平价" active={ac.mode === 'risk'} onClick={() => onModeChange('risk')} />
+            <ModePill label={systemText('preInvestment.manualConstruction.customWeights')} active={ac.mode === 'custom'} onClick={() => onModeChange('custom')} />
+            <ModePill label={systemText('preInvestment.manualConstruction.equalWeights')} active={ac.mode === 'equal'} onClick={() => onModeChange('equal')} />
+            <ModePill label={systemText('preInvestment.manualConstruction.riskParity')} active={ac.mode === 'risk'} onClick={() => onModeChange('risk')} />
 
             {isRisk && (
               <>
@@ -1093,13 +1086,13 @@ function AssetClassCard({
                   value={ac.riskMetric || 'vol'}
                   onChange={(e) => onRiskMetricChange(e.target.value as RiskMetric)}
                 >
-                  <option value="vol">波动率</option>
+                  <option value="vol">{systemText('preInvestment.manualConstruction.volatility')}</option>
                   <option value="var">VaR</option>
                   <option value="es">ES</option>
                 </select>
 
                 <div className="ml-2 flex items-center gap-2 text-xs">
-                  <span className="text-slate-600">最大杠杆</span>
+                  <span className="text-slate-600">{systemText('preInvestment.manualConstruction.maximumLeverage')}</span>
                   <input
                     type="number"
                     min={0}
@@ -1107,7 +1100,7 @@ function AssetClassCard({
                     value={ac.maxLeverage ?? 0}
                     onChange={(e) => onSetMaxLeverage(Number(e.target.value))}
                     className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-right"
-                    title="允许的组合最大杠杆率，例如 0 表示不允许杠杆；2 表示最多 2x"
+                    title={systemText('preInvestment.manualConstruction.maximumPortfolioLeverageAllowed0MeansNo')}
                   />
                 </div>
 
@@ -1115,9 +1108,9 @@ function AssetClassCard({
                   className="ml-2 rounded-lg bg-accent-600 px-3 py-1 text-xs text-white hover:bg-accent-700 disabled:opacity-60"
                   onClick={onSolve}
                   disabled={loading || riskControl?.within_tolerance !== true}
-                  title={riskControl?.within_tolerance !== true ? '风险贡献合计需经 NJIT 校验等于 100% 才能计算' : ''}
+                  title={riskControl?.within_tolerance !== true ? systemText('preInvestment.manualConstruction.njitMustConfirmRiskContributionsTotal100') : ''}
                 >
-                  {loading ? '计算中...' : '反推资金权重'}
+                  {loading ? systemText('preInvestment.manualConstruction.calculating') : systemText('preInvestment.manualConstruction.inferFundingWeights')}
                 </button>
               </>
             )}
@@ -1128,21 +1121,20 @@ function AssetClassCard({
             type="button"
             onClick={onCompare}
             disabled={ac.etfs.length < 2}
-            title={ac.etfs.length < 2 ? '至少添加两个产品后才能进行对比' : `对比“${ac.name}”下的 ${ac.etfs.length} 个产品`}
+            title={ac.etfs.length < 2 ? systemText('preInvestment.manualConstruction.addAtLeastTwoProductsToCompare') : systemText('preInvestment.manualConstruction.compareProductsIn', { p0: ac.name, p1: ac.etfs.length })}
             className="rounded-lg border border-accent-200 bg-white px-3 py-1 text-xs font-medium text-accent-700 hover:bg-accent-50 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:ring-offset-1 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-600"
           >
-            产品对比{ac.etfs.length >= 2 ? `（${ac.etfs.length}）` : ''}
+            {systemText('preInvestment.manualConstruction.compareProducts')}{ac.etfs.length >= 2 ? `（${ac.etfs.length}）` : ''}
           </button>
           <button className="rounded-lg border border-red-200 px-3 py-1 text-xs text-red-700 hover:bg-red-50" onClick={on删除}>
-            删除这个大类
-          </button>
+            {systemText('preInvestment.manualConstruction.deleteThisAssetClass')}</button>
         </div>
       </div>
 
       <div className="grid grid-cols-12 items-center gap-2 px-3 py-2 text-xs text-slate-600">
-        <div className="min-w-0 col-span-7">产品（ETF / 公募基金）</div>
-        <div className="min-w-0 col-span-3 text-right">{isRisk ? (showSolved ? '风险贡献（%） / 资金权重（%）' : '风险贡献（%）') : '类内权重（%）'}</div>
-        <div className="col-span-2 text-right">操作</div>
+        <div className="min-w-0 col-span-7">{systemText('preInvestment.manualConstruction.productEtfMutualFund')}</div>
+        <div className="min-w-0 col-span-3 text-right">{isRisk ? (showSolved ? systemText('preInvestment.manualConstruction.riskContributionFundingWeight') : systemText('preInvestment.manualConstruction.riskContribution')) : systemText('preInvestment.manualConstruction.withinClassWeight')}</div>
+        <div className="col-span-2 text-right">{systemText('preInvestment.manualConstruction.actions')}</div>
       </div>
 
       <div className="divide-y">
@@ -1158,12 +1150,12 @@ function AssetClassCard({
                       to={`/product-research/products/${encodeURIComponent(e.code)}?kind=${productKind(e)}`}
                       state={returnState}
                       className="truncate font-medium text-accent-700 hover:text-accent-600 hover:underline focus:outline-none focus:ring-2 focus:ring-accent-500 focus:ring-offset-2"
-                      title={`查看${e.name}的产品研究`}
+                      title={systemText('preInvestment.manualConstruction.viewProductResearchFor', { p0: e.name })}
                     >
                       {e.name}
                     </Link>
                   </div>
-                  <p className="mt-1 truncate text-xs text-slate-600">{e.evaluation_plan_names?.join('、') || '来自已锁定产品范围'}</p>
+                  <p className="mt-1 truncate text-xs text-slate-600">{e.evaluation_plan_names?.join('、') || systemText('preInvestment.manualConstruction.fromTheLockedProductScope')}</p>
                 </div>
               </div>
             </div>
@@ -1176,7 +1168,7 @@ function AssetClassCard({
                     min={0}
                     max={100}
                     step={0.01}
-                    aria-label={`${ac.name} ${e.name} 类内权重`}
+                    aria-label={systemText('preInvestment.manualConstruction.withinClassWeight2', { p0: ac.name, p1: e.name })}
                     value={e.weight ?? 0}
                     onChange={(ev) => onSetCustomWeight(idx, Number(ev.target.value))}
                     className="w-16 sm:w-24 rounded-lg border border-slate-300 px-2 py-1 text-right text-sm"
@@ -1184,7 +1176,7 @@ function AssetClassCard({
                   <span className="text-sm text-slate-600">%</span>
                 </div>
               ) : ac.mode === 'equal' ? (
-                <div className="pr-2 text-sm text-slate-700">{equalWeights[idx] == null ? '计算中' : `${equalWeights[idx].toFixed(2)}%`}</div>
+                <div className="pr-2 text-sm text-slate-700">{equalWeights[idx] == null ? systemText('preInvestment.manualConstruction.calculating2') : `${equalWeights[idx].toFixed(2)}%`}</div>
               ) : (
                 <div className="inline-flex items-center gap-3 justify-end">
                   <input
@@ -1197,23 +1189,22 @@ function AssetClassCard({
                     className="w-16 sm:w-24 rounded-lg border border-slate-300 px-2 py-1 text-right text-sm"
                   />
                   <span className="text-sm text-slate-600">%</span>
-                  {showSolved && <span className="text-xs text-slate-600">/ 资金权重 {(e.weight ?? 0).toFixed(2)}%</span>}
+                  {showSolved && <span className="text-xs text-slate-600">{systemText('preInvestment.manualConstruction.fundingWeight') + " "}{(e.weight ?? 0).toFixed(2)}%</span>}
                 </div>
               )}
             </div>
 
             <div className="col-span-2 text-right">
               <button onClick={() => onRemoveETF(idx)} className="rounded-lg border border-slate-300 px-3 py-1 text-xs hover:bg-slate-50">
-                删除
-              </button>
+                {systemText('preInvestment.manualConstruction.delete')}</button>
             </div>
           </div>
         ))}
 
         <div className="px-3 py-2">
           <button onClick={onAddETF} className="w-full rounded-lg border border-dashed border-slate-300 py-2 text-sm hover:bg-slate-50">
-            + 添加新的产品
-          </button>
+            {systemText('preInvestment.manualConstruction.addProduct')}</button>
+          {picker}
         </div>
       </div>
 
@@ -1225,12 +1216,12 @@ function AssetClassCard({
                 'rounded-lg px-2 py-0.5 ' + (weightControl?.within_tolerance ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700')
               }
             >
-              类内权重合计： {weightControl ? `${weightControl.total.toFixed(2)}%` : controlError || 'NJIT 校验中…'}
+              {systemText('preInvestment.manualConstruction.totalWithinClassWeight') + " "}{weightControl ? `${weightControl.total.toFixed(2)}%` : controlError || systemText('preInvestment.manualConstruction.njitValidationInProgress')}
             </span>
-            {weightControl && !weightControl.within_tolerance && <span className="ml-2 text-yellow-700">（需等于 100%）</span>}
+            {weightControl && !weightControl.within_tolerance && <span className="ml-2 text-yellow-700">{systemText('preInvestment.manualConstruction.mustEqual100')}</span>}
           </>
         ) : ac.mode === 'equal' ? (
-          <span className={`rounded-lg px-2 py-0.5 ${weightControl?.within_tolerance ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'}`}>类内权重合计： {weightControl ? `${weightControl.total.toFixed(2)}%` : controlError || 'NJIT 校验中…'}</span>
+          <span className={`rounded-lg px-2 py-0.5 ${weightControl?.within_tolerance ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'}`}>{systemText('preInvestment.manualConstruction.totalWithinClassWeight') + " "}{weightControl ? `${weightControl.total.toFixed(2)}%` : controlError || systemText('preInvestment.manualConstruction.njitValidationInProgress')}</span>
         ) : (
           <>
             <span
@@ -1238,11 +1229,11 @@ function AssetClassCard({
                 'rounded-lg px-2 py-0.5 ' + (riskControl?.within_tolerance ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700')
               }
             >
-              风险贡献合计： {riskControl ? `${riskControl.total.toFixed(2)}%` : controlError || 'NJIT 校验中…'}
+              {systemText('preInvestment.manualConstruction.totalRiskContribution') + " "}{riskControl ? `${riskControl.total.toFixed(2)}%` : controlError || systemText('preInvestment.manualConstruction.njitValidationInProgress')}
             </span>
-            {riskControl && !riskControl.within_tolerance && <span className="ml-2 text-yellow-700">（需等于 100%）</span>}
+            {riskControl && !riskControl.within_tolerance && <span className="ml-2 text-yellow-700">{systemText('preInvestment.manualConstruction.mustEqual100')}</span>}
             {showSolved && (
-              <span className="ml-3 rounded-lg bg-accent-50 px-2 py-0.5 text-accent-700">资金类内权重合计： {weightControl ? `${weightControl.total.toFixed(2)}%` : controlError || 'NJIT 校验中…'}</span>
+              <span className="ml-3 rounded-lg bg-accent-50 px-2 py-0.5 text-accent-700">{systemText('preInvestment.manualConstruction.totalWithinClassFundingWeight') + " "}{weightControl ? `${weightControl.total.toFixed(2)}%` : controlError || systemText('preInvestment.manualConstruction.njitValidationInProgress')}</span>
             )}
           </>
         )}

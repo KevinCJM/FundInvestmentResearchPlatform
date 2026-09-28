@@ -304,5 +304,6 @@ def test_launchers_do_not_trust_forwarded_headers():
     assert '--no-proxy-headers' in source
     assert 'BACKEND_HOST:-127.0.0.1' in source
     assert 'FRONTEND_HOST:-127.0.0.1' in source
+    assert 'VITE_API_TARGET="$BACKEND_URL" launch_detached frontend' in source
     for name in ('backend/run.py', 'backend/app.py'):
         assert 'proxy_headers=False' in (ROOT / name).read_text()

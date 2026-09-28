@@ -163,13 +163,15 @@ describe('CMA input validation', () => {
   it('rejects hidden axes, invalid dates, nonfinite inputs, std underflow, and ambiguous risk', () => {
     const badInputs: CmaModelRequest[] = [
       { ...bl(), market_weights: { 权益: 1 } }, { ...bl(), as_of: '2026-02-31' },
-      { ...bl(), tau: NaN }, { ...bl(), source: '' }, { ...bl(), covariance: [[0.04, NaN], [NaN, 0.01]] },
+      { ...bl(), tau: NaN }, { ...bl(), source: 'x'.repeat(2001) }, { ...bl(), covariance: [[0.04, NaN], [NaN, 0.01]] },
       { ...bl(), views: [{ ...bl().views[0], view_std: 1e-200 }] },
       { ...mixture(), scenarios: [{ ...mixture().scenarios[0], probability: 1, annual_returns: { 权益: 0.1 } }] },
       { ...mixture(), shared_covariance: null },
       { ...mixture(), scenarios: mixture().scenarios.map(s => ({ ...s, covariance: [[0.1, 0], [0, 0.1]] })) },
     ]
     badInputs.forEach(input => expect(cmaModelInputError(input)).not.toBeNull())
+    expect(cmaModelInputError({ ...bl(), source: '' })).toBeNull()
+    expect(cmaModelInputError({ ...bl(), market_weight_source: '' })).not.toBeNull()
     expect(cmaModelInputError(bl())).toBeNull()
     expect(cmaModelInputError(mixture())).toBeNull()
   })

@@ -1,3 +1,4 @@
+import { ErrorPanel } from '../../components/ui'
 import { eventStudyHref, MANUAL_EVENT_TEMPLATE } from './regimeWorkspace'
 import { useEffect, useRef, useState } from 'react'
 import { createRegimeGraphDefinition, instantiateRegimeTemplate, listRegimeGraphDefinitions, type ManualHistoricalEvent, type RegimeGraphDefinition } from '../../services/regimeGraph'
@@ -26,6 +27,7 @@ export default function GlobalEventLibrary({ onSelect, onCancel }: { onSelect?: 
   const [definitions, setDefinitions] = useState<RegimeGraphDefinition[]>([])
   const [importId, setImportId] = useState('')
   const [loading, setLoading] = useState(true)
+  const [listFailed, setListFailed] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -37,11 +39,11 @@ export default function GlobalEventLibrary({ onSelect, onCancel }: { onSelect?: 
   useEffect(() => { setOffset(0) }, [query, category, region, verification, start, end, archived])
   useEffect(() => {
     const controller = new AbortController()
-    setLoading(true)
+    setLoading(true); setListFailed(false)
     const timer = window.setTimeout(() => {
       void listLibraryEvents({ query, category, region, verification, start, end, archived, offset, limit: 20 }, controller.signal)
         .then(next => { if (!controller.signal.aborted) { setPage(next); setError('') } })
-        .catch(reason => { if (!controller.signal.aborted) setError(message(reason)) })
+        .catch(reason => { if (!controller.signal.aborted) { setListFailed(true); setError(message(reason)) } })
         .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     }, 180)
     return () => { controller.abort(); window.clearTimeout(timer) }
@@ -90,6 +92,7 @@ export default function GlobalEventLibrary({ onSelect, onCancel }: { onSelect?: 
     if (!saved.id || !saved.revision) throw new Error('保存结果缺少事件研究版本，请重新读取。')
     if (!signal.aborted) { setCreatedStudy({ id: saved.id, revision: saved.revision }); setNotice('已创建人工事件研究。观察序列默认沪深300，可在事件工作区更换。') }
   })
+  if (!loading && listFailed && !page.items.length && !editing && !detail) return <ErrorPanel onRetry={() => setRefresh(value => value + 1)} />
   return <section aria-label={onSelect ? '选择库中历史事件' : '全球历史事件库'} className="min-w-0 space-y-4 rounded-xl border border-slate-200 bg-white p-3 sm:p-5">
     <header className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">全球历史事件库</h2><p className="mt-1 text-xs leading-5 text-slate-600">先选事件，再选研究窗口。加入情景时锁定版本；库更新不会改变旧结果。</p></div><div className="flex gap-2"><button type="button" disabled={busy} onClick={() => setEditing('new')} className="min-h-10 rounded-lg border border-accent-200 px-3 text-sm text-accent-700">新建事件</button>{onCancel && <button type="button" onClick={() => { action.current?.abort(); onCancel() }} className="min-h-10 rounded-lg border px-3 text-sm">取消选择</button>}</div></header>
     {error && <div role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{error}<button onClick={() => setRefresh(v => v + 1)} className="ml-3 min-h-9 underline">重新读取</button></div>}

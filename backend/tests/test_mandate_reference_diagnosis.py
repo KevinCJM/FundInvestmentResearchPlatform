@@ -59,7 +59,7 @@ def test_funding_suggestion_with_payment_protection_runs_independent_validation(
 
 def test_confirmation_holds_risk_scale_lock_through_preview_and_save(reference, monkeypatch):
     service, scale, _ = reference
-    body = request_for(scale)
+    body = request_for(scale, name="锁内保存目标")
     preview = service.preview_mandate(body)
     active = False
     original_locked = service.risk_scales.store.document.locked
@@ -431,3 +431,19 @@ def test_reachability_kernel_is_warm_and_ignores_unsolved_rows():
     assert numeric.reference_reachability_kernel(metrics, np.zeros(3, dtype=np.int64), .13, .08)[1] == -1
     assert numeric.reference_reachability_kernel(metrics, solved, .13, -np.inf)[3] == -1
     assert numeric.execution_audit()["python_fallback"] == 0
+
+
+def test_explicit_other_scope_benchmark_does_not_get_reference_return_echo(reference):
+    service, scale, _ = reference
+    context = service.risk_scales.frozen_context(scale['id'], str(scale['preview']['request_echo']['definition']['research_as_of']))
+    ids = [asset['id'] for asset in context['assumptions']['assets']]
+    body = request_for(scale, objective_kind='benchmark_relative', funding_target=None, cash_budget=None,
+        target_excess_return=.01, benchmark={'name':'实际范围基准', 'alloc_name':'另一个实际范围',
+        'weights':{key:float(i == 0) for i,key in enumerate(ids)}, 'target_excess_return':.01, 'max_tracking_error':.1},
+        risk_authorization={'mode':'manual_level', 'authorized_max_level':3, 'selected_max_level':3,
+            'risk_scale_ref':{k:scale[k] for k in ('id','content_hash')}})
+    preview = service.preview_mandate(body)
+    assert preview['reference_diagnosis']['status'] == 'awaiting_actual_scope'
+    echo = service.mandate_funding(body)['return_requirements']
+    assert echo['status'] == 'benchmark_moments_required'
+    assert echo['arithmetic_floor'] is None and 'reference_comparison' not in echo

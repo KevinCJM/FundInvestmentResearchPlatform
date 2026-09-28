@@ -37,15 +37,11 @@ test('质量接口失败不会把未知卡片标绿，重试后真实零值可�
     return route.fulfill({ status: 503, json: { detail: '离线故障注入：服务暂不可用' } })
   })
   await page.goto('/settings/data-quality')
-  const retry = page.locator('header').filter({ hasText: 'Data governance' }).getByRole('button', { name: '重新检查', exact: true })
+  const retry = page.getByRole('alert').getByRole('button', { name: '重试', exact: true })
   await expect(retry).toBeEnabled()
+  await expect(page.locator('img[src*="mascot-error"]')).toBeVisible()
   const overview = page.getByRole('region', { name: '数据质量概览' })
-  for (const label of ['受影响产品', '净值突变']) {
-    const card = overview.locator('article').filter({ has: page.getByText(label, { exact: true }) })
-    await expect(card).toContainText('--')
-    await expect(card.getByText('未检查', { exact: true })).toBeVisible()
-    await expect(card.getByText('通过', { exact: true })).toHaveCount(0)
-  }
+  await expect(overview).toHaveCount(0)
   await page.screenshot({ path: testInfo.outputPath('quality-read-failure.png'), fullPage: true })
   unavailable = false
   await retry.click()
@@ -96,4 +92,83 @@ test('PIT 设置失败显示未知并可重试恢复严格模式，不推断关�
   await expect(switcher).toContainText('严格 PIT')
   await expect(switcher.getByRole('alert')).toHaveCount(0)
   expect(writes).toEqual([])
+})
+
+
+const routes = [
+  'data-sources', 'source-center', 'source-center?view=resolution', 'data-model', 'data-quality',
+  'research-data-lab', 'pit-snapshots', 'risk-scales', 'risk-scales/new', 'risk-scales/drafts/unavailable',
+  'risk-scales/versions/unavailable', 'risk-scales/compare?left=a&right=b', 'indicators-models',
+  'factor-research', 'factor-research?module=returns&tab=datasets', 'risk-models', 'timing-algorithms',
+  'scenario-algorithms', 'scenario-algorithms?center=market-state&stage=realtime',
+  'scenario-algorithms?center=market-state&stage=validation',
+  'scenario-algorithms?center=market-state&stage=historical&new=1',
+  'scenario-algorithms?center=market-state&stage=realtime&new=1',
+  'scenario-algorithms?center=market-state&definition=unavailable&revision=1',
+  'scenario-algorithms?center=events', 'scenario-algorithms?center=events&event_view=manual',
+  'scenario-algorithms?center=simulation', 'scenario-algorithms/apply', 'language-terminology',
+]
+
+for (const route of routes) test(`设置读取失败可重试：${route}`, async ({ page }, info) => {
+  let reads = 0
+  const writes: string[] = []
+  await page.route('**/api/**', request => {
+    reads++
+    if (request.request().method() !== 'GET') writes.push(request.request().method() + ' ' + new URL(request.request().url()).pathname)
+    return request.fulfill({ status: 503, json: { detail: 'INTERNAL_DATABASE_ERROR: sensitive-query-must-not-render' } })
+  })
+  await page.goto(`/settings/${route}`)
+  const mascot = page.locator('img[src*="mascot-error"]:visible')
+  await expect(mascot).toHaveCount(1)
+  const panel = page.getByRole('alert').filter({ has: mascot })
+  await expect(panel).toContainText(/重试|重新加载/)
+  const retry = panel.getByRole('button', { name: /重试|重新加载/ })
+  await expect(retry).toBeEnabled()
+  const before = reads
+  await retry.click()
+  await expect.poll(() => reads).toBeGreaterThan(before)
+  await expect(mascot).toHaveCount(1)
+  await expect(panel).not.toContainText('sensitive-query')
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+  const contrast = (await page.evaluate(auditTextContrast)).filter(item => /暂时无法读取|重试/.test(item.text))
+  expect(contrast).toEqual([])
+  // Initial graph inference is an existing read-only POST; no business record is saved by retry.
+  expect(writes.filter(item => !item.endsWith('/infer') && !item.endsWith('/risk-scales/compare'))).toEqual([])
+  if (route === 'risk-scales/new' || route === 'scenario-algorithms') {
+    await mascot.scrollIntoViewIfNeeded()
+    await page.screenshot({ path: info.outputPath('read-failure.png') })
+  }
+})
+
+test('断网且插画不可用时仍可理解错误，恢复后保留表单与保存失败提示', async ({ page }) => {
+  let offline = true
+  const { riskCapabilities } = await import('../src/test/riskScaleFixtures')
+  await page.route('**/homepage/images/mascot-error-240.webp', route => route.abort())
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/pit/settings') return route.fulfill({ json: {
+      settings: { active_release_id: null, as_of: '2019-12-31', run_mode: 'STRICT_PIT', updated_at: null, note: '' },
+      effective: { as_of: '2019-12-31', as_of_source: 'explicit', run_mode: 'STRICT_PIT', run_mode_label: '严格 PIT', data_release_id: null, no_pit: false, label: '站在 2019-12-31 · 严格 PIT' },
+      release: null, release_error: null, available_releases: [], can_apply: true,
+    } })
+    if (path.endsWith('/risk-scales/capabilities')) {
+      return offline ? route.abort() : route.fulfill({ json: riskCapabilities })
+    }
+    return route.fulfill({ status: 503, json: { detail: '服务暂不可用' } })
+  })
+  await page.goto('/settings/risk-scales/new')
+  await expect(page.getByRole('alert')).toContainText('暂时无法读取数据，请重试。')
+  const retry = page.getByRole('alert').getByRole('button', { name: '重试' })
+  await retry.focus()
+  await expect(retry).toBeFocused()
+  offline = false
+  await retry.press('Enter')
+  const name = page.getByLabel('标尺名称', { exact: true })
+  await expect(name).toBeVisible()
+  await expect(page.locator('img[src*="mascot-error"]')).toHaveCount(0)
+  await name.fill('保留这份未完成的研究')
+  await page.getByRole('button', { name: '保存草稿', exact: true }).click()
+  await expect(page.getByRole('alert')).toBeVisible()
+  await expect(name).toHaveValue('保留这份未完成的研究')
+  await expect(page.locator('img[src*="mascot-error"]')).toHaveCount(0)
 })

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { StrictMode, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import HistoricalRegimeWorkbench from './HistoricalRegimeWorkbench'
+import { ResearchContextProvider } from '../app/ResearchContext'
 import type { RegimeGraphDefinition } from '../services/regimeGraph'
 
 vi.mock('./regime-workbench/RegimeResultView', () => ({ default: ({ runId }: { runId: string }) => <div data-testid="final-regime-result">{runId}</div> }))
@@ -649,4 +650,42 @@ describe('audit regression: exact reference handoff', () => {
     await settle(400)
     expect(select).toHaveValue('')
   })
+})
+
+it('精确版本读取失败后离开该版本，解除错误面板并保留当前草稿', async () => {
+  const base = makeFetch()
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+    String(input).includes('/v2/definitions/saved-query?revision=4')
+      ? Promise.reject(new Error('database unavailable')) : base(input, init)))
+  window.history.replaceState({}, '', '/settings/scenario-algorithms?center=historical&definition=saved-query&revision=4')
+  const view = render(<HistoricalRegimeWorkbench initialDefinition={templateDefinition} />)
+  expect(await screen.findByRole('alert')).toHaveTextContent('暂时无法读取数据，请重试。')
+  expect(view.container.querySelector('img[src*="mascot-error"]')).not.toBeNull()
+  window.history.replaceState({}, '', '/settings/scenario-algorithms?center=historical&new=1')
+  view.rerender(<HistoricalRegimeWorkbench initialDefinition={templateDefinition} />)
+  expect(await screen.findByLabelText('研究名称')).toHaveValue(templateDefinition.name)
+  expect(view.container.querySelector('img[src*="mascot-error"]')).toBeNull()
+})
+
+
+it('全局 PIT 默认进入计算请求，手动修改后清空可恢复', async () => {
+  const base = makeFetch()
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => String(input) === '/api/pit/settings'
+    ? Promise.resolve(ok({ settings: {}, available_releases: [], effective: { as_of: '2019-12-31', no_pit: false, run_mode: 'RESEARCH', label: 'PIT 2019' } }))
+    : base(input, init))
+  vi.stubGlobal('fetch', fetchMock)
+  const user = userEvent.setup()
+  render(<ResearchContextProvider><HistoricalRegimeWorkbench initialDefinition={templateDefinition} /></ResearchContextProvider>)
+  await toPreview(user)
+  const date = screen.getByLabelText('V2 截至日')
+  await waitFor(() => expect(date).toHaveValue('2019-12-31'))
+  fireEvent.change(date, { target: { value: '2018-12-31' } })
+  expect(date).toHaveValue('2018-12-31')
+  fireEvent.change(date, { target: { value: '' } })
+  expect(date).toHaveValue('2019-12-31')
+  await waitFor(() => expect(screen.getByRole('button', { name: '运行识别' })).toBeEnabled())
+  await user.click(screen.getByRole('button', { name: '运行识别' }))
+  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/preview-runs'))).toBe(true))
+  const submitted = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/preview-runs'))!
+  expect(JSON.parse(String(submitted[1]?.body)).as_of).toBe('2019-12-31')
 })

@@ -1,4 +1,4 @@
-import type { ActivateRequest, Capabilities, CatalogResponse, CompareResponse, ConfirmReferenceInput, ConfirmRequest, DefaultBinding, DefaultsResponse, DraftUpdate, DraftView, DraftWrite, PreviewRequest, PreviewResponse, ReferenceInputRequest, ReferencePreview, ReferenceVersion, RetireRequest, SourceCatalog, StudyOptionsResponse, VersionView } from './riskScaleContract.generated'
+import type { ActivateRequest, Capabilities, CatalogResponse, CompareResponse, ConfirmReferenceInput, ConfirmRequest, DefaultBinding, DefaultsResponse, DraftUpdate, DraftView, DraftWrite, PreviewRequest, PreviewResponse, ReferenceInputRequest, ReferencePreview, ReferenceVersion, RetireRequest, SourceCatalog, SourceLabelsResponse, StudyOptionsResponse, VersionView } from './riskScaleContract.generated'
 import { isRiskScaleAlgorithmId } from './riskScaleContract.generated'
 export type * from './riskScaleContract.generated'
 
@@ -28,7 +28,17 @@ async function request<T>(path: string, signal?: AbortSignal, body?: unknown, me
   return data as T
 }
 const idPath = (id: string) => encodeURIComponent(id)
+async function sourceLabels(series_ids: string[], signal?: AbortSignal): Promise<SourceLabelsResponse> {
+  const controller = new AbortController()
+  const cancel = () => controller.abort()
+  signal?.addEventListener('abort', cancel, { once: true })
+  if (signal?.aborted) cancel()
+  const timer = setTimeout(cancel, 10_000)
+  try { return await request<SourceLabelsResponse>('/reference-inputs/labels', controller.signal, { series_ids }, 'POST') }
+  finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel) }
+}
 export const riskScales = {
+  sourceLabels,
   capabilities: (signal?: AbortSignal) => request<Capabilities>('/risk-scales/capabilities', signal),
   catalog: (query = '', signal?: AbortSignal) => request<CatalogResponse>(`/risk-scales${query ? `?${query}` : ''}`, signal),
   defaults: (signal?: AbortSignal) => request<DefaultsResponse>('/risk-scales/defaults', signal),

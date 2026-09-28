@@ -36,7 +36,7 @@ export default function ScenarioCenters() {
       else next.delete('stage')
       // A deep link belongs to one workspace; switching centers keeps drafts,
       // but must not load that target into another workspace.
-      for (const key of ['definition', 'revision', 'template', 'mode']) next.delete(key)
+      for (const key of ['definition', 'revision', 'template', 'mode', 'new']) next.delete(key)
       return next
     })
   }
@@ -82,7 +82,7 @@ export default function ScenarioCenters() {
         </div>
       </section>
 
-      <section role="tabpanel" hidden={activeCenter !== 'market-state'} id="scenario-center-panel-market-state" aria-labelledby="scenario-center-tab-market-state">{visited['market-state'] && <MarketStateResearchCenter />}</section>
+      <section role="tabpanel" hidden={activeCenter !== 'market-state'} id="scenario-center-panel-market-state" aria-labelledby="scenario-center-tab-market-state">{visited['market-state'] && <MarketStateResearchCenter active={activeCenter === 'market-state'} />}</section>
       <section role="tabpanel" hidden={activeCenter !== 'events'} id="scenario-center-panel-events" aria-labelledby="scenario-center-tab-events">{visited.events && <GlobalEventCenter />}</section>
       <section role="tabpanel" hidden={activeCenter !== 'simulation'} id="scenario-center-panel-simulation" aria-labelledby="scenario-center-tab-simulation">{visited.simulation && <PublishedScenarioCenter />}</section>
     </div>

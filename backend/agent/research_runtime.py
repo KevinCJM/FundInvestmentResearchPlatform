@@ -14,7 +14,7 @@ def research_context(run, page, service):
     from pit.context import resolve_request_context, set_view_override, reset_view_override
     token = None
     try:
-        if page.context_kind == "single_product" and page.view_state != "unknown":
+        if page.context_kind in {"single_product", "regime_graph"} and page.view_state != "unknown":
             resolved = resolve_request_context(service.market_data_dir, page.calculation.as_of)
             token = set_view_override(resolved)
             page = page.model_copy(deep=True)
@@ -58,8 +58,14 @@ def system_prompt(state, page, catalog_version, page_snapshot=None):
     draft = public_draft(state)
     if isinstance(draft, dict):
         projected, _ = views.VIEW_DRAFT_SUMMARY(draft, views.Projection())
-        draft = {**projected, "definition": views.definition_view(draft.get("definition"))}
-    return (SYSTEM_PROMPT + f"\n当前工作域：{state['scope']}\n当前页面：{page.page}\n"
+        if page.context_kind == "regime_graph":
+            from .regimes import definition_view
+        else:
+            definition_view = views.definition_view
+        draft = {**projected, "definition": definition_view(draft.get("definition"))}
+    from .regimes import SYSTEM_PROMPT as REGIME_PROMPT
+    prompt = (REGIME_PROMPT + "\n" + SYSTEM_PROMPT[SYSTEM_PROMPT.index("3. 组合工具"):]) if page.context_kind == "regime_graph" else SYSTEM_PROMPT
+    return (prompt + f"\n当前工作域：{state['scope']}\n当前页面：{page.page}\n"
             f"计算上下文：{stable_json(page.calculation.model_dump())}\n指标目录版本：{catalog_version}\n"
             f"当前会话草稿（可能尚未校验通过）：{stable_json(draft)}\n"
             f"页面证据快照元数据（发送消息时冻结，细节只能用 page.read 按 section 分页读取）：{stable_json(page_snapshot_summary(page_snapshot))}\n"
@@ -69,6 +75,9 @@ SYSTEM_PROMPT = """你是投研平台的 AI 助手，根据当前页面和授权
 0a. 产品研究/产品比较/持仓诊断页面先page.read(section=request)核对冻结请求；解释页面已显示结果时另读results，区分当前请求与最后结果的原请求和状态。loading/error/stale/pending/unknown须先说明结果未对应当前请求，不得把page.analyze按当前请求重算说成旧图表的原结果；ready也只是客户端声明，仍需服务端证据。按需page.analyze读取catalog/metrics/comparison/diagnosis/scenario。仅分析响应声明的当前批次，按pagination继续；不把selected/all_matching数量说成全部已计算。比较保留三个独立区间和混合产品口径，不宣称日期截断证明严格披露PIT。持仓只用真实不可变run，scenario是当前数据按锁定策略重算，不是原数据回放。没有真实run或demo数据时如实说明，不能创建占位运行。
 0. task_state保存用户原话、来源和当前口径；较新用户要求优先，旧偏好只能在不冲突时使用。plans/pending_questions是提案，milestones只能来自服务端回执，不能把本轮completed当作任务已验证。必要时task.read回读、task.plan记录所需能力与问题，并在constraints逐字引用用户明确约束及其source_message_id；后续修订关联supersedes_source_message_id，保留原句，不凭模型自行解释宣布旧约束失效。用户希望记住偏好时可memory.propose引用原话，必须等待页面上独立人工接受；不能代替业务保存授权。
 1. 你只能生成提案和调用白名单工具，不能直接创建、修改或删除指标、评价方案、产品池或快照配置。
+   指标中心已有保存入口，不需要用户提供接口、写入权限或接口参数。用户要求“写入/保存指标”时，先完成可执行的完整定义并调用 metrics.validate；通过后交付草稿卡片，明确告诉用户点击卡片中的“保存”，页面会展示实际定义供确认后写入指标库。未拿到保存回执前只能说“草稿已生成并校验”，不能说已写入指标库。
+   用户已明确让你决定口径时，可以在原有约束内选择合理默认值并说明，不再重复要求用户回答同一口径问题；仍有实质冲突才澄清。已有有效且符合本次要求的草稿时直接说明保存操作，不为寻找写入工具反复查目录或读取任务；尚无草稿时不能止步于工具查找或提案计划。
+   task.read/task.plan 只管理任务记录，不是写入指标的前置条件。参数错误时按工具声明纠正（字段名区分大小写），不能把任务读取失败解释为缺少指标写入能力；生成草稿不依赖任务读取成功。
 2. 讨论需求、解释概念、生成公式、校验和保存草稿都不需要选择产品。不要要求用户先选产品才交流或写公式。
    先澄清有歧义的计算含义，再用 metrics.lookup 的 variables/operators 目录查证名称和契约；逻辑明确后调用 metrics.validate 形成可编辑草稿。
    已有标量指标（如夏普比率）的滚动时序需求：先 lookup 查来源 id/revision，再优先调用 metrics.rolling_draft，窗口可变时用 variable_window=true，不手工重写已有算法。未指定窗口初值可使用 20 并说明可修改；无风险利率和年化口径沿用来源版本并明确说明，用户有不同口径时先澄清。

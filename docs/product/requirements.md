@@ -57,9 +57,9 @@ flowchart LR
 | Mandate／投资目标 | **核心已实现** | Mandate 2.0 已接通；自动税务／监管判断未实现 |
 | Product-first 大类路径 | **已实现** | 产品池 → 大类 → LTCMA |
 | Strategic-first 大类路径 | **已实现** | StrategicUniverse → Research Proxy → LTCMA |
-| LTCMA | **第一版已实现** | 五类方法族、冻结版本及 SAA 引用完整 |
+| LTCMA | **第一版已实现** | 原有方法、冻结版本及 SAA 引用保留；新增[长期／条件情景](../pre-investment/ltcma.md#自动长期情景与条件情景)，条件结果当前仅供研究比较 |
 | SAA | **部分实现** | single、Multi-CMA A/B 基础链已接通；部分高级稳健优化未完成 |
-| TAA | **部分实现** | 信号、时点、回测、walk-forward、情景与版本已有；class-level TAA 尚未与产品门禁彻底解耦 |
+| TAA | **研究能力已接通** | 信号、时点、回测、walk-forward、情景与版本已有；大类研究可使用 SAA 冻结的研究代理，实际产品映射在产品应用前核验；不代表历史 PIT 或实盘资格 |
 | 产品实施／研究包 | **部分实现** | 已有 `/api/pre-investment`、产品候选、风险／费用／现金验证、ResearchPackage、定稿和导出 |
 | 统一回测中心 | **已预留／原型** | 各业务模块已有真实回测，但统一中心路由本身仍是 prototype |
 | 资产主体／所有权／真实组合中心 | **已预留／原型** | 有 `portfolio.*` 数据模型、组合中心页面和演示上下文，尚无完整真实主数据服务 |
@@ -97,13 +97,14 @@ flowchart LR
 
 目标架构已经不再是“先把所有业务都做齐再开始投研”。当前实际演进顺序是：**研究公共能力和投前链路已经较成熟，真实组合／运营／核算／投后闭环尚未成熟。** 下一阶段如果继续沿主链推进，优先级应是：
 
-1. class-level TAA 与最终产品应用门禁解耦；
-2. 产品实施契约和真实组合目标版本衔接；
-3. Asset Owner / Household / Entity + Account 主数据与所有权关系；
-4. Cashflow / Liability Planning，支持家办、企业 Treasury 和个人多目标规划共用；
-5. Booking → IBOR/PBOR → 正式绩效／归因；
-6. RBAC / Approval / Client-Service Governance；
-7. 投后 → 反馈闭环。
+1. 产品实施契约和真实组合目标版本衔接；
+2. Asset Owner / Household / Entity + Account 主数据与所有权关系；
+3. Cashflow / Liability Planning，支持家办、企业 Treasury 和个人多目标规划共用；
+4. Booking → IBOR/PBOR → 正式绩效／归因；
+5. RBAC / Approval / Client-Service Governance；
+6. 投后 → 反馈闭环。
+
+大类 TAA 与最终产品应用准入已分层，范围及验收见 [2026-09-23 记录](../verification/allocation.md#saa-到大类-taa-研究交接2026-09-23)。
 
 ## 后续交付顺序
 
@@ -111,7 +112,7 @@ flowchart LR
 
 | ID | 状态 | 工作项 | 完成判据 | 证据/剩余事项 |
 | --- | --- | --- | --- | --- |
-| ROAD-01 | planned | 研究主链的剩余交接 | class-level TAA 与产品资格解耦、实施映射及真实组合目标承接通过对应验收 | 已有研究包/验证/定稿基础；具体范围见[投前研究](../pre-investment/README.md) |
+| ROAD-01 | planned | 研究主链的剩余交接 | 实施映射及真实组合目标承接通过对应验收 | 大类 TAA 准入分层已完成；真实组合承接仍未完成，具体范围见[投前研究](../pre-investment/README.md) |
 | ROAD-02 | planned | 资产所有者底座 | 主体/所有权、账户、真实组合、目标版本及基础对账形成实际可用链路 | 规划剩余正式能力；[领域语言](domain-language.md)与[核算契约](accounting.md)不代表全部已实现 |
 | ROAD-03 | planned | 现金流与负债 | 滚动预测、多目标优先级、资金分层在共用引擎上通过业务验收 | 退休/教育、企业流动性、家办资本调用按独立范围实施；已有[研究资金模型](../pre-investment/funding.md) |
 | ROAD-04 | planned | 运营与投后 | 流水、Booking、IBOR、成本、公司行动、PBOR、绩效、关账与反馈完成验收 | 各模块的原型或局部能力不能视为正式闭环；见[核算契约](accounting.md) |

@@ -1,3 +1,4 @@
+import { ErrorPanel, LoadingPanel } from '../ui'
 import { useCallback, useEffect, useState } from 'react'
 import { factorApi, type FactorDataset, type ReturnCatalog, type ReturnDataset } from '../../services/factorResearch'
 import { Card, Field, inputClass, secondaryClass, type Action } from './shared'
@@ -8,20 +9,32 @@ export default function ReturnDatasetWorkspace({ action, busy, datasetId, onSele
   const [datasets, setDatasets] = useState<FactorDataset[]>([])
   const [catalog, setCatalog] = useState<ReturnCatalog>()
   const [selected, setSelected] = useState<ReturnDataset>()
+  const [readFailed, setReadFailed] = useState(false)
+  const [reading, setReading] = useState(true)
+  const [detailFailed, setDetailFailed] = useState(false)
+  const [detailRetry, setDetailRetry] = useState(0)
   const refresh = useCallback(async () => {
-    const [list, info] = await Promise.all([factorApi.datasets(), factorApi.returnCatalog()])
-    setDatasets(list.items); setCatalog(info)
+    setReadFailed(false); setReading(true)
+    try {
+      const [list, info] = await Promise.all([factorApi.datasets(), factorApi.returnCatalog()])
+      setDatasets(list.items); setCatalog(info)
+    } catch (failure) { setReadFailed(true); throw failure }
+    finally { setReading(false) }
   }, [])
-  useEffect(() => { void action('加载收益率数据集', refresh) }, [action, refresh])
+  useEffect(() => { void refresh().catch(() => undefined) }, [refresh])
   useEffect(() => {
     let active = true
-    setSelected(undefined)
-    if (datasetId) void action('读取收益率数据集', async () => {
-      const value = await factorApi.getReturnDataset(datasetId)
-      if (active) setSelected(value)
-    })
+    setSelected(undefined); setDetailFailed(false)
+    if (datasetId) void (async () => {
+      try {
+        const value = await factorApi.getReturnDataset(datasetId)
+        if (active) setSelected(value)
+      } catch { if (active) setDetailFailed(true) }
+    })()
     return () => { active = false }
-  }, [datasetId, action])
+  }, [datasetId, action, detailRetry])
+  if (reading && !catalog) return <LoadingPanel text="正在读取收益率数据集…" mascot={false} />
+  if (readFailed && !catalog) return <ErrorPanel onRetry={() => void refresh().catch(() => undefined)} />
   return <div className="min-w-0 space-y-5">
     <Card title="收益率数据集">
       <p className="mb-4 text-sm leading-6 text-slate-600">统一管理自行构建和外部导入的因子收益。每份数据集有独立 ID、来源和回归口径，不与产品评分混用。</p>
@@ -41,6 +54,7 @@ export default function ReturnDatasetWorkspace({ action, busy, datasetId, onSele
       }} /></Field>
       <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold text-slate-700">查看通用导入格式</summary><p className="mt-3 text-xs leading-6 text-slate-600">factor_names 指定列名；dependent_return 为 excess 时每行必须另外包含 RF，为 total 时只提供因子列。rows 的结构为：date 与 values，values 内放因子名对应的小数收益。缺失可填 null，不自动填零。旧 FF3 的 rows 直接包含 MKT_RF、SMB、HML、RF，也可继续导入。</p><pre className="mt-3 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-50 p-3 text-xs">{JSON.stringify(catalog?.dataset_template || {}, null, 2)}</pre><button className={secondaryClass + ' mt-3'} disabled={!catalog || busy} onClick={() => downloadJson('factor-return-template.json', catalog?.dataset_template)}>下载收益率空模板</button></details>
     </Card>
+    {detailFailed && <ErrorPanel mascot={false} onRetry={() => setDetailRetry(value => value + 1)} />}
     {selected && <ReturnDatasetView dataset={selected} onAttribute={onAttribute} busy={busy} />}
   </div>
 }

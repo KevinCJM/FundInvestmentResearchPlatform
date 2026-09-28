@@ -32,7 +32,7 @@ def seed():
          'annual_return': .03, 'annual_volatility': .05, 'mean_uncertainty': .005},
     ]
     raw = dict(schema_version='2.0', name='离线基础 LTCMA', alloc_name='浏览器离线股债', as_of=today,
-               currency='CNY', horizon_years=10, source='离线合成数据与明确的长期假设，仅供浏览器测试',
+               currency='CNY', source='离线合成数据与明确的长期假设，仅供浏览器测试',
                basis_confirmed=True, assets=assets, correlation=[[1., -.1], [-.1, 1.]],
                moment_semantics='annualized_periodic_arithmetic', fee_basis='source_embedded_no_additional_fee',
                fx_hedging_basis='same_currency_no_conversion')
@@ -53,7 +53,7 @@ def seed():
                       {'id': '压力', 'probability': .4, 'annual_returns': {'股票': -.05, '债券': .02}, 'source': '明确合成压力情景'}],
     }}), 'browser-ltcma-scenario')
     mandate_request = MandateStudyRequest(definition=MandateRequest(
-        name='离线 SAA 授权', as_of=date.today(), review_date=date.today() + timedelta(days=180),
+        name='离线 SAA 授权', as_of=date.today(), horizon_years=5, review_date=date.today() + timedelta(days=180),
         target_return=0., max_volatility=.25, min_liquid_weight=0., max_tracking_error=.1,
         boundary_reason='离线测试明确授权，非真实投资审批'))
     preview = strategic.preview_mandate(mandate_request)
@@ -97,6 +97,65 @@ def seed():
     fixture.update(today=today, allocation='浏览器离线股债', manual_id=base['id'], historical_id=history['id'],
                    bl_id=bl['id'], scenario_id=scenario['id'], mandate_id=mandate['id'],
                    universe_id=universe['id'], regime_id=run['id'])
+    from backend.tests.cma_scenario_fixtures import create_scenario_fixture
+    historical, realtime, reference = create_scenario_fixture(strategic, days)
+    fixture.update(scenario_reference_id=historical['id'],
+                   scenario_publication_id=reference['publication_id'],
+                   scenario_realtime_id=realtime['id'])
+    # Reuse offline market files; all writes remain in this fixture's temporary root.
+    from backend.tests.risk_scale_app import seed_sources
+    from backend.strategic_allocation.reference_sources import ReferenceSources
+    import pandas as pd
+    proxy_root = strategic.data.data_dir / 'facts-proxies'
+    proxy_request = seed_sources(proxy_root)
+    # Both synthetic markets use weekdays, but their histories start on
+    # different dates. One complete calendar must cover both source windows.
+    proxy_calendar = pd.read_parquet(proxy_root / 'trade_day_df.parquet')
+    calendar = pd.date_range(min(days[0], proxy_calendar['cal_date'].min()), date.today(), freq='D')
+    pd.DataFrame({'exchange': ['SSE'] * len(calendar), 'cal_date': calendar,
+                  'is_open': (calendar.dayofweek < 5).astype(int)}).to_parquet(
+        strategic.data.data_dir / 'trade_day_df.parquet', index=False)
+    proxy_request['assets'] = proxy_request['assets'][1:]
+    strategic.cma.evidence.sources = ReferenceSources(proxy_root)
+    strategic.cma.evidence.sources.warm()
+    proxy_end = str(pd.bdate_range(end=date.today()-timedelta(days=3), periods=1)[0].date())
+    facts_request = UniverseRequest(name='配置事实范围', as_of=date.today(), currency='CNY', assets=[
+        {'id': a['id'], 'name': a['name'], 'currency': 'CNY', 'role': role, 'liquidity': 'liquid',
+         'research_proxy': {k: a[k] for k in ('asset_type', 'cash_return', 'components', 'rebalance')}}
+        for a, role in zip(proxy_request['assets'], ['rates', 'growth'])])
+    preview = strategic.scopes.preview_universe(facts_request)
+    original = strategic.scopes.confirm_universe(ConfirmUniverseRequest(request=facts_request,
+        preview_hash=preview['preview_hash'], mandate_id=mandate['id']))
+    facts_raw = copy.deepcopy(raw)
+    facts_raw.update(name='配置事实先验', alloc_name=None, strategic_universe_id=original['id'], correlation=None,
+        assets=[{'id': a.id, 'role': a.role, 'liquidity': a.liquidity, 'rationale': '', 'mean_uncertainty': 0.,
+                 'annual_return': None, 'annual_volatility': None} for a in facts_request.assets], model={
+        **context, 'method': 'historical_statistics', 'asset_ids': [a.id for a in facts_request.assets],
+        'window': {'kind': 'custom', 'start_date': str(days[0].date()), 'end_date': proxy_end},
+        'proxy_inputs': proxy_request, 'shrinkage': .1})
+    first = publish(CmaRequest(**facts_raw), 'browser-facts-first')
+    edited = facts_request.model_copy(update={'source': '补充说明，数值配置不变'})
+    preview = strategic.scopes.preview_universe(edited)
+    replacement = strategic.scopes.confirm_universe(ConfirmUniverseRequest(request=edited,
+        preview_hash=preview['preview_hash'], replaces_universe_id=original['id']))
+    facts_raw.update(name='配置事实另一次研究', strategic_universe_id=replacement['id'])
+    second = publish(CmaRequest(**facts_raw), 'browser-facts-second')
+    fixture.update(facts_universe_id=replacement['id'], facts_cma_ids=[first['id'], second['id']],
+                   facts_start=str(days[0].date()), facts_end=proxy_end)
+    # Scope screening uses relative windows through its research date. Keep its
+    # objective/date at the synthetic sources' actual end; do not invent a tail.
+    screening_study = MandateStudyRequest(definition=MandateRequest(
+        name='范围初筛离线目标', as_of=proxy_end, horizon_years=5,
+        review_date=date.today() + timedelta(days=180), target_return=0., max_volatility=.25,
+        min_liquid_weight=0., max_tracking_error=.1, boundary_reason='历史范围初筛测试，非投资授权'))
+    check = strategic.preview_mandate(screening_study)
+    screening_goal = strategic.confirm_mandate(ConfirmMandateRequest(request=screening_study,
+        preview_hash=check['preview_hash'], acknowledge_limits=True))
+    screening_scope = facts_request.model_copy(update={'name': '初筛测试范围', 'as_of': date.fromisoformat(proxy_end)})
+    check = strategic.scopes.preview_universe(screening_scope)
+    screening_saved = strategic.scopes.confirm_universe(ConfirmUniverseRequest(request=screening_scope,
+        preview_hash=check['preview_hash'], mandate_id=screening_goal['id']))
+    fixture.update(scope_feasibility_universe_id=screening_saved['id'], scope_feasibility_mandate_id=screening_goal['id'])
 
 
 @asynccontextmanager

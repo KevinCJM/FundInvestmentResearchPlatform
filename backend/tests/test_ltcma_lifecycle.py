@@ -160,3 +160,129 @@ def test_niw_publication_holds_lifecycle_lock_and_replays_after_retirement(works
         content_hash=prior["content_hash"], reason="新版本发布后停止先验新引用"))
     assert service.cma.publish(body) == posterior
     assert service.cma.get(posterior["id"]) == posterior
+
+
+def test_options_sections_do_not_load_unrequested_studies(workspace, monkeypatch):
+    service, _ = workspace
+    def unexpected(*args, **kwargs):
+        raise AssertionError('unrequested research was loaded')
+    monkeypatch.setattr(service.cma.evidence, '_regime_items', unexpected)
+    monkeypatch.setattr(service.cma, 'list', unexpected)
+    app = FastAPI(); app.include_router(build_router(service))
+    client = TestClient(app)
+    url = '/api/strategic-allocation/cma/study-options'
+    base = client.get(url, params={'section': 'base'})
+    assert base.status_code == 200
+    assert base.json()['allocations'] and base.json()['assumptions'] == []
+    assert 'scenario_options' not in base.json()
+    monkeypatch.setattr(service.cma, 'list', lambda **kwargs: {'items': [{'id': 'prior'}]})
+    monkeypatch.setattr(service, 'catalog', unexpected)
+    assert client.get(url, params={'section': 'priors'}).json() == {'assumptions': [{'id': 'prior'}]}
+    assert client.get(url, params={'section': 'invalid'}).status_code == 422
+    assert client.get(url, params={'section': 'base', 'as_of': '9999-12-31'}).status_code == 422
+
+
+def test_duplicate_name_is_rejected_until_the_earlier_version_retires(workspace):
+    """名称是清单里区分同范围、同方法版本的唯一线索，重名会让研究员无法辨认。"""
+    service, _ = workspace
+    first, body = published(service)
+    again = body.model_copy(update={"idempotency_key": "ltcma-test-operation-2"})
+    with pytest.raises(ConflictError, match="名称已存在"):
+        service.publish_cma(again)
+    assert service.cma.study_options(section="base")["existing_names"] == [first["name"]]
+    service.cma.retire(first["id"], CmaRetire(confirm=True, content_hash=first["content_hash"],
+                                              reason="更换长期研究假设"))
+    assert service.cma.study_options(section="base")["existing_names"] == []
+    assert service.publish_cma(again)["name"] == first["name"]
+
+
+def test_edit_updates_one_study_while_copy_creates_another_and_history_stays_frozen(workspace):
+    from backend.strategic_allocation.cma_center_contracts import CmaCenterUpdate
+    service, _ = workspace
+    _, first, policy_request = saved_inputs(service)
+    from backend.strategic_allocation.contracts import PublishPolicyRequest
+    policy_preview = service.preview_policy(policy_request)
+    policy = service.publish_policy(PublishPolicyRequest(request=policy_request,
+        preview_hash=policy_preview['preview_hash'], candidate_id='robust-utility',
+        name='引用修改前结果的 SAA', reason='保留修改前的配置研究依据'))
+    old_arrays = service.artifacts.arrays(first['id'])['covariance'].copy()
+    request = definition().model_copy(update={'name': first['name'], 'source': '修改后的研究依据'})
+    preview = service.cma.preview(request)
+    body = CmaCenterUpdate(request=request, preview_hash=preview['preview_hash'], confirm=True,
+                           idempotency_key='edit-original-study', expected_content_hash=first['content_hash'])
+    app = FastAPI(); app.include_router(build_router(service)); client = TestClient(app)
+    url = '/api/strategic-allocation/cma/' + first['id']
+    result = client.patch(url, json=body.model_dump(mode='json'))
+    assert result.status_code == 200, result.text
+    updated = result.json()
+    assert updated['study_id'] == first['id']
+    assert updated['supersedes_cma_id'] == first['id']
+    assert 'copied_from_id' not in updated
+    assert updated['definition']['source'] == '修改后的研究依据'
+    assert [x['id'] for x in service.cma.list(include_retired=True)['items']] == [updated['id']]
+    assert [x['id'] for x in service.catalog()['assumptions']] == [updated['id']]
+    assert service.cma.active_names() == [first['name']]
+    assert [x['id'] for x in service.cma.study_options(section='priors')['assumptions']] == [updated['id']]
+    restored = client.get('/api/strategic-allocation/cma/study-options', params={'section': 'priors', 'selected_prior_id': first['id']})
+    assert restored.status_code == 200
+    assert {x['id'] for x in restored.json()['assumptions']} == {first['id'], updated['id']}
+    assert client.patch(url, json=body.model_dump(mode='json')).json() == updated
+    assert service.get_cma(first['id']) == first
+    assert (service.artifacts.arrays(first['id'])['covariance'] == old_arrays).all()
+    assert service.baselines.get_baseline(policy['id']) == policy
+    assert service.cma.get(first['id']) == first  # 冻结版本仍可精确读取；
+    with pytest.raises(ValidationError, match='已有新版本'):  # 但已被替代的版本不能接入新的下游工作。
+        service.cma.require_selectable(first['id'])
+    stale = body.model_copy(update={'idempotency_key': 'second-editor-stale'})
+    assert client.patch(url, json=stale.model_dump(mode='json')).status_code == 409
+    with pytest.raises(ConflictError, match='修改或删除'):
+        service.cma.retire(first['id'], CmaRetire(confirm=True, content_hash=first['content_hash'], reason='过期页面尝试删除'))
+    second_body = body.model_copy(update={'expected_content_hash': updated['content_hash'], 'idempotency_key': 'edit-same-study-again'})
+    second = service.cma.publish(second_body, updated['id'])
+    assert second['study_id'] == first['id']
+    assert service.cma.list()['total'] == 1
+    copied_request = request.model_copy(update={'name': '独立复制研究'})
+    copied = service.cma.publish(CmaCenterPublish(request=copied_request,
+        preview_hash=service.cma.preview(copied_request)['preview_hash'], confirm=True,
+        idempotency_key='copy-separate-study', copied_from_id=second['id']))
+    assert copied['copied_from_id'] == second['id'] and 'supersedes_cma_id' not in copied
+    assert service.cma.list()['total'] == 2
+    conflicting = second_body.model_copy(update={'request': copied_request,
+        'preview_hash': service.cma.preview(copied_request)['preview_hash'],
+        'expected_content_hash': second['content_hash'], 'idempotency_key': 'edit-name-conflict'})
+    with pytest.raises(ConflictError, match='名称已存在'):
+        service.cma.publish(conflicting, second['id'])
+    service.cma.retire(second['id'], CmaRetire(confirm=True, content_hash=second['content_hash'], reason='删除当前研究方案'))
+    assert [x['id'] for x in service.cma.list()['items']] == [copied['id']]
+    assert service.cma.list(include_retired=True)['total'] == 2  # No resurrected predecessors.
+    with pytest.raises(ConflictError, match='修改或删除'):
+        service.cma.publish(second_body.model_copy(update={'expected_content_hash': second['content_hash'],
+                            'idempotency_key': 'edit-deleted-study'}), second['id'])
+
+
+def test_edit_rejects_wrong_hash_and_recovers_interrupted_save(workspace, monkeypatch):
+    from backend.strategic_allocation.cma_center_contracts import CmaCenterUpdate
+    from backend.custom_indicators.repository import AtomicJsonStore
+    service, _ = workspace
+    first, published_body = published(service)
+    body = CmaCenterUpdate(**published_body.model_dump(mode='json'), expected_content_hash='0' * 64)
+    body = body.model_copy(update={'idempotency_key': 'edit-interrupted-operation'})
+    with pytest.raises(ConflictError, match='内容不一致'):
+        service.cma.publish(body, first['id'])
+    body = body.model_copy(update={'expected_content_hash': first['content_hash']})
+    original_write = AtomicJsonStore.write_unlocked
+    def fail_completion(store, value):
+        if store.path.name == 'operations.json' and value['items'][-1]['complete']:
+            raise OSError('simulated failure after index registration')
+        return original_write(store, value)
+    with monkeypatch.context() as patch:
+        patch.setattr(AtomicJsonStore, 'write_unlocked', fail_completion)
+        with pytest.raises(OSError):
+            service.cma.publish(body, first['id'])
+    assert service.cma.list()['total'] == 1
+    recovered = service.cma.publish(body, first['id'])
+    assert service.cma.publish(body, first['id']) == recovered
+    assert service.cma.list()['total'] == 1 and service.get_cma(first['id']) == first
+    draft = service.cma.drafts.save(CmaDraftWrite(name=first['name'], editable_definition={},
+        editing_ref={'id': recovered['id'], 'content_hash': recovered['content_hash']}))
+    assert service.cma.drafts.get(draft['id'])['editing_ref'] == draft['editing_ref']

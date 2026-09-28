@@ -7,10 +7,20 @@ import hashlib
 import json
 import math
 from datetime import date
-from typing import Any, Protocol
+from pathlib import Path
+from typing import Any, Callable, Protocol
 
-from .errors import ProductPoolValidationError
+from .errors import ProductPoolConflictError, ProductPoolValidationError
 from .repository import ProductPoolRepository, utc_now
+from .scope_lifecycle import (
+    bind_scope_mandate,
+    checked_scope_mandate,
+    scope_mandate_fields,
+    normalize_scope_name,
+    scope_governance_lock,
+    strategic_artifacts_root,
+    strategic_scope_names,
+)
 
 RESEARCH_STATUSES = {"pending", "approved", "watch", "rejected"}
 USAGE_STATUSES = {"normal", "limited", "no_new", "hold_only", "unavailable"}
@@ -163,9 +173,54 @@ class ProductPoolService:
         self,
         repository: ProductPoolRepository,
         evaluation_gateway: EvaluationPlanGateway,
+        *,
+        peer_scope_names: Callable[[], dict[str, str]] | None = None,
+        strategic_root: Path | None = None,
     ) -> None:
         self.repository = repository
         self.evaluation_gateway = evaluation_gateway
+        # One library, two stores: the strategic service root defaults to the
+        # workspace that also holds the product store, and callers may point it
+        # at the actually configured STRATEGIC_ALLOCATION_DATA_DIR.
+        self.strategic_root = (
+            Path(strategic_root) if strategic_root is not None else self.repository.store.path.parent
+        )
+        self.scope_root = strategic_artifacts_root(self.strategic_root)
+        self._peer_scope_names = peer_scope_names or (
+            lambda: strategic_scope_names(self.strategic_root)
+        )
+
+    def _active_scope_names(self) -> dict[str, str]:
+        records = self.repository.list_universe_snapshots()
+        superseded = {
+            str(item.get("supersedes_snapshot_id"))
+            for item in records
+            if item.get("supersedes_snapshot_id")
+        }
+        retired = {
+            str(item.get("snapshot_id"))
+            for item in self.repository.list_universe_retirements()
+        }
+        return {
+            str(item.get("id")): str(item.get("name") or "")
+            for item in records
+            if item.get("id")
+            and str(item.get("id")) not in superseded
+            and str(item.get("id")) not in retired
+        }
+
+    def _require_unique_scope_name(self, name: str, replacing_id: str | None = None) -> None:
+        normalized = normalize_scope_name(name)
+        own = self._active_scope_names()
+        if replacing_id:
+            own.pop(replacing_id, None)
+        for identifier, existing in {**own, **self._peer_scope_names()}.items():
+            if normalize_scope_name(existing) == normalized:
+                raise ProductPoolConflictError(
+                    "SCOPE_NAME_CONFLICT",
+                    "研究范围名称已存在，请修改名称。",
+                    field="name",
+                )
 
     @staticmethod
     def _normalize_metadata(fields: dict[str, Any]) -> dict[str, Any]:
@@ -1005,6 +1060,7 @@ class ProductPoolService:
         """Expose one stable downstream contract for old and new snapshot records."""
 
         decorated = copy.deepcopy(snapshot)
+        decorated.update(scope_mandate_fields(self.scope_root, "product", snapshot))
         research_date = str(decorated.get("research_date") or "")
         version_ids = [
             str(item).strip()
@@ -1138,7 +1194,8 @@ class ProductPoolService:
         decorated.setdefault("product_count", len(decorated.get("products") or members))
         return decorated
 
-    def create_universe_snapshot(self, fields: dict[str, Any]) -> dict[str, Any]:
+    def preview_universe_snapshot(self, fields: dict[str, Any]) -> dict[str, Any]:
+        """Assemble the exact prospective product set without persisting it."""
         name = _required_text(fields.get("name"), "可投资域名称", maximum=100)
         research_date = _iso_date(fields.get("research_date"), "研究日期")
         raw_version_ids = fields.get("version_ids")
@@ -1266,24 +1323,132 @@ class ProductPoolService:
             products.values(),
             key=lambda item: (item["evaluation_plan_name"], str(item.get("code") or "")),
         )
-        created = self.repository.create_universe_snapshot(
-            {
-                "name": name,
-                "research_date": research_date,
-                "version_ids": version_ids,
-                "pool_ids": list(dict.fromkeys(version["pool_id"] for version in versions)),
-                "excluded_product_keys": sorted(excluded_keys),
-                "groups": groups,
-                "products": product_items,
-                "product_count": len(product_items),
-            }
-        )
+        payload = {
+            "name": name,
+            "research_date": research_date,
+            "version_ids": version_ids,
+            "pool_ids": list(dict.fromkeys(version["pool_id"] for version in versions)),
+            "excluded_product_keys": sorted(excluded_keys),
+            "groups": groups,
+            "products": product_items,
+            "product_count": len(product_items),
+        }
+        return payload
+
+    def create_universe_snapshot(self, fields: dict[str, Any]) -> dict[str, Any]:
+        payload = self.preview_universe_snapshot(fields)
+        name = payload["name"]
+        replaces_snapshot_id = _trimmed(fields.get("replaces_snapshot_id"), maximum=120) or None
+        # Name uniqueness and replacement share one lock across both scope stores.
+        with scope_governance_lock(self.scope_root).locked():
+            original = None
+            if replaces_snapshot_id is not None:
+                original = self.get_universe_snapshot(replaces_snapshot_id)
+                if replaces_snapshot_id not in self._active_scope_names():
+                    raise ProductPoolConflictError(
+                        "INVESTABLE_UNIVERSE_INACTIVE",
+                        "该研究范围已删除或被替代，不能编辑；请刷新列表后操作当前版本。",
+                    )
+                payload["supersedes_snapshot_id"] = replaces_snapshot_id
+            payload.update(checked_scope_mandate(self.scope_root, fields.get("mandate_id"), original, allow_upgrade=True))
+            self._require_unique_scope_name(name, replacing_id=replaces_snapshot_id)
+            created = self.repository.create_universe_snapshot(payload)
         return self._decorate_universe_snapshot(created)
+
+    def retire_universe_snapshot(self, snapshot_id: str) -> dict[str, Any]:
+        """Remove a scope from the active library; frozen bytes stay readable."""
+
+        with scope_governance_lock(self.scope_root).locked():
+            self.repository.retire_universe_snapshot(snapshot_id)
+        return {"deleted": True, "id": snapshot_id}
 
     def get_universe_snapshot(self, snapshot_id: str) -> dict[str, Any]:
         return self._decorate_universe_snapshot(
             self.repository.get_universe_snapshot(snapshot_id)
         )
+
+    def bind_universe_mandate(self, snapshot_id: str, mandate_id: str) -> dict:
+        return bind_scope_mandate(self.scope_root, "product",
+                                 self.repository.get_universe_snapshot(snapshot_id), mandate_id)
+
+    _UNIVERSE_SUMMARY_KEYS = (
+        "id",
+        "name",
+        "research_date",
+        "version_ids",
+        "version_refs",
+        "pool_ids",
+        "product_count",
+        "summary",
+        "content_hash",
+        "created_at",
+        "immutable",
+    )
+
+    def list_universe_snapshots(self) -> dict[str, Any]:
+        """Saved scope library: immutable metadata only, newest first.
+
+        Summaries are projected from the stored record and never recomputed
+        from current pool data: a saved scope keeps the identity and counts it
+        was frozen with, even after its source versions move on.
+        """
+
+        from backend.custom_indicators.errors import IndicatorDomainError
+        from backend.sensitivity.repository import ArtifactRepository
+        from backend.strategic_allocation.versioning import ResearchVersions
+
+        active_ids = set(self._active_scope_names())
+        try:
+            lineage = ResearchVersions(ArtifactRepository(self.scope_root), lambda: self.repository)
+        except IndicatorDomainError:
+            # 战略侧存储不可读时，范围库仍按冻结记录展示，只是不带版本与上游状态。
+            lineage = None
+        items: list[dict[str, Any]] = []
+        for snapshot in self.repository.list_universe_snapshots():
+            if str(snapshot.get("id")) not in active_ids:
+                continue
+            summary = {
+                key: copy.deepcopy(snapshot.get(key))
+                for key in self._UNIVERSE_SUMMARY_KEYS
+                if key in snapshot
+            }
+            summary.update(scope_mandate_fields(self.scope_root, "product", snapshot))
+            if lineage:
+                summary.update(lineage.scope_state("product_first", str(snapshot.get("id"))))
+            if not summary.get("version_ids"):
+                summary["version_ids"] = [
+                    str(item.get("version_id") or "").strip()
+                    for item in snapshot.get("version_refs") or []
+                    if isinstance(item, dict)
+                    and str(item.get("version_id") or "").strip()
+                ]
+            if "product_count" not in summary:
+                products = snapshot.get("products")
+                members = snapshot.get("members")
+                summary["product_count"] = (
+                    len(products)
+                    if isinstance(products, list) and products
+                    else len(members)
+                    if isinstance(members, list)
+                    else 0
+                )
+            stored_summary = summary.get("summary")
+            counts = copy.deepcopy(stored_summary) if isinstance(stored_summary, dict) else {}
+            counts.setdefault(
+                "pool_count",
+                len(summary.get("pool_ids") or summary.get("version_ids") or []),
+            )
+            counts.setdefault("member_count", int(summary.get("product_count") or 0))
+            summary["summary"] = counts
+            items.append(summary)
+        items.sort(
+            key=lambda item: (
+                str(item.get("created_at") or ""),
+                str(item.get("id") or ""),
+            ),
+            reverse=True,
+        )
+        return {"items": items, "total": len(items)}
 
     def search_universe_products(
         self,

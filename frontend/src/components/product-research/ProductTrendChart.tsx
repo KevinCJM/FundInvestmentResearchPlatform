@@ -19,6 +19,7 @@ import {
 } from '../../services/productAnalysis'
 import type { HistoricalRegimeRun } from '../../services/historicalRegimes'
 import Mascot from '../Mascot'
+import { ErrorPanel } from '../ui'
 
 /**
  * Where one overlay instance is drawn. `native` only exists when a matching axis
@@ -561,11 +562,7 @@ export default function ProductTrendChart({
           <p className="max-w-lg text-sm leading-6 text-slate-600">按所选价格口径从后端读取真实行情，不在浏览器里换算。</p>
         </div>
         : current.error
-          ? <div role="alert" className="flex flex-col items-center gap-3 py-10 text-center">
-            <Mascot state="error" />
-            <p className="text-sm font-semibold text-slate-800">走势数据没能读出来</p>
-            <p className="max-w-lg rounded-lg bg-rose-50 px-4 py-2 text-sm leading-6 text-rose-700">{current.error}</p>
-          </div>
+          ? <ErrorPanel title="走势数据没能读出来" message={current.error} />
           : !payload?.available
             ? <div className="flex flex-col items-center gap-3 py-10 text-center">
               <Mascot state="empty" />
@@ -607,7 +604,7 @@ export default function ProductTrendChart({
       </div>
       {seriesCatalog.length === 0
         ? <p className="mt-4 text-sm leading-6 text-slate-600">
-          指标目录里还没有适用于本产品的时序指标。<Link to={studioHref} className="font-medium text-accent-700 hover:underline">前往指标中心</Link>新建一个，再回到本页叠加。
+          指标目录里还没有适用于本产品的时序指标。<Link to={studioHref} className="font-medium text-accent-700 hover:underline">前往行情指标中心</Link>新建一个，再回到本页叠加。
         </p>
         : rows.length === 0
           ? <p className="mt-4 text-sm leading-6 text-slate-600">还没有叠加指标。点击“选择时序指标”，把滚动波动率、均线、KDJ 等画到上面这张图里。</p>
@@ -617,7 +614,7 @@ export default function ProductTrendChart({
                 host.instance.key !== row.instance.key && row.axisKey !== null && host.axisKey === row.axisKey
               ))
               const repeatReason = row.schema.length === 0
-                ? '固定参数的指标再加一条也是同一条线；需要别的参数请在指标中心另存一个版本'
+                ? '固定参数的指标再加一条也是同一条线；需要别的参数请在行情指标中心另存一个版本'
                 : ''
               return <li key={row.instance.key} className="min-w-0 py-2">
                 <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">

@@ -1,3 +1,4 @@
+import { systemText, useI18n, i18n } from '../i18n/runtime'
 import { useMemo } from 'react'
 import ReactECharts from 'echarts-for-react'
 import HorizontalMetricComparison, {
@@ -45,29 +46,30 @@ export function buildClassMetricTable(result: Pick<ClassFitResult, 'metrics' | '
   const columns = result.metrics.map((metric) => metric.name)
   const cumulativeValues = result.metrics.map((metric) => Number(metric.cumulative_return ?? NaN))
   const rows = [
-    { label: '累计收益率', values: cumulativeValues },
-    { label: '累计收益率(%)', values: cumulativeValues.map((value) => (Number.isFinite(value) ? value * 100 : NaN)) },
-    { label: '年化收益率(%)', values: result.metrics.map((metric) => Number((metric.annual_return ?? NaN) * 100)) },
-    { label: '年化波动率(%)', values: result.metrics.map((metric) => Number((metric.annual_vol ?? NaN) * 100)) },
-    { label: '夏普比率', values: result.metrics.map((metric) => Number(metric.sharpe ?? NaN)) },
-    { label: '99%VaR(日)(%)', values: result.metrics.map((metric) => Number((metric.var99 ?? NaN) * 100)) },
-    { label: '99%ES(日)(%)', values: result.metrics.map((metric) => Number((metric.es99 ?? NaN) * 100)) },
-    { label: '最大回撤(%)', values: result.metrics.map((metric) => Number((metric.max_drawdown ?? NaN) * 100)) },
-    { label: '卡玛比率', values: result.metrics.map((metric) => Number(metric.calmar ?? NaN)) },
+    { label: systemText('preInvestment.classFitPanel.cumulativeReturn'), values: cumulativeValues },
+    { label: systemText('preInvestment.classFitPanel.cumulativeReturn2'), values: cumulativeValues.map((value) => (Number.isFinite(value) ? value * 100 : NaN)) },
+    { label: systemText('preInvestment.classFitPanel.annualReturn'), values: result.metrics.map((metric) => Number((metric.annual_return ?? NaN) * 100)) },
+    { label: systemText('preInvestment.classFitPanel.annualVolatility'), values: result.metrics.map((metric) => Number((metric.annual_vol ?? NaN) * 100)) },
+    { label: systemText('preInvestment.classFitPanel.sharpeRatio'), values: result.metrics.map((metric) => Number(metric.sharpe ?? NaN)) },
+    { label: systemText('preInvestment.classFitPanel.99VarDaily'), values: result.metrics.map((metric) => Number((metric.var99 ?? NaN) * 100)) },
+    { label: systemText('preInvestment.classFitPanel.99EsDaily'), values: result.metrics.map((metric) => Number((metric.es99 ?? NaN) * 100)) },
+    { label: systemText('preInvestment.classFitPanel.maximumDrawdown'), values: result.metrics.map((metric) => Number((metric.max_drawdown ?? NaN) * 100)) },
+    { label: systemText('preInvestment.classFitPanel.calmarRatio'), values: result.metrics.map((metric) => Number(metric.calmar ?? NaN)) },
   ]
   const annualRows = buildAnnualMetricRows(columns, result.annual_metrics)
   return { columns, rows: annualRows.length > 0 ? [...rows, ...annualRows] : rows }
 }
 
 export default function ClassFitPanel({ result }: { result: ClassFitResult }) {
-  const table = useMemo(() => buildClassMetricTable(result), [result])
+  useI18n()
+  const table = useMemo(() => buildClassMetricTable(result), [result, i18n.language])
   const navKeys = useMemo(() => Object.keys(result.navs), [result.navs])
 
   return (
     <div className="space-y-6">
       <div>
         <ReactECharts style={{ height: 360 }} option={{
-          title: { text: '虚拟净值走势（起始=1）', left: 0, top: 0, textStyle: { fontSize: 13, fontWeight: 600 } },
+          title: { text: systemText('preInvestment.classFitPanel.syntheticNavStartsAt1'), left: 0, top: 0, textStyle: { fontSize: 13, fontWeight: 600 } },
           tooltip: { trigger: 'axis', valueFormatter: (value: any) => Number(value).toFixed(2) },
           legend: { top: 0, right: 0 },
           grid: { left: 56, right: 16, top: 36, bottom: 86 },
@@ -92,7 +94,7 @@ export default function ClassFitPanel({ result }: { result: ClassFitResult }) {
       </div>
 
       <div>
-        <h3 className="text-sm font-semibold mb-2">相关系数矩阵</h3>
+        <h3 className="text-sm font-semibold mb-2">{systemText('preInvestment.classFitPanel.correlationMatrix')}</h3>
         <ReactECharts style={{ height: 320 }} option={(() => {
           const labels = result.corr_labels
           const data: any[] = []
@@ -121,15 +123,15 @@ export default function ClassFitPanel({ result }: { result: ClassFitResult }) {
       </div>
 
       <div>
-        <h3 className="text-sm font-semibold mb-2">横向指标对比</h3>
+        <h3 className="text-sm font-semibold mb-2">{systemText('preInvestment.classFitPanel.metricComparison')}</h3>
         <HorizontalMetricComparison columns={table.columns} rows={table.rows} height={DEFAULT_METRIC_TABLE_HEIGHT} />
         <div className="mt-4">
-          <h4 className="text-sm font-semibold mb-2 text-slate-700">收益风险象限图</h4>
+          <h4 className="text-sm font-semibold mb-2 text-slate-700">{systemText('preInvestment.classFitPanel.returnRiskQuadrantChart')}</h4>
           <PerformanceQuadrantChart
             columns={table.columns}
             rows={table.rows}
-            defaultXAxis="年化波动率(%)"
-            defaultYAxis="累计收益率(%)"
+            defaultXAxis={systemText('preInvestment.classFitPanel.annualVolatility')}
+            defaultYAxis={systemText('preInvestment.classFitPanel.cumulativeReturn2')}
           />
         </div>
       </div>
@@ -138,16 +140,17 @@ export default function ClassFitPanel({ result }: { result: ClassFitResult }) {
 }
 
 export function ClassConsistencyTable({ rows }: { rows: ClassFitConsistency[] }) {
+  useI18n()
   if (!Array.isArray(rows) || rows.length === 0) return null
   return (
     <div className="overflow-auto">
       <table className="text-xs border" style={{ width: '100%', tableLayout: 'fixed' }}>
         <thead>
           <tr>
-            <th scope="col" className="border px-2 py-2">大类</th>
-            <th scope="col" className="border px-2 py-2">相关性均值</th>
-            <th scope="col" className="border px-2 py-2">主成分解释度(%)</th>
-            <th scope="col" className="border px-2 py-2">最大跟踪误差(%)</th>
+            <th scope="col" className="border px-2 py-2">{systemText('preInvestment.classFitPanel.assetClass')}</th>
+            <th scope="col" className="border px-2 py-2">{systemText('preInvestment.classFitPanel.meanCorrelation')}</th>
+            <th scope="col" className="border px-2 py-2">{systemText('preInvestment.classFitPanel.principalComponentExplainedVariance')}</th>
+            <th scope="col" className="border px-2 py-2">{systemText('preInvestment.classFitPanel.maximumTrackingError')}</th>
           </tr>
         </thead>
         <tbody>

@@ -67,6 +67,9 @@ class ReferenceSources:
                          | {'reference_capability': self._capability(item)})
         return {'items': items, 'total': payload['total'], 'offset': offset, 'limit': limit, 'problems': []}
 
+    def labels(self, series_ids):
+        return self.series.source_labels(series_ids)
+
     def load(self, component, request, *, snapshot=None, manifest=None):
         snapshot, manifest = (self.active_snapshot_context()
                               if snapshot is None or manifest is None

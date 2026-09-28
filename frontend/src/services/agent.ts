@@ -1,7 +1,7 @@
 import { agentRequest as request } from './agentClient'
 export { AgentApiError } from './agentClient'
 
-export type AgentPage = 'indicator-studio' | 'product-detail' | 'product-research' | 'product-compare' | 'holding-diagnosis' | 'evaluation-plan'
+export type AgentPage = 'regime-workbench' | 'indicator-studio' | 'product-detail' | 'product-research' | 'product-compare' | 'holding-diagnosis' | 'evaluation-plan'
 
 import type { EvaluationResult, IndicatorDraft, TimeSeriesIndicatorResult } from './customIndicators'
 
@@ -58,6 +58,7 @@ export interface AgentMeta {
 }
 
 export interface AgentDraft {
+  artifact_kind?: 'regime_graph'
   draft_revision: number
   valid: boolean
   stale?: boolean

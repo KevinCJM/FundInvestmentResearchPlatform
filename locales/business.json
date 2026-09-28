@@ -148,7 +148,7 @@
   "operators.regression_standard_error.description": {"zh-CN":"计算一元普通最小二乘回归的残差标准误。","en-US":"Compute the residual standard error of a simple ordinary least-squares regression."},
   "operators.normal_pdf.description": {"zh-CN":"逐元素计算标准正态分布的概率密度。","en-US":"Evaluate the standard normal probability density at each element."},
   "operators.normal_ppf.description": {"zh-CN":"逐元素计算严格位于零和一之间的概率所对应的标准正态分位数。","en-US":"Evaluate standard normal quantiles for probabilities strictly between zero and one."},
-  "indicator.studio.title": {"zh-CN":"指标中心","en-US":"Indicator studio"},
+  "indicator.studio.title": {"zh-CN":"行情指标中心","en-US":"Market series metrics"},
   "nodeKinds.variable": {"zh-CN":"输入变量","en-US":"Input variable"},
   "nodeKinds.constant": {"zh-CN":"固定常量","en-US":"Constant"},
   "nodeKinds.operator": {"zh-CN":"计算算子","en-US":"Operator"},

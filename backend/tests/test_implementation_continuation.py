@@ -62,6 +62,7 @@ def test_saved_policy_thirteen_months_and_product_cash_paths(implementation):
         ),
     )
     raw = definition().model_dump(mode="json")
+    raw["name"] = "人民币十年假设·两年续期"
     raw["horizon_years"] = 2
     raw["as_of"] = str(origin)
     raw["assets"][1]["role"] = "liquidity"

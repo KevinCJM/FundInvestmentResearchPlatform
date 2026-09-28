@@ -169,7 +169,7 @@ def test_source_failure_is_visible_diagnostic_not_fusion_gate(workspace):
 
 
 @pytest.mark.parametrize("field,value", [
-    ("currency", "USD"), ("horizon_years", 5), ("moment_semantics", "one_year_simple"),
+    ("currency", "USD"), ("moment_semantics", "one_year_simple"),
     ("fee_basis", "explicit_assumption"), ("fx_hedging_basis", "explicit_assumption"),
     ("as_of", str(date.today() - timedelta(days=1))),
 ])
@@ -182,10 +182,25 @@ def test_incompatible_basis_fails_closed(workspace, field, value):
         service.preview_policy(request)
 
 
+def test_old_horizon_label_does_not_block_fusion_or_rewrite_source(workspace):
+    service, _ = workspace
+    _, sources, request = setup(service)
+    expected = service.preview_policy(request)
+    fields = {key: copy.deepcopy(value) for key, value in sources[1].items()
+              if key not in {"id", "content_hash", "created_at"}}
+    fields["definition"]["horizon_years"] = 5
+    old = service.artifacts.save("series", fields, service.artifacts.arrays(sources[1]["id"]))
+    request.cma_refs[1] = request.cma_refs[1].model_copy(update={"cma_id": old["id"], "content_hash": old["content_hash"]})
+    actual = service.preview_policy(request)
+    assert actual["multi_cma"]["effective_returns"] == expected["multi_cma"]["effective_returns"]
+    assert actual["multi_cma"]["effective_covariance"] == expected["multi_cma"]["effective_covariance"]
+    assert service.get_cma(old["id"]) == old
+
+
 def test_legacy_manual_rejected_only_for_new_fusion(workspace):
     service, _ = workspace
     _, old, single = saved_inputs(service)
-    assert len(service.preview_policy(single)["candidates"]) == 4
+    assert len(service.preview_policy(single)["candidates"]) == 6
     request = PolicyRequest(mandate_id=single.mandate_id, mode="parameter_average", candidate_count=300,
         cma_refs=[dict(cma_id=old["id"], content_hash=old["content_hash"], weight=1.)])
     with pytest.raises(ValidationError, match="LTCMA 2.0"):

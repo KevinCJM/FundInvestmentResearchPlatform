@@ -587,3 +587,43 @@ def test_compare_returns_frontend_canonical_fields(service: HistoricalRegimeServ
     assert result["agreement_rate"] is not None
     assert set(result["pairwise"][0]) >= {"left_run_id", "right_run_id", "agreement_rate", "boundary_distance"}
     assert isinstance(result["disagreement_periods"], list)
+
+
+def test_run_summary_omits_payloads_and_snapshot_is_request_local(tmp_path, monkeypatch):
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+    from historical_regimes.repository import RegimeRunRepository
+    repo = RegimeRunRepository(tmp_path / 'runs.json')
+    records = [{'id': f'run-{schema}', 'schema_version': schema, 'definition_id': 'def-1',
+                'name': 'original', 'states': [{'id': 'up'}], 'publications': [{'id': 'publication'}],
+                'causality': {'is_causal': True}, 'governance': {'formal_gate_passed': True},
+                'evaluation_results': {'price': {'id': 'price', 'name': 'Price', 'metrics': list(range(1000))}},
+                'artifact_manifest': {'evaluation_targets': {'checksum': 'bound', 'arrays': [{'node_id': 'price', 'port': 'value'}]}},
+                'series': [{'value': i} for i in range(1000)], 'calculation_audits': ['large-audit']}
+               for schema in ['1.0', '2.0']]
+    repo.store.path.write_text(json.dumps({'items': records}))
+    original = repo.store.read_unlocked
+    calls = []
+    monkeypatch.setattr(repo.store, 'read_unlocked', lambda: (calls.append(1), original())[1])
+    with repo.read_snapshot():
+        with repo.read_snapshot():
+            summaries = repo.list('def-1', summary=True)
+            assert [row['id'] for row in summaries] == ['run-2.0', 'run-1.0']
+            assert all(row['series_included'] is False and 'series' not in row and 'calculation_audits' not in row for row in summaries)
+            assert summaries[0]['evaluation_results'] == {'price': {'id': 'price', 'name': 'Price'}}
+            assert summaries[0]['artifact_manifest'] == records[0]['artifact_manifest']
+            summaries[0]['states'][0]['id'] = 'changed'
+            assert repo.get('run-2.0')['states'] == [{'id': 'up'}]
+            assert repo.list('absent', summary=True) == []
+            assert len(calls) == 1
+        records[1]['name'] = 'updated'
+        repo.store.path.write_text(json.dumps({'items': records}))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            assert pool.submit(repo.get, 'run-2.0').result()['name'] == 'updated'
+        assert repo.get('run-2.0')['name'] == 'original'
+    assert repo.get('run-2.0')['name'] == 'updated'
+    with pytest.raises(RuntimeError):
+        with repo.read_snapshot():
+            raise RuntimeError('cancel')
+    repo.store.path.unlink()
+    assert repo.list() == []

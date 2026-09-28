@@ -1,3 +1,4 @@
+import { systemText } from '../i18n/runtime'
 import { assertNativeNumericalExecution, type NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
 
 export type ResearchDomain = 'product' | 'transmission'
@@ -111,13 +112,13 @@ const root = (domain: ResearchDomain) => domain === 'product' ? '/api/risk-model
 export async function riskRequest<T>(url: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers } })
   const contentType = response.headers.get('content-type') ?? ''
-  if (!contentType.includes('application/json')) throw new Error('服务没有返回可读取的研究数据，请检查后端连接。')
+  if (!contentType.includes('application/json')) throw new Error(systemText('preInvestment.riskModels.theServiceReturnedUnreadableResearchDataCheck'))
   const payload = await response.json()
   if (!response.ok) {
     const detail = payload?.detail
     const message = Array.isArray(detail)
-      ? detail.map((item: { msg?: string; loc?: string[] }) => item.msg ?? '输入格式无效').join('；')
-      : (typeof detail === 'string' ? detail : detail?.message) ?? payload?.message ?? '研究操作未完成，请检查输入与数据。'
+      ? detail.map((item: { msg?: string; loc?: string[] }) => item.msg ?? systemText('preInvestment.riskModels.invalidInputFormat')).join('；')
+      : (typeof detail === 'string' ? detail : detail?.message) ?? payload?.message ?? systemText('preInvestment.riskModels.researchOperationDidNotCompleteCheckInputs')
     throw new Error(message)
   }
   return payload as T
@@ -129,10 +130,10 @@ const audit = <T extends { execution: NativeNumericalExecutionAudit }>(value: T,
   return value
 }
 export const riskCatalog = (domain: ResearchDomain, signal?: AbortSignal) => riskRequest<RiskCatalog>(`${root(domain)}/catalog`, { signal })
-export const getRiskRun = async (domain: ResearchDomain, id: string, signal?: AbortSignal) => audit(await riskRequest<RiskRun>(`${root(domain)}/runs/${encodeURIComponent(id)}`, { signal }), '已发布敏感性研究')
+export const getRiskRun = async (domain: ResearchDomain, id: string, signal?: AbortSignal) => audit(await riskRequest<RiskRun>(`${root(domain)}/runs/${encodeURIComponent(id)}`, { signal }), systemText('preInvestment.riskModels.publishedSensitivityResearch'))
 export const searchRiskProducts = (kind: 'etf' | 'fund', query: string, signal?: AbortSignal) => items<{ ts_code: string; name: string }>(`${root('product')}/products?${new URLSearchParams({ kind, query })}`, signal)
-export const previewRiskModel = async (domain: ResearchDomain, fields: RiskModelFields) => audit(await post<RiskRun>(`${root(domain)}/previews`, fields), '敏感性研究预览')
-export const previewCashflow = async (fields: CashflowStudy) => audit(await post<RiskRun>('/api/risk-models/cashflow-previews', fields), '现金流估值预览')
+export const previewRiskModel = async (domain: ResearchDomain, fields: RiskModelFields) => audit(await post<RiskRun>(`${root(domain)}/previews`, fields), systemText('preInvestment.riskModels.sensitivityResearchPreview'))
+export const previewCashflow = async (fields: CashflowStudy) => audit(await post<RiskRun>('/api/risk-models/cashflow-previews', fields), systemText('preInvestment.riskModels.cashFlowValuationPreview'))
 export const riskReleases = (domain: ResearchDomain, options: { as_of?: string; product_key?: string } = {}, signal?: AbortSignal) => {
   const query = new URLSearchParams(Object.entries(options).filter((entry): entry is [string, string] => Boolean(entry[1])))
   return items<RiskRelease>(`${root(domain)}/releases?${query}`, signal)
@@ -142,10 +143,10 @@ export const publishCashflowPreview = (study: CashflowStudy, preview_hash: strin
 export const retireRiskRelease = (domain: ResearchDomain, id: string, note: string) => post(`${root(domain)}/releases/${encodeURIComponent(id)}/retire`, { note })
 export const importRiskSeries = (domain: ResearchDomain, fields: SeriesImport) => post<RiskVariable>(`${root(domain)}/variables`, fields)
 export const scenarioReleases = (as_of?: string, signal?: AbortSignal) => items<ScenarioRelease>(`/api/published-scenarios/releases${as_of ? `?${new URLSearchParams({ as_of })}` : ''}`, signal)
-export const previewScenario = async (fields: ScenarioDraft) => audit(await post<ScenarioPreview>('/api/published-scenarios/previews', fields), '情景传导预览')
-export const getScenarioPreview = async (id: string, signal?: AbortSignal) => audit(await riskRequest<ScenarioPreview>(`/api/published-scenarios/previews/${encodeURIComponent(id)}`, { signal }), '已保存情景路径')
+export const previewScenario = async (fields: ScenarioDraft) => audit(await post<ScenarioPreview>('/api/published-scenarios/previews', fields), systemText('preInvestment.riskModels.scenarioPropagationPreview'))
+export const getScenarioPreview = async (id: string, signal?: AbortSignal) => audit(await riskRequest<ScenarioPreview>(`/api/published-scenarios/previews/${encodeURIComponent(id)}`, { signal }), systemText('preInvestment.riskModels.savedScenarioPath'))
 export const publishScenario = (definition: ScenarioDraft, preview_hash: string, valid_days: number, note: string, publication_request_id?: string) => post<ScenarioRelease>('/api/published-scenarios/releases', { definition, preview_hash, valid_days, note, publication_request_id, acknowledge_limitations: true })
 export const retireScenario = (id: string, note: string) => post(`/api/published-scenarios/releases/${encodeURIComponent(id)}/retire`, { note })
 export const riskPortfolios = (signal?: AbortSignal) => items<PortfolioChoice>('/api/published-scenarios/portfolios', signal)
-export const runRiskImpact = async (fields: ImpactRequest) => audit(await post<RiskImpact>('/api/published-scenarios/impacts', fields), '已发布模型情景压测')
-export const getRiskImpact = async (id: string, signal?: AbortSignal) => audit(await riskRequest<RiskImpact>(`/api/published-scenarios/impacts/${encodeURIComponent(id)}`, { signal }), '已保存情景压测')
+export const runRiskImpact = async (fields: ImpactRequest) => audit(await post<RiskImpact>('/api/published-scenarios/impacts', fields), systemText('preInvestment.riskModels.publishedModelScenarioStressTest'))
+export const getRiskImpact = async (id: string, signal?: AbortSignal) => audit(await riskRequest<RiskImpact>(`/api/published-scenarios/impacts/${encodeURIComponent(id)}`, { signal }), systemText('preInvestment.riskModels.savedScenarioStressTest'))

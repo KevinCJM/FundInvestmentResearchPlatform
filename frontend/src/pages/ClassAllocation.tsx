@@ -1,3 +1,4 @@
+import { systemText, useI18n, i18n } from '../i18n/runtime'
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import ReactECharts from 'echarts-for-react';
 import { AllocationMetricsReview } from '../components/HorizontalMetricComparison';
@@ -15,12 +16,14 @@ import type { HistoricalRegimeBacktestReference } from '../services/portfolioReg
 import { PortfolioRiskSection } from '../components/risk-models/PublishedRiskPanel';
 import { apiErrorMessage } from '../utils/apiError'
 import PitDecisionNotice from '../components/PitDecisionNotice'
+import ResumeResearch from '../components/ResumeResearch'
 import { createTaaBaseline } from '../services/tacticalAllocation'
 import { FrontierGridControls, FrontierGridResults, defaultFrontierGrid, frontierGridIssue, type FrontierGridSettings } from '../components/frontier-grid/FrontierGrid'
 import { allocationJourneyPath, readAllocationDraft, readAllocationJourney, updateAllocationJourney, writeAllocationDraft } from '../app/allocationJourney'
 
 // Helper component for section titles
 function Section({ title, children, plain = false }: { title: string; children: React.ReactNode; plain?: boolean }) {
+  useI18n()
   return (
     <div className={plain ? "border-t border-slate-200 py-5" : "mt-6 rounded-xl border border-slate-200 bg-white p-4 sm:p-6"}>
       {plain ? <h3 className="text-base font-semibold text-slate-800">{title}</h3> : <h2 className="text-lg font-semibold text-slate-800">{title}</h2>}
@@ -62,11 +65,16 @@ const allocationLabPath = (allocationName: string, universeId: string) => {
 }
 
 export default function ClassAllocation() {
+  useI18n()
   const [params] = useSearchParams();
   const journey = readAllocationJourney();
-  const allocationName = params.get('alloc') ?? journey.allocationName ?? '';
-  const universeId = params.get('universe') ?? journey.universeId ?? '';
-  return <ClassAllocationEditor key={`${universeId}:${allocationName}`} requestedAllocation={allocationName} universeId={universeId} />;
+  // 地址栏是唯一事实来源：没带身份就当新一轮研究，续接由用户点续接条显式发起。
+  const allocationName = params.get('alloc') ?? '';
+  const universeId = params.get('universe') ?? '';
+  return <>
+    <ResumeResearch to={allocationLabPath(journey.allocationName ?? '', journey.universeId ?? '')} />
+    <ClassAllocationEditor key={`${universeId}:${allocationName}`} requestedAllocation={allocationName} universeId={universeId} />
+  </>;
 }
 
 type StrategyType = 'fixed' | 'risk_budget' | 'target';
@@ -87,6 +95,7 @@ type AllocationDraft = {
 };
 
 function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedAllocation: string; universeId: string }) {
+  useI18n()
   const navigate = useNavigate();
   const draftScope = `saa:${universeId || 'local'}:${requestedAllocation || 'new'}`;
   const [initialDraft] = useState(() => readAllocationDraft<AllocationDraft>(draftScope) ?? {});
@@ -178,12 +187,12 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
   const [loadedAllocation, setLoadedAllocation] = useState('');
   const enterTacticalResearch = async (strategy: StrategyRow) => {
     if (!loadedAllocation || loadedAllocation !== selectedAlloc) {
-      setError('请先加载当前方案，再将所选策略锁定为 SAA。'); return;
+      setError(systemText('preInvestment.classAllocation.loadTheCurrentPlanBeforeLockingThe')); return;
     }
     if (strategy.rows.some(row => row.weight == null || !Number.isFinite(row.weight))) {
-      setError('请先计算或填写该策略的全部大类权重。'); return;
+      setError(systemText('preInvestment.classAllocation.calculateOrEnterAllAssetClassWeights')); return;
     }
-    if (!endDate) { setError('请填写方案日期后再进入 TAA。'); return; }
+    if (!endDate) { setError(systemText('preInvestment.classAllocation.enterThePolicyDateBeforeContinuingTo')); return; }
     setTaaBusy(strategy.id); setError('');
     try {
       const baseline = await createTaaBaseline({
@@ -197,7 +206,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
       });
       const journey = updateAllocationJourney({ universeId: universeId || undefined, allocationName: loadedAllocation, baselineId: baseline.id });
       navigate(allocationJourneyPath('taa', journey));
-    } catch (caught) { setError(caught instanceof Error ? caught.message : 'SAA 基线保存失败。'); }
+    } catch (caught) { setError(caught instanceof Error ? caught.message : systemText('preInvestment.classAllocation.unableToSaveTheSaaBaseline')); }
     finally { setTaaBusy(null); }
   };
 
@@ -346,7 +355,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
     async (strategy: StrategyRow) => {
       const expectedStudy = studyBounds.current;
       const payload = buildComputeWeightsPayload(strategy);
-      if (!payload) throw new Error('缺少方案配置，请先选择资产配置方案');
+      if (!payload) throw new Error(systemText('preInvestment.classAllocation.missingPlanConfigurationSelectAnAllocationPlan'));
       const response = await fetch('/api/strategy/compute-weights', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -354,11 +363,11 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
       });
       const data = await response.json();
       if (!response.ok) {
-        const fallback = strategy.type === 'risk_budget' ? '风险预算权重计算失败' : '指定目标权重计算失败';
+        const fallback = strategy.type === 'risk_budget' ? systemText('preInvestment.classAllocation.riskBudgetWeightCalculationFailed') : systemText('preInvestment.classAllocation.targetWeightCalculationFailed');
         throw new Error(apiErrorMessage(data, fallback));
       }
-      if (studyBounds.current !== expectedStudy) throw new Error('研究结束日或方案已变化，请重新计算权重。');
-      assertNativeNumericalExecution(data?.execution, '大类权重求解');
+      if (studyBounds.current !== expectedStudy) throw new Error(systemText('preInvestment.classAllocation.theResearchEndDateOrPlanChanged'));
+      assertNativeNumericalExecution(data?.execution, systemText('preInvestment.classAllocation.assetClassWeightSolution'));
       return (data.weights || []) as number[];
     },
     [buildComputeWeightsPayload]
@@ -387,7 +396,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
     async (strategy: StrategyRow) => {
       const expectedStudy = studyBounds.current;
       const payload = buildSchedulePayload(strategy);
-      if (!payload) throw new Error('缺少方案配置，请先选择资产配置方案');
+      if (!payload) throw new Error(systemText('preInvestment.classAllocation.missingPlanConfigurationSelectAnAllocationPlan'));
       const response = await fetch('/api/strategy/compute-schedule-weights', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -395,10 +404,10 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
       });
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(apiErrorMessage(data, '批量调仓权重计算失败'));
+        throw new Error(apiErrorMessage(data, systemText('preInvestment.classAllocation.batchRebalancingWeightCalculationFailed')));
       }
-      if (studyBounds.current !== expectedStudy) throw new Error('研究结束日或方案已变化，请重新计算调仓计划。');
-      assertNativeNumericalExecution(data?.execution, '批量调仓权重计算');
+      if (studyBounds.current !== expectedStudy) throw new Error(systemText('preInvestment.classAllocation.theResearchEndDateOrPlanChanged2'));
+      assertNativeNumericalExecution(data?.execution, systemText('preInvestment.classAllocation.batchRebalancingWeightCalculation'));
       const markers = (data.dates || []).map((d: string, idx: number) => ({
         date: d,
         weights: (data.weights && data.weights[idx]) || [],
@@ -602,27 +611,27 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
     );
     const cumulativePercentValues = cumulativeValues.map(v => (Number.isFinite(v) ? v * 100 : NaN));
     const rows = [
-      { label: '累计收益率(%)', values: cumulativePercentValues },
-      { label: '年化收益率(%)', values: metrics.map((m: any) => parseMetricValue(m.annual_return) * 100) },
-      { label: '年化波动率(%)', values: metrics.map((m: any) => parseMetricValue(m.annual_vol) * 100) },
-      { label: '夏普比率', values: metrics.map((m: any) => parseMetricValue(m.sharpe)) },
-      { label: '99%VaR(日)(%)', values: metrics.map((m: any) => parseMetricValue(m.var99) * 100), reverseScale: true },
-      { label: '99%ES(日)(%)', values: metrics.map((m: any) => parseMetricValue(m.es99) * 100), reverseScale: true },
-      { label: '最大回撤(%)', values: metrics.map((m: any) => parseMetricValue(m.max_drawdown) * 100) },
-      { label: '卡玛比率', values: metrics.map((m: any) => parseMetricValue(m.calmar)) },
+      { label: systemText('preInvestment.classAllocation.cumulativeReturn'), values: cumulativePercentValues },
+      { label: systemText('preInvestment.classAllocation.annualReturn'), values: metrics.map((m: any) => parseMetricValue(m.annual_return) * 100) },
+      { label: systemText('preInvestment.classAllocation.annualVolatility'), values: metrics.map((m: any) => parseMetricValue(m.annual_vol) * 100) },
+      { label: systemText('preInvestment.classAllocation.sharpeRatio'), values: metrics.map((m: any) => parseMetricValue(m.sharpe)) },
+      { label: systemText('preInvestment.classAllocation.99VarDaily'), values: metrics.map((m: any) => parseMetricValue(m.var99) * 100), reverseScale: true },
+      { label: systemText('preInvestment.classAllocation.99EsDaily'), values: metrics.map((m: any) => parseMetricValue(m.es99) * 100), reverseScale: true },
+      { label: systemText('preInvestment.classAllocation.maximumDrawdown'), values: metrics.map((m: any) => parseMetricValue(m.max_drawdown) * 100) },
+      { label: systemText('preInvestment.classAllocation.calmarRatio'), values: metrics.map((m: any) => parseMetricValue(m.calmar)) },
     ];
     const annualRows = buildAnnualMetricRows(columns, btSeries?.annual_metrics ?? {
       years: [],
       series: {},
     });
     return { columns, rows, annualRows };
-  }, [btSeries?.annual_metrics, btSeries?.metrics, parseMetricValue]);
+  }, [btSeries?.annual_metrics, btSeries?.metrics, parseMetricValue, i18n.language]);
 
   const backtestMetricColumns = backtestMetricsSummary.columns;
   const backtestMetricRows = backtestMetricsSummary.rows;
 
   const loadEqualPercents = useCallback(async (names: string[]): Promise<number[]> => {
-    if (names.length === 0) throw new Error('请先加载至少一个资产大类');
+    if (names.length === 0) throw new Error(systemText('preInvestment.classAllocation.loadAtLeastOneAssetClassFirst'));
     setEqualWeightLoading(true);
     try {
       const result = await requestEqualWeights(names.length);
@@ -647,17 +656,17 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
       try {
         setLoading(true);
         const res = await fetch('/api/list-allocations');
-        if (!res.ok) throw new Error('无法获取方案列表');
+        if (!res.ok) throw new Error(systemText('preInvestment.classAllocation.unableToRetrieveThePlanList'));
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
           setAllocations(data);
           if (!requestedAllocation) setSelectedAlloc(data[0]);
-          else if (!data.includes(requestedAllocation)) setError(`未找到大类方案“${requestedAllocation}”，请重新选择。`)
+          else if (!data.includes(requestedAllocation)) setError(systemText('preInvestment.classAllocation.assetClassPlanNotFoundSelectAnother', { p0: requestedAllocation }))
         } else {
-          setError('沒有找到已保存的大類構建方案。請先在“手動構建大類”頁面保存配置後，再進行大類資產配置。');
+          setError(systemText('preInvestment.classAllocation.noSavedAssetClassSchemesFoundSave'));
         }
       } catch (e: any) {
-        setError(e.message || '获取方案列表失败');
+        setError(e.message || systemText('preInvestment.classAllocation.unableToLoadThePlanList'));
       } finally {
         setLoading(false);
       }
@@ -673,7 +682,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
       setLoading(true); setError('');
       try {
         const res = await fetch(`/api/load-allocation?name=${encodeURIComponent(requestedAllocation)}`);
-        if (!res.ok) throw new Error('加载大类方案失败，请重新选择或返回大类构建检查。');
+        if (!res.ok) throw new Error(systemText('preInvestment.classAllocation.unableToLoadTheAssetClassPlan'));
         const data = await res.json();
         const details: ConfigDetail[] = data.flatMap((ac: any) => ac.etfs.map((etf: any) => ({
           className: ac.name, code: etf.code, name: etf.name, weight: `${Number(etf.weight).toFixed(2)}%`,
@@ -684,7 +693,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
         if (stableStringify(names) !== stableStringify(initialDraft.assetNames)) {
           setSingleLimits(Object.fromEntries(names.map(name => [name, { lo: 0, hi: 1 }])));
           setGroupLimits([]); setStrategies([]);
-          if (initialDraft.strategies?.length) setError('大类组成已变化，已保留研究日期；请按当前大类重新设置权重与约束。');
+          if (initialDraft.strategies?.length) setError(systemText('preInvestment.classAllocation.assetCompositionChangedResearchDatesAreRetained'));
         }
         updateAllocationJourney({ allocationName: requestedAllocation, universeId: universeId || undefined });
         const range = await fetch(`/api/strategy/default-start?alloc_name=${encodeURIComponent(requestedAllocation)}`);
@@ -694,7 +703,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
           if (!initialDraft.btStart && available.default_start) setBtStart(available.default_start > startDate ? available.default_start : startDate);
         }
       } catch (caught) {
-        if (active) setError(caught instanceof Error ? caught.message : '加载方案失败');
+        if (active) setError(caught instanceof Error ? caught.message : systemText('preInvestment.classAllocation.unableToLoadThePlan'));
       } finally { if (active) setLoading(false); }
     };
     void load();
@@ -702,45 +711,45 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
   }, [requestedAllocation, universeId]);
 
   const handleSelectAndLoad = () => {
-    if (!selectedAlloc) { setError('请选择一个已保存的大类方案。'); return; }
+    if (!selectedAlloc) { setError(systemText('preInvestment.classAllocation.selectASavedAssetClassPlan')); return; }
     updateAllocationJourney({ allocationName: selectedAlloc, universeId: universeId || undefined });
     navigate(allocationLabPath(selectedAlloc, universeId));
   };
 
   const addFixedStrategy = async () => {
-    if (!assetNames.length) { setError('请先加载大类方案。'); return; }
+    if (!assetNames.length) { setError(systemText('preInvestment.classAllocation.loadAnAssetClassPlanFirst')); return; }
     setError('');
     try {
       const weights = await loadEqualPercents(assetNames);
-      setStrategies(current => [...current, { id: `s${Date.now()}`, name: uniqueStrategyName('固定比例策略', current), type: 'fixed',
+      setStrategies(current => [...current, { id: `s${Date.now()}`, name: uniqueStrategyName(systemText('preInvestment.classAllocation.fixedWeightStrategy'), current), type: 'fixed',
         rows: assetNames.map((name, index) => ({ className: name, weight: weights[index] })), cfg: { mode: 'custom' } }]);
-    } catch (caught) { setError(caught instanceof Error ? caught.message : '无法生成初始权重。'); }
+    } catch (caught) { setError(caught instanceof Error ? caught.message : systemText('preInvestment.classAllocation.unableToGenerateInitialWeights')); }
   };
 
   const adoptCandidate = (label: string, point: any) => {
     const names: string[] = frontierData?.asset_names ?? [];
     if (!Array.isArray(point?.weights) || point.weights.length !== names.length || !point.weights.every(Number.isFinite)) {
-      setError('这个候选没有完整的大类权重，请重新计算。'); return;
+      setError(systemText('preInvestment.classAllocation.thisCandidateLacksCompleteAssetClassWeights')); return;
     }
-    setStrategies(current => [...current, { id: `s${Date.now()}`, name: uniqueStrategyName(`${label}配置`, current), type: 'fixed',
+    setStrategies(current => [...current, { id: `s${Date.now()}`, name: uniqueStrategyName(systemText('preInvestment.classAllocation.allocation', { p0: label }), current), type: 'fixed',
       rows: names.map((className, index) => ({ className, weight: Number((point.weights[index] * 100).toFixed(8)) })),
-      cfg: { mode: 'custom', selection_reason: `采用${label}候选；样本 ${startDate} 至 ${endDate}` } }]);
+      cfg: { mode: 'custom', selection_reason: systemText('preInvestment.classAllocation.adoptCandidateSampleTo', { p0: label, p1: startDate, p2: endDate }) } }]);
     setResearchGoal('manual');
   };
 
-  const returnLabel = ({ annual: '年化收益率', annual_mean: '年化平均收益率', cumulative: '累计收益率', mean: '日均收益率', ewm: '加权日收益率' } as Record<string, string>)[returnMetric] ?? '收益率';
-  const riskLabel = ({ vol: '日波动率', annual_vol: '年化波动率', ewm_vol: '加权波动率', var: 'VaR', es: '预期尾部损失', max_drawdown: '最大回撤', downside_vol: '下行波动率' } as Record<string, string>)[riskMetric] ?? '风险';
+  const returnLabel = ({ annual: systemText('preInvestment.classAllocation.annualizedReturn'), annual_mean: systemText('preInvestment.classAllocation.annualizedMeanReturn'), cumulative: systemText('preInvestment.classAllocation.cumulativeReturn2'), mean: systemText('preInvestment.classAllocation.meanDailyReturn'), ewm: systemText('preInvestment.classAllocation.weightedDailyReturn') } as Record<string, string>)[returnMetric] ?? systemText('preInvestment.classAllocation.return');
+  const riskLabel = ({ vol: systemText('preInvestment.classAllocation.dailyVolatility'), annual_vol: systemText('preInvestment.classAllocation.annualVolatility2'), ewm_vol: systemText('preInvestment.classAllocation.weightedVolatility'), var: 'VaR', es: systemText('preInvestment.classAllocation.expectedShortfall'), max_drawdown: systemText('preInvestment.classAllocation.maximumDrawdown2'), downside_vol: systemText('preInvestment.classAllocation.downsideVolatility') } as Record<string, string>)[riskMetric] ?? systemText('preInvestment.classAllocation.risk');
   const candidates = frontierData ? [
-    { label: '较低风险', key: 'min_variance' }, { label: '较高收益风险比', key: 'max_sharpe' }, { label: '较高收益', key: 'max_return' },
+    { label: systemText('preInvestment.classAllocation.lowerRisk'), key: 'min_variance' }, { label: systemText('preInvestment.classAllocation.higherReturnToRiskRatio'), key: 'max_sharpe' }, { label: systemText('preInvestment.classAllocation.higherReturn'), key: 'max_return' },
   ].filter(item => frontierData[item.key]) : [];
 
   const onCalculate = async () => {
     if (gridIssue) { setError(gridIssue); return; }
     const expectedInput = latestFrontierKey.current;
     const requestSequence = ++frontierRequestSequence.current;
-    if (!startDate || !endDate || startDate > endDate) { setError('请选择完整研究区间，开始日不能晚于结束日。'); return; }
+    if (!startDate || !endDate || startDate > endDate) { setError(systemText('preInvestment.classAllocation.selectTheFullResearchIntervalStartDate')); return; }
     if (!selectedAlloc || loadedAllocation !== selectedAlloc) {
-      setError('请先加载当前大类方案，再计算候选。');
+      setError(systemText('preInvestment.classAllocation.loadTheCurrentAssetClassPlanBefore'));
       return;
     }
     
@@ -793,13 +802,13 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
       });
       const data = await res.json();
       if (requestSequence !== frontierRequestSequence.current || expectedInput !== latestFrontierKey.current) return;
-      if (!res.ok) throw new Error(apiErrorMessage(data, '计算失败'));
-      assertNativeNumericalExecution(data?.execution, '大类配置有效前沿');
+      if (!res.ok) throw new Error(apiErrorMessage(data, systemText('preInvestment.classAllocation.calculationFailed')));
+      assertNativeNumericalExecution(data?.execution, systemText('preInvestment.classAllocation.assetAllocationEfficientFrontier'));
       frontierInputRef.current = frontierInputKey;
       setFrontierData(data);
     } catch (e: any) {
       if (requestSequence === frontierRequestSequence.current && expectedInput === latestFrontierKey.current)
-        setError(e.message || '计算失败，请检查研究日期与数据质量。');
+        setError(e.message || systemText('preInvestment.classAllocation.calculationFailedCheckResearchDatesAndData'));
     } finally {
       if (requestSequence === frontierRequestSequence.current) setIsCalculating(false);
     }
@@ -813,27 +822,27 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
             className="rounded-xl bg-white px-6 py-4 shadow text-sm"
             style={overlayOffset !== null ? { marginTop: overlayOffset } : undefined}
           >
-            {btBusy ? '计算中...' : (isCalculating ? '正在计算，请稍候...' : '正在加载...')}
+            {btBusy ? systemText('preInvestment.classAllocation.calculating') : (isCalculating ? systemText('preInvestment.classAllocation.calculatingPleaseWait') : systemText('preInvestment.classAllocation.loading'))}
           </div>
         </div>
       )}
 
       
-      <h1 className="text-2xl font-semibold">大类资产配置</h1>
-      <p className="text-sm text-slate-600 mt-1">先确定长期资金比例，再检验历史表现，最后进入 TAA 研究短期调整。</p>
-      <p className="mt-2 text-sm text-slate-600">{loadedAllocation ? `当前大类：${loadedAllocation} · ${assetNames.length} 类` : '选择已保存的大类方案开始。'} <Link className="ml-2 underline" to={allocationJourneyPath('classes')}>返回大类构建</Link></p>
-      {draftNotice && <p role="status" className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">已保留研究输入。历史结果需在当前数据口径下重新计算。</p>}
+      <h1 className="text-2xl font-semibold">{systemText('preInvestment.classAllocation.assetAllocation')}</h1>
+      <p className="text-sm text-slate-600 mt-1">{systemText('preInvestment.classAllocation.setLongTermCapitalWeightsTestHistorical')}</p>
+      <p className="mt-2 text-sm text-slate-600">{loadedAllocation ? systemText('preInvestment.classAllocation.currentClassesClasses', { p0: loadedAllocation, p1: assetNames.length }) : systemText('preInvestment.classAllocation.selectASavedAssetClassPlanTo')} <Link className="ml-2 underline" to={allocationJourneyPath('classes')}>{systemText('preInvestment.classAllocation.returnToAssetConstruction')}</Link></p>
+      {draftNotice && <p role="status" className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{systemText('preInvestment.classAllocation.researchInputsRetainedRecalculateHistoricalResultsUnder')}</p>}
       {error && <p role="alert" className="sticky top-2 z-40 mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{error}</p>}
 
       <section aria-labelledby="frontier-workspace-title" className="mt-6 min-w-0 rounded-xl border border-slate-200 bg-white p-4 sm:p-6 [&_button]:min-h-10 [&_input:not([type=checkbox])]:min-h-10 [&_select]:min-h-10">
-      <h2 id="frontier-workspace-title" className="text-lg font-semibold text-slate-800">可配置空间与有效前沿</h2>
-      <p className="my-3 text-sm leading-6 text-slate-600">在同一处配置指标、单项与联合约束、多轮随机游走、权重精度和前沿目标，再查看并采用结果。</p>
-      <Section plain title="选择大类构建方案">
-        {loading && <p>正在加载方案列表...</p>}
+      <h2 id="frontier-workspace-title" className="text-lg font-semibold text-slate-800">{systemText('preInvestment.classAllocation.allocationSpaceAndEfficientFrontier')}</h2>
+      <p className="my-3 text-sm leading-6 text-slate-600">{systemText('preInvestment.classAllocation.configureMetricsIndividualAndJointConstraintsMulti')}</p>
+      <Section plain title={systemText('preInvestment.classAllocation.selectAnAssetClassScheme')}>
+        {loading && <p>{systemText('preInvestment.classAllocation.loadingPlanList')}</p>}
         {!loading && (
           <div className="flex flex-wrap items-center gap-3">
             <select 
-              aria-label="大类构建方案"
+              aria-label={systemText('preInvestment.classAllocation.assetClassScheme')}
               value={selectedAlloc}
               onChange={event => { updateAllocationJourney({ allocationName: event.target.value, universeId: universeId || undefined }); navigate(allocationLabPath(event.target.value, universeId)); }}
               className="min-w-0 max-w-full flex-grow rounded-lg border-slate-300 shadow-sm focus:border-accent-500 focus:ring-accent-500">
@@ -843,21 +852,21 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
               onClick={handleSelectAndLoad}
               disabled={Boolean(loadedAllocation) && loadedAllocation === selectedAlloc}
               className="rounded-lg bg-accent-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-accent-700">
-              {loadedAllocation === selectedAlloc && loadedAllocation ? '已加载' : '选择该方案'}
+              {loadedAllocation === selectedAlloc && loadedAllocation ? systemText('preInvestment.classAllocation.loaded') : systemText('preInvestment.classAllocation.selectThisScheme')}
             </button>
           </div>
         )}
         {configDetails && (
           <details className="mt-3 rounded-lg border p-3">
-            <summary className="cursor-pointer text-sm">查看类内产品及权重（每类合计 100%）</summary>
+            <summary className="cursor-pointer text-sm">{systemText('preInvestment.classAllocation.viewProductsAndWeightsWithinEachClass')}</summary>
             <div className="mt-2 max-h-80 overflow-auto">
               <table className="min-w-full divide-y divide-slate-200">
               <thead className="bg-slate-50">
                 <tr>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide r text-slate-600">大类名称</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide r text-slate-600">产品代码</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide r text-slate-600">产品名称</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide r text-slate-600">类内权重</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide text-slate-600">{systemText('preInvestment.classAllocation.assetName')}</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide text-slate-600">{systemText('preInvestment.classAllocation.productCode')}</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide text-slate-600">{systemText('preInvestment.classAllocation.productName')}</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide text-slate-600">{systemText('preInvestment.classAllocation.withinClassWeights')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">
@@ -876,36 +885,36 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
         )}
       </Section>
 
-      <Section plain title="长期配置目标与研究区间">
+      <Section plain title={systemText('preInvestment.classAllocation.longTermAllocationObjectiveAndResearchInterval')}>
         <div className="grid gap-3 sm:grid-cols-3">
-          <label className="text-sm">我想先做什么<select aria-label="长期配置目标" value={researchGoal} onChange={event => setResearchGoal(event.target.value)} className="mt-1 w-full rounded-lg border p-2"><option value="manual">填写长期权重</option><option value="compare">比较不同收益与风险的候选</option></select></label>
-          <label className="text-sm">研究区间开始<input aria-label="研究区间开始" type="date" value={startDate} max={endDate} onChange={event => { setStartDate(event.target.value); setBtStart(event.target.value); }} className="mt-1 w-full rounded-lg border p-2" /></label>
-          <label className="text-sm">方案日期 / 构建区间结束<input aria-label="研究区间结束" type="date" value={endDate} min={startDate} onChange={event => setEndDate(event.target.value)} className="mt-1 w-full rounded-lg border p-2" /></label>
+          <label className="text-sm">{systemText('preInvestment.classAllocation.whatWouldYouLikeToDoFirst')}<select aria-label={systemText('preInvestment.classAllocation.longTermAllocationObjective')} value={researchGoal} onChange={event => setResearchGoal(event.target.value)} className="mt-1 w-full rounded-lg border p-2"><option value="manual">{systemText('preInvestment.classAllocation.enterLongTermWeights')}</option><option value="compare">{systemText('preInvestment.classAllocation.compareCandidatesWithDifferentReturnsAndRisks')}</option></select></label>
+          <label className="text-sm">{systemText('preInvestment.classAllocation.researchIntervalStart')}<input aria-label={systemText('preInvestment.classAllocation.researchIntervalStart')} type="date" value={startDate} max={endDate} onChange={event => { setStartDate(event.target.value); setBtStart(event.target.value); }} className="mt-1 w-full rounded-lg border p-2" /></label>
+          <label className="text-sm">{systemText('preInvestment.classAllocation.policyDateConstructionIntervalEnd')}<input aria-label={systemText('preInvestment.classAllocation.researchIntervalEnd')} type="date" value={endDate} min={startDate} onChange={event => setEndDate(event.target.value)} className="mt-1 w-full rounded-lg border p-2" /></label>
         </div>
-        <p className="mt-2 text-xs text-slate-600">候选、目标网格和策略回测共享上述结束日，实际样本受数据覆盖限制；不是正式 PIT 认证。</p>
+        <p className="mt-2 text-xs text-slate-600">{systemText('preInvestment.classAllocation.candidatesTargetGridsAndBacktestsShareThis')}</p>
 
       </Section>
-      <Section plain title="大类资金边界（占整个组合的 %）">
+      <Section plain title={systemText('preInvestment.classAllocation.assetClassFundingBoundsOfTheEntire')}>
         {/* 权重约束设置 */}
         <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2">
           <div className="min-w-0 space-y-3">
-            <h3 className="font-medium text-slate-700">单个大类资金范围</h3>
+            <h3 className="font-medium text-slate-700">{systemText('preInvestment.classAllocation.individualAssetClassFundingRange')}</h3>
             {assetNames.length === 0 ? (
-              <p className="text-sm text-slate-600 mt-2">请先选择并加载方案</p>
+              <p className="text-sm text-slate-600 mt-2">{systemText('preInvestment.classAllocation.selectAndLoadASchemeFirst')}</p>
             ) : (
               <div className="mt-3 space-y-2">
-                <div className="grid grid-cols-3 gap-2 text-xs text-slate-600"><span>大类</span><span>最低 %</span><span>最高 %</span></div>
+                <div className="grid grid-cols-3 gap-2 text-xs text-slate-600"><span>{systemText('preInvestment.classAllocation.assetClass')}</span><span>{systemText('preInvestment.classAllocation.minimum')}</span><span>{systemText('preInvestment.classAllocation.maximum')}</span></div>
                 {assetNames.map(name => (
                   <div key={name} className="grid grid-cols-3 items-center gap-2">
                     <div className="text-sm text-slate-700">{name}</div>
-                    <input aria-label={`${name} 最低权重 (%)`} type="number" min={0} max={100} step={1}
+                    <input aria-label={systemText('preInvestment.classAllocation.minimumWeight', { p0: name })} type="number" min={0} max={100} step={1}
                       value={Number(((singleLimits[name]?.lo ?? 0) * 100).toFixed(4))}
                       onChange={e => setSingleLimits(prev => ({ ...prev, [name]: { ...(prev[name]||{lo:0,hi:1}), lo: Number(e.target.value) / 100 } }))}
-                      className="min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" placeholder="最低 %" />
-                    <input aria-label={`${name} 最高权重 (%)`} type="number" min={0} max={100} step={1}
+                      className="min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" placeholder={systemText('preInvestment.classAllocation.minimum')} />
+                    <input aria-label={systemText('preInvestment.classAllocation.maximumWeight', { p0: name })} type="number" min={0} max={100} step={1}
                       value={Number(((singleLimits[name]?.hi ?? 1) * 100).toFixed(4))}
                       onChange={e => setSingleLimits(prev => ({ ...prev, [name]: { ...(prev[name]||{lo:0,hi:1}), hi: Number(e.target.value) / 100 } }))}
-                      className="min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" placeholder="最高 %" />
+                      className="min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" placeholder={systemText('preInvestment.classAllocation.maximum')} />
                   </div>
                 ))}
               </div>
@@ -913,8 +922,8 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
           </div>
 
           <div className="min-w-0 space-y-3">
-            <h3 className="font-medium text-slate-700">多个大类合计范围</h3>
-            <p className="mt-1 text-xs text-slate-600">例如：权益与商品合计不超过 60%。不需要时留空。</p>
+            <h3 className="font-medium text-slate-700">{systemText('preInvestment.classAllocation.combinedRangeForMultipleClasses')}</h3>
+            <p className="mt-1 text-xs text-slate-600">{systemText('preInvestment.classAllocation.forExampleEquitiesPlusCommoditiesMustNot')}</p>
             <div className="mt-2 space-y-3">
               {groupLimits.map((g, idx) => (
                 <div key={g.id} className="border-b border-slate-200 py-3">
@@ -927,59 +936,59 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                       </label>
                     ))}
                   </div>
-                  <div className="mt-2 grid grid-cols-3 gap-2 text-xs text-slate-600"><span>最低 %</span><span>最高 %</span><span /></div>
+                  <div className="mt-2 grid grid-cols-3 gap-2 text-xs text-slate-600"><span>{systemText('preInvestment.classAllocation.minimum')}</span><span>{systemText('preInvestment.classAllocation.maximum')}</span><span /></div>
                   <div className="mt-1 grid grid-cols-3 gap-2">
-                    <input aria-label={`联合约束 ${idx + 1} 最低权重 (%)`} type="number" min={0} max={100} step={1} value={Number((g.lo * 100).toFixed(4))} onChange={e => setGroupLimits(prev => prev.map(x => x.id===g.id ? { ...x, lo: Number(e.target.value) / 100 } : x))} className="min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" placeholder="最低 %" />
-                    <input aria-label={`联合约束 ${idx + 1} 最高权重 (%)`} type="number" min={0} max={100} step={1} value={Number((g.hi * 100).toFixed(4))} onChange={e => setGroupLimits(prev => prev.map(x => x.id===g.id ? { ...x, hi: Number(e.target.value) / 100 } : x))} className="min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" placeholder="最高 %" />
-                    <button onClick={() => setGroupLimits(prev => prev.filter(x => x.id !== g.id))} className="rounded-lg bg-red-50 text-red-700 text-xs px-2">删除</button>
+                    <input aria-label={systemText('preInvestment.classAllocation.jointConstraintMinimumWeight', { p0: idx + 1 })} type="number" min={0} max={100} step={1} value={Number((g.lo * 100).toFixed(4))} onChange={e => setGroupLimits(prev => prev.map(x => x.id===g.id ? { ...x, lo: Number(e.target.value) / 100 } : x))} className="min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" placeholder={systemText('preInvestment.classAllocation.minimum')} />
+                    <input aria-label={systemText('preInvestment.classAllocation.jointConstraintMaximumWeight', { p0: idx + 1 })} type="number" min={0} max={100} step={1} value={Number((g.hi * 100).toFixed(4))} onChange={e => setGroupLimits(prev => prev.map(x => x.id===g.id ? { ...x, hi: Number(e.target.value) / 100 } : x))} className="min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" placeholder={systemText('preInvestment.classAllocation.maximum')} />
+                    <button onClick={() => setGroupLimits(prev => prev.filter(x => x.id !== g.id))} className="rounded-lg bg-red-50 text-red-700 text-xs px-2">{systemText('preInvestment.classAllocation.delete')}</button>
                   </div>
                 </div>
               ))}
-              <button onClick={() => setGroupLimits(prev => [...prev, { id: `g${Date.now()}`, assets: [], lo: 0, hi: 1 }])} className="rounded-lg bg-slate-100 px-3 py-1 text-xs">+ 添加联合约束</button>
+              <button onClick={() => setGroupLimits(prev => [...prev, { id: `g${Date.now()}`, assets: [], lo: 0, hi: 1 }])} className="rounded-lg bg-slate-100 px-3 py-1 text-xs">{systemText('preInvestment.classAllocation.addJointConstraint')}</button>
             </div>
           </div>
         </div>
 
       </Section>
-      <Section plain title="收益、风险与随机探索参数">
+      <Section plain title={systemText('preInvestment.classAllocation.returnRiskAndRandomExplorationParameters')}>
         <div className="grid grid-cols-1 gap-x-8 gap-y-6 md:grid-cols-2">
           {/* 收益指标 */}
           <div className="space-y-3">
-            <h3 className="font-medium text-slate-700">收益指标</h3>
+            <h3 className="font-medium text-slate-700">{systemText('preInvestment.classAllocation.returnMetric')}</h3>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label className="block text-sm font-medium text-slate-600">收益指标</label>
-                <select aria-label="收益指标" onChange={e => setReturnMetric(e.target.value)} value={returnMetric} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
-                  <option value="annual">年化收益率</option>
-                  <option value="annual_mean">年化收益率均值</option>
-                  <option value="cumulative">累计收益率</option>
-                  <option value="mean">收益率均值</option>
-                  <option value="ewm">指数加权收益率</option>
+                <label className="block text-sm font-medium text-slate-600">{systemText('preInvestment.classAllocation.returnMetric')}</label>
+                <select aria-label={systemText('preInvestment.classAllocation.returnMetric')} onChange={e => setReturnMetric(e.target.value)} value={returnMetric} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
+                  <option value="annual">{systemText('preInvestment.classAllocation.annualizedReturn')}</option>
+                  <option value="annual_mean">{systemText('preInvestment.classAllocation.meanAnnualizedReturn')}</option>
+                  <option value="cumulative">{systemText('preInvestment.classAllocation.cumulativeReturn2')}</option>
+                  <option value="mean">{systemText('preInvestment.classAllocation.meanReturn')}</option>
+                  <option value="ewm">{systemText('preInvestment.classAllocation.exponentiallyWeightedReturn')}</option>
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600">收益类型</label>
-                <select aria-label="收益类型" value={returnType} onChange={e => setReturnType(e.target.value)} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
-                  <option value="simple">普通收益率</option>
-                  <option value="log">对数收益率</option>
+                <label className="block text-sm font-medium text-slate-600">{systemText('preInvestment.classAllocation.returnType')}</label>
+                <select aria-label={systemText('preInvestment.classAllocation.returnType')} value={returnType} onChange={e => setReturnType(e.target.value)} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
+                  <option value="simple">{systemText('preInvestment.classAllocation.simpleReturns')}</option>
+                  <option value="log">{systemText('preInvestment.classAllocation.logReturns')}</option>
                 </select>
               </div>
             </div>
             {(returnMetric === 'annual' || returnMetric === 'annual_mean') && (
               <div>
-                <label className="block text-sm font-medium text-slate-600">年化天数</label>
-                <input aria-label="收益年化天数" type="number" value={annualDaysRet} onChange={e => setAnnualDaysRet(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
+                <label className="block text-sm font-medium text-slate-600">{systemText('preInvestment.classAllocation.annualizationDays')}</label>
+                <input aria-label={systemText('preInvestment.classAllocation.returnAnnualizationDays')} type="number" value={annualDaysRet} onChange={e => setAnnualDaysRet(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
               </div>
             )}
             {returnMetric === 'ewm' && (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="block text-sm font-medium text-slate-600">衰减因子 λ</label>
-                  <input aria-label="收益衰减因子" type="number" step="0.01" value={ewmAlpha} onChange={e => setEwmAlpha(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
+                  <label className="block text-sm font-medium text-slate-600">{systemText('preInvestment.classAllocation.decayFactor')}</label>
+                  <input aria-label={systemText('preInvestment.classAllocation.returnDecayFactor')} type="number" step="0.01" value={ewmAlpha} onChange={e => setEwmAlpha(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-600">窗口长度</label>
-                  <input aria-label="收益窗口长度" type="number" value={ewmWindow} onChange={e => setEwmWindow(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
+                  <label className="block text-sm font-medium text-slate-600">{systemText('preInvestment.classAllocation.windowLength')}</label>
+                  <input aria-label={systemText('preInvestment.classAllocation.returnWindowLength')} type="number" value={ewmWindow} onChange={e => setEwmWindow(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
                 </div>
               </div>
             )}
@@ -987,42 +996,42 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
 
           {/* 风险指标 */}
           <div className="space-y-3">
-            <h3 className="font-medium text-slate-700">风险指标</h3>
+            <h3 className="font-medium text-slate-700">{systemText('preInvestment.classAllocation.riskMetric')}</h3>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
-                    <label className="block text-sm font-medium text-slate-600">风险指标</label>
-                    <select aria-label="风险指标" onChange={e => setRiskMetric(e.target.value)} value={riskMetric} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
-                        <option value="vol">波动率</option>
-                        <option value="annual_vol">年化波动率</option>
-                        <option value="ewm_vol">指数加权波动率</option>
+                    <label className="block text-sm font-medium text-slate-600">{systemText('preInvestment.classAllocation.riskMetric')}</label>
+                    <select aria-label={systemText('preInvestment.classAllocation.riskMetric')} onChange={e => setRiskMetric(e.target.value)} value={riskMetric} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
+                        <option value="vol">{systemText('preInvestment.classAllocation.volatility')}</option>
+                        <option value="annual_vol">{systemText('preInvestment.classAllocation.annualVolatility2')}</option>
+                        <option value="ewm_vol">{systemText('preInvestment.classAllocation.exponentiallyWeightedVolatility')}</option>
                         <option value="var">VaR</option>
                         <option value="es">ES</option>
-                        <option value="max_drawdown">最大回撤</option>
-                        <option value="downside_vol">下行波动率</option>
+                        <option value="max_drawdown">{systemText('preInvestment.classAllocation.maximumDrawdown2')}</option>
+                        <option value="downside_vol">{systemText('preInvestment.classAllocation.downsideVolatility')}</option>
                     </select>
                 </div>
                 {(riskMetric === 'var' || riskMetric === 'es') && (
                     <div>
-                        <label className="block text-sm font-medium text-slate-600">置信度 %</label>
-                        <input aria-label="置信度 (%)" type="number" value={confidence} onChange={e => setConfidence(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
+                        <label className="block text-sm font-medium text-slate-600">{systemText('preInvestment.classAllocation.confidence')}</label>
+                        <input aria-label={systemText('preInvestment.classAllocation.confidence2')} type="number" value={confidence} onChange={e => setConfidence(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
                     </div>
                 )}
             </div>
             {(riskMetric === 'annual_vol') && (
                 <div>
-                    <label className="block text-sm font-medium text-slate-600">年化天数</label>
-                    <input aria-label="风险年化天数" type="number" value={annualDaysRisk} onChange={e => setAnnualDaysRisk(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
+                    <label className="block text-sm font-medium text-slate-600">{systemText('preInvestment.classAllocation.annualizationDays')}</label>
+                    <input aria-label={systemText('preInvestment.classAllocation.riskAnnualizationDays')} type="number" value={annualDaysRisk} onChange={e => setAnnualDaysRisk(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
                 </div>
             )}
             {(riskMetric === 'ewm_vol') && (
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div>
-                        <label className="block text-sm font-medium text-slate-600">衰减因子 λ</label>
-                        <input aria-label="风险衰减因子" type="number" step="0.01" value={ewmAlphaRisk} onChange={e => setEwmAlphaRisk(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
+                        <label className="block text-sm font-medium text-slate-600">{systemText('preInvestment.classAllocation.decayFactor')}</label>
+                        <input aria-label={systemText('preInvestment.classAllocation.riskDecayFactor')} type="number" step="0.01" value={ewmAlphaRisk} onChange={e => setEwmAlphaRisk(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
                     </div>
                     <div>
-                        <label className="block text-sm font-medium text-slate-600">窗口长度</label>
-                    <input aria-label="风险窗口长度" type="number" value={ewmWindowRisk} onChange={e => setEwmWindowRisk(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
+                        <label className="block text-sm font-medium text-slate-600">{systemText('preInvestment.classAllocation.windowLength')}</label>
+                    <input aria-label={systemText('preInvestment.classAllocation.riskWindowLength')} type="number" value={ewmWindowRisk} onChange={e => setEwmWindowRisk(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
                     </div>
                 </div>
             )}
@@ -1030,63 +1039,61 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
 
           {/* 夏普比率参数 */}
           <div className="space-y-3 md:col-span-2">
-            <h3 className="font-medium text-slate-700">夏普比率参数</h3>
+            <h3 className="font-medium text-slate-700">{systemText('preInvestment.classAllocation.sharpeRatioParameters')}</h3>
             <div>
-              <label className="block text-sm font-medium text-slate-600">年化无风险收益率(%)</label>
+              <label className="block text-sm font-medium text-slate-600">{systemText('preInvestment.classAllocation.annualRiskFreeReturn')}</label>
               <input
-                aria-label="无风险收益率 (%)"
+                aria-label={systemText('preInvestment.classAllocation.riskFreeReturn')}
                 type="number"
                 step="0.1"
                 value={riskFreePct}
                 onChange={e => setRiskFreePct(Number(e.target.value))}
                 className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm"
               />
-              <p className="mt-1 text-xs text-slate-600">用于计算最大夏普率，默认 1.5%</p>
+              <p className="mt-1 text-xs text-slate-600">{systemText('preInvestment.classAllocation.usedForMaximumSharpeCalculationDefaultsTo')}</p>
             </div>
             <p className="text-xs text-slate-600">
-              计算逻辑：夏普比率 = (年化收益率均值 - 年化无风险利率) / 年化标准差。
-            </p>
+              {systemText('preInvestment.classAllocation.sharpeRatioMeanAnnualizedReturnAnnualRisk')}</p>
           </div>
         </div>
 
         {/* 随机探索设置 */}
         <div className="mt-6 border-t border-slate-200 pt-4">
-          <h3 className="font-medium text-slate-700">多轮随机游走</h3>
-          <p className="text-xs text-slate-600 mt-1">首轮随机采样；后续各轮从上轮保留点扰动，投影到约束空间，再按收益分桶选取最低风险点作为下一轮种子。步长越小越靠近种子，不保证每一点都改善。样本点数为尝试预算，实际可行数量见结果。</p>
-          <label className="mt-3 block max-w-xs text-sm text-slate-700">随机种子
-            <input aria-label="随机种子" type="number" min={0} max={4294967295} step={1} value={explorationSeed} onChange={event => setExplorationSeed(Number(event.target.value))} className="mt-1 w-full rounded-lg border-slate-300 p-2" />
-            <span className="mt-1 block text-xs text-slate-600">相同参数和种子可复现；修改种子生成另一组随机探索。</span>
+          <h3 className="font-medium text-slate-700">{systemText('preInvestment.classAllocation.multiRoundRandomWalk')}</h3>
+          <p className="text-xs text-slate-600 mt-1">{systemText('preInvestment.classAllocation.theFirstRoundSamplesRandomlyLaterRounds')}</p>
+          <label className="mt-3 block max-w-xs text-sm text-slate-700">{systemText('preInvestment.classAllocation.randomSeed')}<input aria-label={systemText('preInvestment.classAllocation.randomSeed')} type="number" min={0} max={4294967295} step={1} value={explorationSeed} onChange={event => setExplorationSeed(Number(event.target.value))} className="mt-1 w-full rounded-lg border-slate-300 p-2" />
+            <span className="mt-1 block text-xs text-slate-600">{systemText('preInvestment.classAllocation.identicalParametersAndSeedsReproduceResultsChange')}</span>
           </label>
           <div className="mt-2 space-y-2">
             {rounds.map((r, idx) => (
               <div key={r.id} className="grid grid-cols-2 items-end gap-3 border-b border-slate-100 py-2 sm:grid-cols-12">
-                <div className="col-span-2 text-sm text-slate-600">第{idx}轮</div>
+                <div className="col-span-2 text-sm text-slate-600">{systemText('preInvestment.classAllocation.month')}{idx}{systemText('preInvestment.classAllocation.round')}</div>
                 <label className="min-w-0 text-xs text-slate-600 sm:col-span-3">
-                  <span className="whitespace-nowrap">样本点</span>
-                  <input aria-label={`第${idx}轮样本点`} type="number" min={1} value={r.samples} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, samples: Number(e.target.value) } : x))} className="mt-1 min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" />
+                  <span className="whitespace-nowrap">{systemText('preInvestment.classAllocation.samplePoints')}</span>
+                  <input aria-label={systemText('preInvestment.classAllocation.roundSamplePoints', { p0: idx })} type="number" min={1} value={r.samples} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, samples: Number(e.target.value) } : x))} className="mt-1 min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" />
                 </label>
                 <label className="min-w-0 text-xs text-slate-600 sm:col-span-3">
-                  <span className="whitespace-nowrap">步长</span>
-                  <input aria-label={`第${idx}轮步长`} disabled={idx === 0} title={idx === 0 ? '首轮直接随机采样，不使用扰动步长' : undefined} type="number" step={0.01} min={0} max={1} value={r.step} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, step: Number(e.target.value) } : x))} className="mt-1 min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" />
+                  <span className="whitespace-nowrap">{systemText('preInvestment.classAllocation.step')}</span>
+                  <input aria-label={systemText('preInvestment.classAllocation.roundStepSize', { p0: idx })} disabled={idx === 0} title={idx === 0 ? systemText('preInvestment.classAllocation.theFirstRoundSamplesDirectlyWithoutPerturbation') : undefined} type="number" step={0.01} min={0} max={1} value={r.step} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, step: Number(e.target.value) } : x))} className="mt-1 min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" />
                 </label>
                 {idx > 0 && (
                   <label className="min-w-0 text-xs text-slate-600 sm:col-span-3">
-                    <span className="whitespace-nowrap">分桶</span>
-                    <input aria-label={`第${idx}轮分桶`} type="number" min={1} value={(r as any).buckets ?? 50} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, buckets: Number(e.target.value) } : x))} className="mt-1 min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" />
+                    <span className="whitespace-nowrap">{systemText('preInvestment.classAllocation.buckets')}</span>
+                    <input aria-label={systemText('preInvestment.classAllocation.roundBuckets', { p0: idx })} type="number" min={1} value={(r as any).buckets ?? 50} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, buckets: Number(e.target.value) } : x))} className="mt-1 min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" />
                   </label>
                 )}
                 {idx > 0 && (
-                  <button onClick={() => setRounds(prev => prev.filter(x => x.id !== r.id))} aria-label={`删除第${idx}轮`} className="rounded-lg bg-rose-50 text-rose-800 text-xs px-2 sm:col-span-1">删</button>
+                  <button onClick={() => setRounds(prev => prev.filter(x => x.id !== r.id))} aria-label={systemText('preInvestment.classAllocation.deleteRound', { p0: idx })} className="rounded-lg bg-rose-50 text-rose-800 text-xs px-2 sm:col-span-1">{systemText('preInvestment.classAllocation.delete2')}</button>
                 )}
               </div>
             ))}
-            <button onClick={() => setRounds(prev => [...prev, { id: `r${Date.now()}`, samples: 200, step: 0.5, buckets: 50 }])} className="rounded-lg bg-slate-100 px-3 py-1 text-xs">+ 增加一轮</button>
+            <button onClick={() => setRounds(prev => [...prev, { id: `r${Date.now()}`, samples: 200, step: 0.5, buckets: 50 }])} className="rounded-lg bg-slate-100 px-3 py-1 text-xs">{systemText('preInvestment.classAllocation.addRound')}</button>
           </div>
           <div className="mt-3 grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="block text-sm font-medium text-slate-600">权重量化</label>
-              <select aria-label="权重量化" value={quantStep} onChange={e => setQuantStep(e.target.value as any)} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
-                <option value="none">不量化</option>
+              <label className="block text-sm font-medium text-slate-600">{systemText('preInvestment.classAllocation.weightQuantization')}</label>
+              <select aria-label={systemText('preInvestment.classAllocation.weightQuantization')} value={quantStep} onChange={e => setQuantStep(e.target.value as any)} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
+                <option value="none">{systemText('preInvestment.classAllocation.noQuantization')}</option>
                 <option value="0.001">0.1%</option>
                 <option value="0.002">0.2%</option>
                 <option value="0.005">0.5%</option>
@@ -1094,54 +1101,52 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
             </div>
             <div className="flex flex-wrap items-end gap-2">
               <label className="flex items-center gap-2 text-sm text-slate-700">
-                <input type="checkbox" checked={useRefine} onChange={e => setUseRefine(e.target.checked)} /> 使用受约束局部精炼
-              </label>
+                <input type="checkbox" checked={useRefine} onChange={e => setUseRefine(e.target.checked)} /> {" " + systemText('preInvestment.classAllocation.useConstrainedLocalRefinement')}</label>
               {useRefine && (
-                <input aria-label="局部精炼最大迭代次数" type="number" min={1} max={200} value={refineCount} onChange={e => setRefineCount(Number(e.target.value))} className="w-28 rounded-lg border-slate-300 px-2 py-1 text-sm" placeholder="迭代次数" />
+                <input aria-label={systemText('preInvestment.classAllocation.maximumLocalRefinementIterations')} type="number" min={1} max={200} value={refineCount} onChange={e => setRefineCount(Number(e.target.value))} className="w-28 rounded-lg border-slate-300 px-2 py-1 text-sm" placeholder={systemText('preInvestment.classAllocation.iterations')} />
               )}
             </div>
           </div>
         </div>
-        <p className="mt-3 text-xs leading-5 text-slate-600">局部精炼改善三个代表候选；下方 20／200 个收益目标用于加密整条前沿。选定精度时，散点与最终可采用权重均须同时满足精度、单项及联合约束。</p>
+        <p className="mt-3 text-xs leading-5 text-slate-600">{systemText('preInvestment.classAllocation.localRefinementImprovesThreeRepresentativeCandidatesThe')}</p>
         <div className="mt-4 border-t border-slate-200 pt-4"><FrontierGridControls value={frontierGrid} quantized={quantStep !== 'none'} busy={isCalculating} onChange={setFrontierGrid} /></div>
         <div className="mt-4 flex flex-wrap gap-3">
-          <button disabled={!loadedAllocation || loadedAllocation !== selectedAlloc || equalWeightLoading || isCalculating || (researchGoal !== 'manual' && Boolean(gridIssue))} onClick={researchGoal === 'manual' ? addFixedStrategy : onCalculate} className="rounded-lg bg-accent-600 px-4 py-2 text-sm text-white disabled:opacity-50">{researchGoal === 'manual' ? '填写一组长期权重' : '计算并比较候选'}</button>
-          <button disabled={!loadedAllocation || loadedAllocation !== selectedAlloc || isCalculating || Boolean(gridIssue)} onClick={onCalculate} className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50">生成可配置空间与有效前沿</button>
+          <button disabled={!loadedAllocation || loadedAllocation !== selectedAlloc || equalWeightLoading || isCalculating || (researchGoal !== 'manual' && Boolean(gridIssue))} onClick={researchGoal === 'manual' ? addFixedStrategy : onCalculate} className="rounded-lg bg-accent-600 px-4 py-2 text-sm text-white disabled:opacity-50">{researchGoal === 'manual' ? systemText('preInvestment.classAllocation.enterLongTermWeights2') : systemText('preInvestment.classAllocation.calculateAndCompareCandidates')}</button>
+          <button disabled={!loadedAllocation || loadedAllocation !== selectedAlloc || isCalculating || Boolean(gridIssue)} onClick={onCalculate} className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50">{systemText('preInvestment.classAllocation.generateAllocationSpaceAndEfficientFrontier')}</button>
         </div>
-        <p className="mt-3 text-xs text-slate-600">采样尝试预算 {rounds.reduce((sum, round) => sum + round.samples, 0).toLocaleString()} 个 · 权重精度 {quantStep === 'none' ? '连续' : `${Number(quantStep) * 100}%`}{frontierGrid.enabled ? ` · 前沿目标 ${frontierGrid.point_count} 个` : ''}</p>
-        {isCalculating && <p role="status" className="mt-2 text-sm text-slate-600">正在生成随机探索候选与前沿，请稍候…</p>}
+        <p className="mt-3 text-xs text-slate-600">{systemText('preInvestment.classAllocation.samplingAttemptBudget') + " "}{rounds.reduce((sum, round) => sum + round.samples, 0).toLocaleString()} {" " + systemText('preInvestment.classAllocation.pointsWeightPrecision') + " "}{quantStep === 'none' ? systemText('preInvestment.classAllocation.continuous') : `${Number(quantStep) * 100}%`}{frontierGrid.enabled ? systemText('preInvestment.classAllocation.frontierTargets', { p0: frontierGrid.point_count }) : ''}</p>
+        {isCalculating && <p role="status" className="mt-2 text-sm text-slate-600">{systemText('preInvestment.classAllocation.generatingRandomExplorationCandidatesAndFrontierPlease')}</p>}
       </Section>
 
       {frontierData && (
-        <Section plain title="比较候选，采用长期配置">
-          <p className="mb-3 text-sm text-slate-600">以下是同一区间与约束下的历史候选。采用后可改权重并回测，不代表未来最优。</p>
+        <Section plain title={systemText('preInvestment.classAllocation.compareCandidatesAndAdoptALongTerm')}>
+          <p className="mb-3 text-sm text-slate-600">{systemText('preInvestment.classAllocation.historicalCandidatesUseTheSameIntervalAnd')}</p>
           {/* 这张前沿图挑出来的就是权重本身，它按哪天、哪个产品域算的必须跟着它走。 */}
           <PitDecisionNotice lineage={frontierData.pit} />
-          {frontierData.research_interval && <p className="mb-3 text-xs leading-5 text-slate-600">实际样本：{frontierData.research_interval.actual_start} 至 {frontierData.research_interval.actual_end} · 净值 {frontierData.research_interval.nav_observations} 期 / 收益 {frontierData.research_interval.return_observations} 期 · 采样候选 {frontierData.sampled_candidates ?? frontierData.accepted_candidates ?? frontierData.scatter?.length ?? 0} 个{Number(frontierData.refined_candidates ?? 0) > 0 ? ` + 精炼新增 ${frontierData.refined_candidates} 个` : ''}{Number(frontierData.grid_candidates ?? 0) > 0 ? ` + 网格优化新增 ${frontierData.grid_candidates} 个` : ''} · 当前候选合计 {frontierData.accepted_candidates ?? frontierData.scatter?.length ?? 0} 个 · 有效前沿 {frontierData.frontier_candidates ?? frontierData.frontier?.length ?? 0} 个。</p>}
-          {frontierData.refinement?.requested && <p role="status" className="mb-3 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600">局部精炼仅处理最大夏普、最小风险、最大收益 3 个代表候选，并以原始可行候选为不可退化基准；严格改善的结果会加入候选集合并重新构造前沿。{frontierData.refinement.items?.map((item: any) => `${item.candidate} ${item.status} / ${item.iterations} 次${item.applied ? ' / 已采用' : ' / 未替换原候选'}`).join('；')}。不声明整条前沿的连续求解或全局最优。</p>}
-          <div className="overflow-x-auto"><table className="min-w-[640px] w-full text-sm" aria-label="长期配置候选"><thead className="bg-slate-50"><tr><th scope="col" className="p-2 text-left">候选</th>{(frontierData.asset_names ?? []).map((name: string) => <th scope="col" key={name} className="p-2">{name}</th>)}<th scope="col" className="p-2">{returnLabel}</th><th scope="col" className="p-2">{riskLabel}</th><th scope="col" className="p-2">操作</th></tr></thead><tbody>{candidates.map(({ label, key }) => {
+          {frontierData.research_interval && <p className="mb-3 text-xs leading-5 text-slate-600">{systemText('preInvestment.classAllocation.actualSample')}{frontierData.research_interval.actual_start} {" " + systemText('preInvestment.classAllocation.to') + " "}{frontierData.research_interval.actual_end} {" " + systemText('preInvestment.classAllocation.nav') + " "}{frontierData.research_interval.nav_observations} {" " + systemText('preInvestment.classAllocation.periodsReturns') + " "}{frontierData.research_interval.return_observations} {" " + systemText('preInvestment.classAllocation.periodsSampledCandidates') + " "}{frontierData.sampled_candidates ?? frontierData.accepted_candidates ?? frontierData.scatter?.length ?? 0} {" " + systemText('preInvestment.classAllocation.items')}{Number(frontierData.refined_candidates ?? 0) > 0 ? systemText('preInvestment.classAllocation.addedByRefinement', { p0: frontierData.refined_candidates }) : ''}{Number(frontierData.grid_candidates ?? 0) > 0 ? systemText('preInvestment.classAllocation.addedByGridOptimization', { p0: frontierData.grid_candidates }) : ''} {" " + systemText('preInvestment.classAllocation.totalCurrentCandidates') + " "}{frontierData.accepted_candidates ?? frontierData.scatter?.length ?? 0} {" " + systemText('preInvestment.classAllocation.pointsEfficientFrontier') + " "}{frontierData.frontier_candidates ?? frontierData.frontier?.length ?? 0} {" " + systemText('preInvestment.classAllocation.points')}</p>}
+          {frontierData.refinement?.requested && <p role="status" className="mb-3 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600">{systemText('preInvestment.classAllocation.localRefinementCoversOnlyTheMaximumSharpe')}{frontierData.refinement.items?.map((item: any) => systemText('preInvestment.classAllocation.iterations2', { p0: item.candidate, p1: item.status, p2: item.iterations, p3: item.applied ? " " + systemText('preInvestment.classAllocation.adopted') : " " + systemText('preInvestment.classAllocation.originalCandidateRetained') })).join('；')}{systemText('preInvestment.classAllocation.noContinuousSolutionOfTheEntireFrontier')}</p>}
+          <div className="overflow-x-auto"><table className="min-w-[640px] w-full text-sm" aria-label={systemText('preInvestment.classAllocation.longTermAllocationCandidates')}><thead className="bg-slate-50"><tr><th scope="col" className="p-2 text-left">{systemText('preInvestment.classAllocation.candidate')}</th>{(frontierData.asset_names ?? []).map((name: string) => <th scope="col" key={name} className="p-2">{name}</th>)}<th scope="col" className="p-2">{returnLabel}</th><th scope="col" className="p-2">{riskLabel}</th><th scope="col" className="p-2">{systemText('preInvestment.classAllocation.actions')}</th></tr></thead><tbody>{candidates.map(({ label, key }) => {
             const point = frontierData[key]; const value = point.value ?? point;
-            return <tr key={key} className="border-t"><td className="p-2">{label}</td>{(point.weights ?? []).map((weight: number, index: number) => <td key={index} className="p-2 text-center">{(weight * 100).toFixed(2)}%</td>)}<td className="p-2 text-center">{Number.isFinite(value[1]) ? `${(value[1] * 100).toFixed(2)}%` : '—'}</td><td className="p-2 text-center">{Number.isFinite(value[0]) ? `${(value[0] * 100).toFixed(2)}%` : '—'}</td><td className="p-2"><button onClick={() => adoptCandidate(label, point)} className="whitespace-nowrap rounded-lg border border-emerald-700 px-3 py-1 text-emerald-800">采用{label}</button></td></tr>;
+            return <tr key={key} className="border-t"><td className="p-2">{label}</td>{(point.weights ?? []).map((weight: number, index: number) => <td key={index} className="p-2 text-center">{(weight * 100).toFixed(2)}%</td>)}<td className="p-2 text-center">{Number.isFinite(value[1]) ? `${(value[1] * 100).toFixed(2)}%` : '—'}</td><td className="p-2 text-center">{Number.isFinite(value[0]) ? `${(value[0] * 100).toFixed(2)}%` : '—'}</td><td className="p-2"><button onClick={() => adoptCandidate(label, point)} className="whitespace-nowrap rounded-lg border border-emerald-700 px-3 py-1 text-emerald-800">{systemText('preInvestment.classAllocation.adopt')}{label}</button></td></tr>;
           })}</tbody></table></div>
           {frontierData.exploration && <div className="mt-4 space-y-3">
-            <label className="block max-w-sm text-sm">散点显示
-              <select aria-label="散点显示" value={scatterView} onChange={event => setScatterView(event.target.value as 'all' | 'selected')} className="mt-1 w-full rounded-lg border-slate-300 p-2">
-                <option value="all">全部可行候选（含精炼）</option><option value="selected">首轮与各轮分桶保留点</option>
+            <label className="block max-w-sm text-sm">{systemText('preInvestment.classAllocation.scatterDisplay')}<select aria-label={systemText('preInvestment.classAllocation.scatterDisplay')} value={scatterView} onChange={event => setScatterView(event.target.value as 'all' | 'selected')} className="mt-1 w-full rounded-lg border-slate-300 p-2">
+                <option value="all">{systemText('preInvestment.classAllocation.allFeasibleCandidatesIncludingRefinement')}</option><option value="selected">{systemText('preInvestment.classAllocation.initialAndPerRoundBucketRetainedPoints')}</option>
               </select>
             </label>
-            <div className="overflow-x-auto"><table aria-label="随机探索轮次统计" className="w-full min-w-[480px] text-sm">
-              <thead><tr>{['轮次', '尝试预算', '可行点', '保留点', '失败点'].map(label => <th scope="col" key={label} className="p-2 text-left">{label}</th>)}</tr></thead>
-              <tbody>{frontierData.exploration.rounds.map((round: any, index: number) => <tr key={round.round} className="border-t border-slate-200"><th scope="row" className="p-2 text-left">第{index}轮</th><td className="p-2">{round.requested}</td><td className="p-2">{round.accepted}</td><td className="p-2">{round.selected}</td><td className="p-2">{round.rejected}{round.search_budget_failures > 0 ? `（搜索预算耗尽 ${round.search_budget_failures}）` : ''}{round.accepted === 0 ? '；沿用上一有效轮种子' : ''}</td></tr>)}</tbody>
+            <div className="overflow-x-auto"><table aria-label={systemText('preInvestment.classAllocation.randomExplorationRoundStatistics')} className="w-full min-w-[480px] text-sm">
+              <thead><tr>{[systemText('preInvestment.classAllocation.round2'), systemText('preInvestment.classAllocation.attemptBudget'), systemText('preInvestment.classAllocation.feasiblePoints'), systemText('preInvestment.classAllocation.retainedPoints'), systemText('preInvestment.classAllocation.failedPoints')].map(label => <th scope="col" key={label} className="p-2 text-left">{label}</th>)}</tr></thead>
+              <tbody>{frontierData.exploration.rounds.map((round: any, index: number) => <tr key={round.round} className="border-t border-slate-200"><th scope="row" className="p-2 text-left">{systemText('preInvestment.classAllocation.month')}{index}{systemText('preInvestment.classAllocation.round')}</th><td className="p-2">{round.requested}</td><td className="p-2">{round.accepted}</td><td className="p-2">{round.selected}</td><td className="p-2">{round.rejected}{round.search_budget_failures > 0 ? systemText('preInvestment.classAllocation.searchBudgetExhausted', { p0: round.search_budget_failures }) : ''}{round.accepted === 0 ? systemText('preInvestment.classAllocation.reusedSeedsFromThePreviousValidRound') : ''}</td></tr>)}</tbody>
             </table></div>
           </div>}
-          {frontierData.frontier_grid && <FrontierGridResults result={frontierData.frontier_grid} assetNames={frontierData.asset_names} riskLabel={riskLabel} returnLabel={returnLabel} onAdopt={point => adoptCandidate(`前沿目标 ${point.target_index + 1}`, point)} />}
-          <details open className="mt-4"><summary className="cursor-pointer text-sm">有效前沿图（默认展开，可收起）</summary><ReactECharts
+          {frontierData.frontier_grid && <FrontierGridResults result={frontierData.frontier_grid} assetNames={frontierData.asset_names} riskLabel={riskLabel} returnLabel={returnLabel} onAdopt={point => adoptCandidate(systemText('preInvestment.classAllocation.frontierTarget', { p0: point.target_index + 1 }), point)} />}
+          <details open className="mt-4"><summary className="cursor-pointer text-sm">{systemText('preInvestment.classAllocation.efficientFrontierChartExpandedByDefaultCollapsible')}</summary><ReactECharts
             style={{ height: 500 }}
             notMerge
             option={{
               animation: false,
               title: {
-                text: '可配置空间与有效前沿',
+                text: systemText('preInvestment.classAllocation.allocationSpaceAndEfficientFrontier'),
                 textStyle: { fontSize: 16 },
                 left: 'center'
               },
@@ -1175,21 +1180,21 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                 top: 36,
                 right: 0,
                 left: 'center',
-                data: ['其他组合', frontierData.weight_domain === 'discrete' && frontierData.frontier_grid ? '连续理论前沿' : '有效前沿', ...(frontierData.frontier_grid ? [frontierData.weight_domain === 'discrete' ? '指定精度前沿' : '候选非支配点'] : []), '最大夏普率', '最小风险', '最大收益']
+                data: [systemText('preInvestment.classAllocation.otherPortfolios'), frontierData.weight_domain === 'discrete' && frontierData.frontier_grid ? systemText('preInvestment.classAllocation.continuousTheoreticalFrontier') : systemText('preInvestment.classAllocation.efficientFrontier'), ...(frontierData.frontier_grid ? [frontierData.weight_domain === 'discrete' ? systemText('preInvestment.classAllocation.frontierAtSelectedPrecision') : systemText('preInvestment.classAllocation.nondominatedCandidates')] : []), systemText('preInvestment.classAllocation.maximumSharpeRatio'), systemText('preInvestment.classAllocation.minimumRisk'), systemText('preInvestment.classAllocation.maximumReturn')]
               },
               grid: { top: 80, bottom: 80, left: 12, right: 30, containLabel: true },
               xAxis: { type: 'value', name: riskLabel, nameLocation: 'middle', nameGap: 28, scale: true, splitNumber: 3, axisLabel: { hideOverlap: true, fontSize: 12, formatter: (value: number) => `${(value * 100).toFixed(1)}%` } },
               yAxis: { type: 'value', name: returnLabel, nameLocation: 'middle', nameGap: 42, scale: true, axisLabel: { hideOverlap: true, fontSize: 12, formatter: (value: number) => `${(value * 100).toFixed(1)}%` } },
               series: [
                 ...(frontierData.scatter ? [{
-                  name: '其他组合',
+                  name: systemText('preInvestment.classAllocation.otherPortfolios'),
                   type: 'scatter',
                   symbolSize: 3,
                   data: scatterView === 'selected' && frontierData.exploration ? frontierData.exploration.selected_indices.map((index: number) => frontierData.scatter[index]) : frontierData.scatter,
                   itemStyle: { color: 'rgba(128, 128, 128, 0.35)' }
                 }] : []),
                 ...(frontierData.frontier ? [{
-                  name: frontierData.weight_domain === 'discrete' && frontierData.frontier_grid ? '连续理论前沿' : '有效前沿',
+                  name: frontierData.weight_domain === 'discrete' && frontierData.frontier_grid ? systemText('preInvestment.classAllocation.continuousTheoreticalFrontier') : systemText('preInvestment.classAllocation.efficientFrontier'),
                   type: frontierData.frontier_grid ? 'line' : 'scatter',
                   connectNulls: false,
                   smooth: false,
@@ -1198,22 +1203,22 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                   itemStyle: { color: '#2563eb' } // Tailwind indigo-600
                 }] : []),
                 ...(frontierData.frontier_grid ? [{
-                  name: frontierData.weight_domain === 'discrete' ? '指定精度前沿' : '候选非支配点', type: 'scatter', symbolSize: 3, data: frontierData.frontier,
+                  name: frontierData.weight_domain === 'discrete' ? systemText('preInvestment.classAllocation.frontierAtSelectedPrecision') : systemText('preInvestment.classAllocation.nondominatedCandidates'), type: 'scatter', symbolSize: 3, data: frontierData.frontier,
                 }] : []),
                 ...(frontierData.max_sharpe ? [{
-                  name: '最大夏普率',
+                  name: systemText('preInvestment.classAllocation.maximumSharpeRatio'),
                   type: 'scatter',
                   symbolSize: 10,
                   data: [frontierData.max_sharpe]
                 }] : []),
                 ...(frontierData.min_variance ? [{
-                  name: '最小风险',
+                  name: systemText('preInvestment.classAllocation.minimumRisk'),
                   type: 'scatter',
                   symbolSize: 10,
                   data: [frontierData.min_variance]
                 }] : []),
                 ...(frontierData.max_return ? [{
-                  name: '最大收益',
+                  name: systemText('preInvestment.classAllocation.maximumReturn'),
                   type: 'scatter',
                   symbolSize: 10,
                   data: [frontierData.max_return]
@@ -1227,9 +1232,9 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
       </section>
 
       {/* 大类资产策略制定与回测 */}
-      <Section title="长期权重与历史验证">
-        <p className="mb-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-900">进入 TAA 将继承本策略权重、类内产品映射及单项/联合边界。TAA 会按自己的研究日期、调仓与费用重新计算 SAA 对照；本页历史业绩不会直接带入。</p>
-        {!strategies.length && <p className="mb-3 text-sm text-slate-600">可以填写一组长期权重，也可以先采用上方候选。</p>}
+      <Section title={systemText('preInvestment.classAllocation.longTermWeightsAndHistoricalValidation')}>
+        <p className="mb-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-900">{systemText('preInvestment.classAllocation.taaInheritsTheseWeightsWithinClassProduct')}</p>
+        {!strategies.length && <p className="mb-3 text-sm text-slate-600">{systemText('preInvestment.classAllocation.enterLongTermWeightsOrAdoptA')}</p>}
         <div className="space-y-4">
           {/* 顶部不再显示“添加策略”按钮，统一放在策略列表与回测之间 */}
 
@@ -1238,22 +1243,22 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
               <div className="flex flex-wrap items-center gap-3">
                 <input value={s.name} onChange={e => setStrategies(prev => prev.map(x => x.id===s.id? { ...x, name: e.target.value } : x))} className="rounded-lg border-slate-300 px-2 py-1 text-sm" />
                 <span className="rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-700">
-                  {s.type === 'fixed' ? '固定比例' : s.type === 'risk_budget' ? '风险预算' : '指定目标'}
+                  {s.type === 'fixed' ? systemText('preInvestment.classAllocation.fixedWeights') : s.type === 'risk_budget' ? systemText('preInvestment.classAllocation.riskBudget') : systemText('preInvestment.classAllocation.specifiedTarget')}
                 </span>
                 <button type="button" disabled={taaBusy !== null || loadedAllocation !== selectedAlloc}
                   onClick={() => enterTacticalResearch(s)}
                   className="rounded-lg border border-emerald-700 px-3 py-2 text-sm font-medium text-emerald-800 disabled:opacity-50">
-                  {taaBusy === s.id ? '正在锁定 SAA…' : '以此为 SAA，研究战术偏离'}
+                  {taaBusy === s.id ? systemText('preInvestment.classAllocation.lockingSaa') : systemText('preInvestment.classAllocation.useAsSaaAndResearchTacticalDeviations')}
                 </button>
-                <button onClick={() => setStrategies(prev => prev.filter(x => x.id !== s.id))} className="ml-auto rounded-lg bg-red-50 px-2 py-1 text-xs text-red-700">删除</button>
+                <button onClick={() => setStrategies(prev => prev.filter(x => x.id !== s.id))} className="ml-auto rounded-lg bg-red-50 px-2 py-1 text-xs text-red-700">{systemText('preInvestment.classAllocation.delete')}</button>
               </div>
               {/* 再平衡设置（通用） */}
               <div className="mt-3 rounded-lg border p-3 text-sm">
-                <label className="flex items-center gap-2"><input type="checkbox" checked={!!s.rebalance?.enabled} onChange={e=> setStrategies(prev=> prev.map(x=> x.id===s.id? { ...x, rebalance: { ...(x.rebalance||{}), enabled: e.target.checked } } : x))}/> 是否启用再平衡</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={!!s.rebalance?.enabled} onChange={e=> setStrategies(prev=> prev.map(x=> x.id===s.id? { ...x, rebalance: { ...(x.rebalance||{}), enabled: e.target.checked } } : x))}/> {" " + systemText('preInvestment.classAllocation.enableRebalancing')}</label>
                 {s.rebalance?.enabled && (
                   <div className="mt-2 grid grid-cols-12 items-center gap-2">
                     <div className="col-span-3">
-                      <label className="block text-xs text-slate-600">再平衡方式</label>
+                      <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.rebalancingMethod')}</label>
                       <select value={s.rebalance?.mode||'monthly'} onChange={e=> setStrategies(prev=> prev.map(x=> {
                         if (x.id!==s.id) return x as any;
                         const mode = e.target.value;
@@ -1263,39 +1268,39 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                         }
                         return { ...x, rebalance: rb } as any;
                       }))} className="mt-1 w-full rounded-lg border-slate-300">
-                        <option value="weekly">每周</option>
-                        <option value="monthly">每月</option>
-                        <option value="yearly">每年</option>
-                        <option value="fixed">固定区间</option>
+                        <option value="weekly">{systemText('preInvestment.classAllocation.weekly')}</option>
+                        <option value="monthly">{systemText('preInvestment.classAllocation.monthly')}</option>
+                        <option value="yearly">{systemText('preInvestment.classAllocation.annually')}</option>
+                        <option value="fixed">{systemText('preInvestment.classAllocation.fixedInterval')}</option>
                       </select>
                     </div>
                     {s.rebalance?.mode !== 'fixed' ? (
                       <>
                     <div className="col-span-2">
-                      <label className="block text-xs text-slate-600">第N</label>
+                      <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.nth')}</label>
                       <input type="number" min={1} max={ s.rebalance?.mode==='weekly'?5: s.rebalance?.mode==='monthly'?30:360 } value={s.rebalance?.N ?? 1} onChange={e=> setStrategies(prev=> prev.map(x=> x.id===s.id? { ...x, rebalance: { ...(x.rebalance||{}), which:'nth', N: Number(e.target.value) } } : x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                     </div>
                         <div className="col-span-2">
-                        <label className="block text-xs text-slate-600">个</label>
+                        <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.items')}</label>
                         <div className="mt-1 text-sm text-slate-600">&nbsp;</div>
                         </div>
                         <div className="col-span-2">
-                          <label className="block text-xs text-slate-600">单位</label>
+                          <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.unit')}</label>
                           <select value={s.rebalance?.unit||'trading'} onChange={e=> setStrategies(prev=> prev.map(x=> x.id===s.id? { ...x, rebalance: { ...(x.rebalance||{}), unit: e.target.value } } : x))} className="mt-1 w-full rounded-lg border-slate-300">
-                            <option value="trading">交易日</option>
-                            <option value="natural">自然日</option>
+                            <option value="trading">{systemText('preInvestment.classAllocation.tradingDay')}</option>
+                            <option value="natural">{systemText('preInvestment.classAllocation.calendarDay')}</option>
                           </select>
                         </div>
                       </>
                     ) : (
                       <div className="col-span-3">
-                        <label className="block text-xs text-slate-600">固定区间(天)</label>
+                        <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.fixedIntervalDays')}</label>
                         <input type="number" min={1} value={s.rebalance?.fixedInterval ?? 20} onChange={e=> setStrategies(prev=> prev.map(x=> x.id===s.id? { ...x, rebalance: { ...(x.rebalance||{}), fixedInterval: Number(e.target.value) } } : x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                       </div>
                     )}
                     {s.type !== 'fixed' && (
                       <div className="col-span-12">
-                        <label className="flex items-center gap-2"><input type="checkbox" checked={!!s.rebalance?.recalc} onChange={e=> setStrategies(prev=> prev.map(x=> x.id===s.id? { ...x, rebalance: { ...(x.rebalance||{}), recalc: e.target.checked } } : x))}/> 再平衡时是否重新模型计算</label>
+                        <label className="flex items-center gap-2"><input type="checkbox" checked={!!s.rebalance?.recalc} onChange={e=> setStrategies(prev=> prev.map(x=> x.id===s.id? { ...x, rebalance: { ...(x.rebalance||{}), recalc: e.target.checked } } : x))}/> {" " + systemText('preInvestment.classAllocation.recalculateTheModelAtRebalancing')}</label>
                       </div>
                     )}
                   </div>
@@ -1315,21 +1320,21 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                           return { ...x, cfg:{...x.cfg, mode:'equal'}, rows: assetNames.map((n,i)=> ({ className:n, weight:eqArr[i] })) } as StrategyRow;
                         }));
                       } catch (reason) {
-                        setError(reason instanceof Error ? reason.message : '等权计算失败');
+                        setError(reason instanceof Error ? reason.message : systemText('preInvestment.classAllocation.equalWeightCalculationFailed'));
                       }
-                    }}/> 等权重</label>
-                    <label className="flex items-center gap-2"><input type="radio" checked={(s.cfg?.mode||'equal')==='custom'} onChange={() => setStrategies(prev => prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, mode:'custom'}, rows: x.rows }:x))}/> 自定义权重</label>
+                    }}/> {" " + systemText('preInvestment.classAllocation.equalWeights')}</label>
+                    <label className="flex items-center gap-2"><input type="radio" checked={(s.cfg?.mode||'equal')==='custom'} onChange={() => setStrategies(prev => prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, mode:'custom'}, rows: x.rows }:x))}/> {" " + systemText('preInvestment.classAllocation.customWeights')}</label>
                   </div>
-                  <p className="text-xs text-slate-600">{(s.cfg?.mode || 'equal') === 'equal' ? '各大类平均分配资金。' : '直接填写占整个组合的比例，合计应为 100%。'}</p>
-                  {s.cfg?.selection_reason && <label className="block text-sm">选择理由<input aria-label={`${s.name} 选择理由`} className="mt-1 w-full rounded-lg border p-2" value={s.cfg.selection_reason} onChange={event => setStrategies(current => current.map(item => item.id === s.id ? { ...item, cfg: { ...item.cfg, selection_reason: event.target.value } } : item))} /></label>}
+                  <p className="text-xs text-slate-600">{(s.cfg?.mode || 'equal') === 'equal' ? systemText('preInvestment.classAllocation.allocateCapitalEquallyAcrossAssetClasses') : systemText('preInvestment.classAllocation.enterWeightsAsPercentagesOfTheEntire')}</p>
+                  {s.cfg?.selection_reason && <label className="block text-sm">{systemText('preInvestment.classAllocation.selectionRationale')}<input aria-label={systemText('preInvestment.classAllocation.selectionRationale2', { p0: s.name })} className="mt-1 w-full rounded-lg border p-2" value={s.cfg.selection_reason} onChange={event => setStrategies(current => current.map(item => item.id === s.id ? { ...item, cfg: { ...item.cfg, selection_reason: event.target.value } } : item))} /></label>}
                   <div className="min-w-0 overflow-x-auto rounded-lg border">
                     <table className="min-w-full">
-                      <thead className="bg-slate-50 text-xs text-slate-600"><tr><th scope="col" className="px-3 py-2 text-left">大类名称</th><th scope="col" className="px-3 py-2 text-left">资金权重(%)</th></tr></thead>
+                      <thead className="bg-slate-50 text-xs text-slate-600"><tr><th scope="col" className="px-3 py-2 text-left">{systemText('preInvestment.classAllocation.assetName')}</th><th scope="col" className="px-3 py-2 text-left">{systemText('preInvestment.classAllocation.fundingWeight')}</th></tr></thead>
                       <tbody className="text-sm">
                         {s.rows.map((r,i)=> (
                           <tr key={i} className="border-t">
                             <td className="px-3 py-2">{r.className}</td>
-                            <td className="px-3 py-2"><input aria-label={`${s.name} ${r.className} 权重 (%)`} type="number" min="0" max="100" value={r.weight ?? ''} onChange={e=>{
+                            <td className="px-3 py-2"><input aria-label={systemText('preInvestment.classAllocation.weight', { p0: s.name, p1: r.className })} type="number" min="0" max="100" value={r.weight ?? ''} onChange={e=>{
                               const v = e.target.value === '' ? undefined : Number(e.target.value);
                               setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, rows:x.rows.map((rr,j)=> j===i?{...rr, weight:v}:rr)}:x))
                             }} className={`w-28 rounded-lg border px-2 py-1 ${ (s.cfg?.mode||'equal')==='equal' ? 'bg-slate-50 text-slate-600 border-slate-200' : 'border-slate-300' }`} disabled={(s.cfg?.mode||'equal')==='equal'}/></td>
@@ -1346,7 +1351,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                 <div className="mt-3 space-y-3">
                   <div className="min-w-0 overflow-x-auto rounded-lg border">
                     <table className="min-w-full">
-                      <thead className="bg-slate-50 text-xs text-slate-600"><tr><th scope="col" className="px-3 py-2 text-left">大类名称</th><th scope="col" className="px-3 py-2 text-left">风险预算(%)</th><th scope="col" className="px-3 py-2 text-left">资金权重(%)</th></tr></thead>
+                      <thead className="bg-slate-50 text-xs text-slate-600"><tr><th scope="col" className="px-3 py-2 text-left">{systemText('preInvestment.classAllocation.assetName')}</th><th scope="col" className="px-3 py-2 text-left">{systemText('preInvestment.classAllocation.riskBudget2')}</th><th scope="col" className="px-3 py-2 text-left">{systemText('preInvestment.classAllocation.fundingWeight')}</th></tr></thead>
                       <tbody className="text-sm">
                         {s.rows.map((r,i)=> (
                           <tr key={i} className="border-t">
@@ -1363,22 +1368,22 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                   </div>
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div>
-                      <label className="block text-xs text-slate-600">风险指标</label>
+                      <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.riskMetric')}</label>
                       <select value={s.cfg?.risk_metric||'vol'} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, risk_metric:e.target.value}}:x))} className="mt-1 w-full rounded-lg border-slate-300">
-                        <option value="vol">波动率</option>
+                        <option value="vol">{systemText('preInvestment.classAllocation.volatility')}</option>
                         <option value="var">VaR</option>
                         <option value="es">ES</option>
-                        <option value="downside_vol">下行波动率</option>
-                        <option value="max_drawdown">最大回撤</option>
+                        <option value="downside_vol">{systemText('preInvestment.classAllocation.downsideVolatility')}</option>
+                        <option value="max_drawdown">{systemText('preInvestment.classAllocation.maximumDrawdown2')}</option>
                       </select>
                     </div>
                     {['var','es'].includes(s.cfg?.risk_metric) && (
                       <><div>
-                        <label className="block text-xs text-slate-600">置信度(%)</label>
+                        <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.confidence3')}</label>
                         <input type="number" value={s.cfg?.confidence ?? 95} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, confidence:Number(e.target.value)}}:x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                       </div>
                       <div>
-                        <label className="block text-xs text-slate-600">天数</label>
+                        <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.days')}</label>
                         <input type="number" value={s.cfg?.days ?? 252} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, days:Number(e.target.value)}}:x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                       </div></>
                     )}
@@ -1387,24 +1392,21 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                   <div className="rounded-lg border p-3 text-sm">
                     <div className="grid grid-cols-3 gap-3 items-end">
                       <div>
-                        <label className="block text-xs text-slate-600">窗口模式</label>
+                        <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.windowMode')}</label>
                         <select value={s.cfg?.window_mode || 'all'} onChange={e=> setStrategies(prev=> prev.map(x=> x.id===s.id? { ...x, cfg: { ...(x.cfg||{}), window_mode: e.target.value } } : x))} className="mt-1 w-full rounded-lg border-slate-300">
-                          <option value="all">所有数据</option>
-                          <option value="rollingN">最近N条</option>
+                          <option value="all">{systemText('preInvestment.classAllocation.allData')}</option>
+                          <option value="rollingN">{systemText('preInvestment.classAllocation.mostRecentNObservations')}</option>
                         </select>
                       </div>
                       { (s.cfg?.window_mode==='rollingN') && (
                         <div>
-                          <label className="block text-xs text-slate-600">N（交易日）</label>
+                          <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.nTradingDays')}</label>
                           <input type="number" min={2} value={s.cfg?.data_len ?? 60} onChange={e=> setStrategies(prev=> prev.map(x=> x.id===s.id? { ...x, cfg: { ...(x.cfg||{}), data_len: Number(e.target.value) } } : x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                         </div>
                       )}
                     </div>
                     <p className="mt-2 text-xs text-slate-600">
-                      模式说明：
-                      <span className="ml-1 font-medium">所有数据</span> 使用回测开始至当期的全部样本；
-                      <span className="ml-1 font-medium">最近N条</span> 使用当期之前最近 N 条的滚动窗口（推荐）。
-                    </p>
+                      {systemText('preInvestment.classAllocation.modeGuidance')}<span className="ml-1 font-medium">{systemText('preInvestment.classAllocation.allData')}</span> {" " + systemText('preInvestment.classAllocation.usesAllSamplesFromBacktestStartTo')}<span className="ml-1 font-medium">{systemText('preInvestment.classAllocation.mostRecentNObservations')}</span> {" " + systemText('preInvestment.classAllocation.usesTheNObservationsPrecedingTheCurrent')}</p>
                   </div>
                   <div className="flex items-center gap-3">
                     <button
@@ -1425,15 +1427,15 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                             setStrategies(prev => prev.map(x => x.id === s.id ? applyWeightVector(x, weights) : x));
                           }
                         }catch(e:any){
-                          setError(e?.message || '权重计算失败');
+                          setError(e?.message || systemText('preInvestment.classAllocation.weightCalculationFailed'));
                         }finally{
                           setBusyStrategy(null);
                           setBtBusy(false);
                         }
                       }}
-                    >反推资金权重</button>
+                    >{systemText('preInvestment.classAllocation.inferFundingWeights')}</button>
                   </div>
-                  {busyStrategy===s.id && <div className="text-xs text-slate-600">计算中，请稍候…</div>}
+                  {busyStrategy===s.id && <div className="text-xs text-slate-600">{systemText('preInvestment.classAllocation.calculatingPleaseWait2')}</div>}
 
                   {/* 再平衡横向权重表（来自回测后的 markers） */}
                   {(() => {
@@ -1450,7 +1452,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                           <table className="min-w-full whitespace-nowrap text-sm">
                             <thead className="bg-slate-50">
                               <tr>
-                                <th scope="col" className="px-3 py-2 text-left text-xs text-slate-600">大类名称</th>
+                                <th scope="col" className="px-3 py-2 text-left text-xs text-slate-600">{systemText('preInvestment.classAllocation.assetName')}</th>
                                 {dates.map((d) => (
                                   <th scope="col" key={d} className="px-3 py-2 text-left text-xs text-slate-600">{d}</th>
                                 ))}
@@ -1480,53 +1482,47 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                   {/* 目标类型 + 收益率类型 */}
                   <div className="grid grid-cols-2 gap-4 text-sm rounded-lg border p-3">
                     <div>
-                      <label className="block text-xs text-slate-600">目标类型</label>
+                      <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.objectiveType')}</label>
                       <select value={s.cfg?.target||'min_risk'} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, target:e.target.value}}:x))} className="mt-1 w-full rounded-lg border-slate-300">
-                        <option value="min_risk">最小风险</option>
-                        <option value="max_return">最大收益</option>
-                        <option value="max_sharpe">最大化收益风险性价比</option>
-                        <option value="max_sharpe_traditional">最大化夏普比率</option>
-                        <option value="risk_min_given_return">指定收益下最小风险</option>
-                        <option value="return_max_given_risk">指定风险下最大收益</option>
+                        <option value="min_risk">{systemText('preInvestment.classAllocation.minimumRisk')}</option>
+                        <option value="max_return">{systemText('preInvestment.classAllocation.maximumReturn')}</option>
+                        <option value="max_sharpe">{systemText('preInvestment.classAllocation.maximizeReturnToRiskRatio')}</option>
+                        <option value="max_sharpe_traditional">{systemText('preInvestment.classAllocation.maximizeSharpeRatio')}</option>
+                        <option value="risk_min_given_return">{systemText('preInvestment.classAllocation.minimizeRiskAtASpecifiedReturn')}</option>
+                        <option value="return_max_given_risk">{systemText('preInvestment.classAllocation.maximizeReturnUnderARiskLimit')}</option>
                       </select>
                       
                       {/* Explanations for each target type */}
                       {(s.cfg?.target === 'min_risk' || !s.cfg?.target) && (
                         <p className="mt-2 text-xs text-slate-600 bg-slate-50 p-2 rounded-lg">
-                          目标：在满足所有约束条件下，寻找使组合风险（由指定的<strong>风险指标</strong>衡量）最小化的权重。
-                        </p>
+                          {systemText('preInvestment.classAllocation.objectiveSubjectToAllConstraintsFindWeights')}<strong>{systemText('preInvestment.classAllocation.riskMetric')}</strong>{systemText('preInvestment.classAllocation.text')}</p>
                       )}
                       {s.cfg?.target === 'max_return' && (
                         <p className="mt-2 text-xs text-slate-600 bg-slate-50 p-2 rounded-lg">
-                          目标：在满足所有约束条件下，寻找使组合收益（由指定的<strong>收益指标</strong>衡量）最大化的权重。
-                        </p>
+                          {systemText('preInvestment.classAllocation.objectiveSubjectToAllConstraintsFindWeights2')}<strong>{systemText('preInvestment.classAllocation.returnMetric')}</strong>{systemText('preInvestment.classAllocation.text2')}</p>
                       )}
                       {s.cfg?.target === 'max_sharpe' && (
                         <p className="mt-2 text-xs text-slate-600 bg-slate-50 p-2 rounded-lg">
-                          目标：寻找使 <strong>(指定收益指标) / (指定风险指标)</strong> 比值最大化的权重。这是一个广义的收益风险性价比优化。
-                        </p>
+                          {systemText('preInvestment.classAllocation.objectiveFindWeightsMaximizing') + " "}<strong>{systemText('preInvestment.classAllocation.selectedReturnMetricSelectedRiskMetric')}</strong> {" " + systemText('preInvestment.classAllocation.thisIsAGeneralizedReturnToRisk')}</p>
                       )}
                       {s.cfg?.target === 'max_sharpe_traditional' && (
                         <p className="mt-2 text-xs text-slate-600 bg-slate-50 p-2 rounded-lg">
-                          目标：寻找使传统夏普比率 <code>(年化收益 - 无风险利率) / 年化波动率</code> 最大化的权重。
-                        </p>
+                          {systemText('preInvestment.classAllocation.objectiveMaximizeTheConventionalSharpeRatio') + " "}<code>{systemText('preInvestment.classAllocation.annualReturnRiskFreeRateAnnualVolatility')}</code> {" " + systemText('preInvestment.classAllocation.text3')}</p>
                       )}
                       {s.cfg?.target === 'risk_min_given_return' && (
                         <p className="mt-2 text-xs text-slate-600 bg-slate-50 p-2 rounded-lg">
-                          目标：在组合收益等于<strong>目标收益值</strong>的前提下，寻找使组合风险最小化的权重。
-                        </p>
+                          {systemText('preInvestment.classAllocation.objectiveMinimizePortfolioRiskWithReturnEqual')}<strong>{systemText('preInvestment.classAllocation.targetReturn')}</strong>{systemText('preInvestment.classAllocation.text4')}</p>
                       )}
                       {s.cfg?.target === 'return_max_given_risk' && (
                         <p className="mt-2 text-xs text-slate-600 bg-slate-50 p-2 rounded-lg">
-                          目标：在组合风险不高于<strong>目标风险值</strong>的前提下，寻找使组合收益最大化的权重。
-                        </p>
+                          {systemText('preInvestment.classAllocation.objectiveMaximizePortfolioReturnWithRiskNo')}<strong>{systemText('preInvestment.classAllocation.targetRisk')}</strong>{systemText('preInvestment.classAllocation.text5')}</p>
                       )}
                     </div>
                     <div>
-                      <label className="block text-xs text-slate-600">收益率类型</label>
+                      <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.returnType2')}</label>
                       <select value={s.cfg?.return_type||'simple'} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, return_type:e.target.value}}:x))} className="mt-1 w-full rounded-lg border-slate-300">
-                        <option value="simple">普通收益率</option>
-                        <option value="log">对数收益率</option>
+                        <option value="simple">{systemText('preInvestment.classAllocation.simpleReturns')}</option>
+                        <option value="log">{systemText('preInvestment.classAllocation.logReturns')}</option>
                       </select>
                     </div>
                   </div>
@@ -1536,21 +1532,21 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                     <div className="space-y-3 rounded-lg border p-3 text-sm">
                       <div className="grid grid-cols-2 gap-4">
                         <div>
-                          <label className="block text-xs text-slate-600">收益指标 (固定)</label>
-                          <input type="text" value="年化收益率均值" disabled className="mt-1 w-full rounded-lg border-slate-200 bg-slate-100 px-2 py-1"/>
+                          <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.returnMetricFixed')}</label>
+                          <input type="text" value={systemText('preInvestment.classAllocation.meanAnnualizedReturn')} disabled className="mt-1 w-full rounded-lg border-slate-200 bg-slate-100 px-2 py-1"/>
                         </div>
                         <div>
-                          <label className="block text-xs text-slate-600">风险指标 (固定)</label>
-                          <input type="text" value="年化波动率" disabled className="mt-1 w-full rounded-lg border-slate-200 bg-slate-100 px-2 py-1"/>
+                          <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.riskMetricFixed')}</label>
+                          <input type="text" value={systemText('preInvestment.classAllocation.annualVolatility2')} disabled className="mt-1 w-full rounded-lg border-slate-200 bg-slate-100 px-2 py-1"/>
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                         <div>
-                          <label className="block text-xs text-slate-600">年化天数</label>
+                          <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.annualizationDays')}</label>
                           <input type="number" value={s.cfg?.days ?? 252} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, days:Number(e.target.value)}}:x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                         </div>
                         <div>
-                          <label className="block text-xs text-slate-600">年化无风险利率(%)</label>
+                          <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.annualRiskFreeRate')}</label>
                           <input type="number" step="0.1" value={s.cfg?.risk_free_rate_pct ?? 1.5} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, risk_free_rate_pct:Number(e.target.value)}}:x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                         </div>
                       </div>
@@ -1560,29 +1556,29 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                       {/* 收益指标配置 */}
                       <div className="rounded-lg border p-3 text-sm space-y-3">
                         <div>
-                          <label className="block text-xs text-slate-600">收益指标</label>
+                          <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.returnMetric')}</label>
                           <select value={s.cfg?.return_metric||'cumulative'} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, return_metric:e.target.value}}:x))} className="mt-1 w-full rounded-lg border-slate-300">
-                            <option value="annual">年化收益率</option>
-                            <option value="annual_mean">年化收益率均值</option>
-                            <option value="cumulative">累计收益率</option>
-                            <option value="mean">收益率均值</option>
-                            <option value="ewm">指数加权收益率</option>
+                            <option value="annual">{systemText('preInvestment.classAllocation.annualizedReturn')}</option>
+                            <option value="annual_mean">{systemText('preInvestment.classAllocation.meanAnnualizedReturn')}</option>
+                            <option value="cumulative">{systemText('preInvestment.classAllocation.cumulativeReturn2')}</option>
+                            <option value="mean">{systemText('preInvestment.classAllocation.meanReturn')}</option>
+                            <option value="ewm">{systemText('preInvestment.classAllocation.exponentiallyWeightedReturn')}</option>
                           </select>
                         </div>
                         {(s.cfg?.return_metric==='annual' || s.cfg?.return_metric==='annual_mean') && (
                           <div>
-                            <label className="block text-xs text-slate-600">年化天数</label>
+                            <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.annualizationDays')}</label>
                             <input type="number" value={s.cfg?.days ?? 252} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, days:Number(e.target.value)}}:x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                           </div>
                         )}
                         {s.cfg?.return_metric==='ewm' && (
                           <div className="grid grid-cols-2 gap-3">
                             <div>
-                              <label className="block text-xs text-slate-600">衰减因子 λ</label>
+                              <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.decayFactor')}</label>
                               <input type="number" step={0.01} value={s.cfg?.ret_alpha ?? 0.94} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, ret_alpha:Number(e.target.value)}}:x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                             </div>
                             <div>
-                              <label className="block text-xs text-slate-600">窗口长度</label>
+                              <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.windowLength')}</label>
                               <input type="number" value={s.cfg?.ret_window ?? 60} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, ret_window:Number(e.target.value)}}:x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                             </div>
                           </div>
@@ -1592,38 +1588,38 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                       {/* 风险指标配置 */}
                       <div className="rounded-lg border p-3 text-sm space-y-3">
                         <div>
-                          <label className="block text-xs text-slate-600">风险指标</label>
+                          <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.riskMetric')}</label>
                           <select value={s.cfg?.risk_metric||'vol'} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, risk_metric:e.target.value}}:x))} className="mt-1 w-full rounded-lg border-slate-300">
-                            <option value="vol">波动率</option>
-                            <option value="annual_vol">年化波动率</option>
-                            <option value="ewm_vol">指数加权波动率</option>
+                            <option value="vol">{systemText('preInvestment.classAllocation.volatility')}</option>
+                            <option value="annual_vol">{systemText('preInvestment.classAllocation.annualVolatility2')}</option>
+                            <option value="ewm_vol">{systemText('preInvestment.classAllocation.exponentiallyWeightedVolatility')}</option>
                             <option value="var">VaR</option>
                             <option value="es">ES</option>
-                            <option value="max_drawdown">最大回撤</option>
-                            <option value="downside_vol">下行波动率</option>
+                            <option value="max_drawdown">{systemText('preInvestment.classAllocation.maximumDrawdown2')}</option>
+                            <option value="downside_vol">{systemText('preInvestment.classAllocation.downsideVolatility')}</option>
                           </select>
                         </div>
                         {s.cfg?.risk_metric==='annual_vol' && (
                           <div>
-                            <label className="block text-xs text-slate-600">年化天数</label>
+                            <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.annualizationDays')}</label>
                             <input type="number" value={s.cfg?.risk_days ?? 252} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, risk_days:Number(e.target.value)}}:x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                           </div>
                         )}
                         {s.cfg?.risk_metric==='ewm_vol' && (
                           <div className="grid grid-cols-2 gap-3">
                             <div>
-                              <label className="block text-xs text-slate-600">衰减因子 λ</label>
+                              <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.decayFactor')}</label>
                               <input type="number" step={0.01} value={s.cfg?.risk_alpha ?? 0.94} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, risk_alpha:Number(e.target.value)}}:x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                             </div>
                             <div>
-                              <label className="block text-xs text-slate-600">窗口长度</label>
+                              <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.windowLength')}</label>
                               <input type="number" value={s.cfg?.risk_window ?? 60} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, risk_window:Number(e.target.value)}}:x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                             </div>
                           </div>
                         )}
                         {(s.cfg?.risk_metric==='var' || s.cfg?.risk_metric==='es') && (
                           <div>
-                            <label className="block text-xs text-slate-600">置信度%</label>
+                            <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.confidence4')}</label>
                             <input type="number" value={s.cfg?.risk_confidence ?? 95} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, risk_confidence:Number(e.target.value)}}:x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                           </div>
                         )}
@@ -1633,7 +1629,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                   {(s.cfg?.target==='risk_min_given_return') && (
                     <div className="grid grid-cols-2 gap-3 text-sm">
                       <div>
-                        <label className="block text-xs text-slate-600">目标收益率 (%)</label>
+                        <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.targetReturn2')}</label>
                         <input type="number" value={s.cfg?.target_return == null ? '' : Number((s.cfg.target_return * 100).toFixed(4))} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, target_return: Number(e.target.value) / 100}}:x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                       </div>
                     </div>
@@ -1641,7 +1637,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                   {(s.cfg?.target==='return_max_given_risk') && (
                     <div className="grid grid-cols-2 gap-3 text-sm">
                       <div>
-                        <label className="block text-xs text-slate-600">目标风险 (%)</label>
+                        <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.targetRisk2')}</label>
                         <input type="number" value={s.cfg?.target_risk == null ? '' : Number((s.cfg.target_risk * 100).toFixed(4))} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, target_risk: Number(e.target.value) / 100}}:x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                       </div>
                     </div>
@@ -1661,7 +1657,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                         <table className="min-w-full whitespace-nowrap text-sm">
                           <thead className="bg-slate-50">
                             <tr>
-                              <th scope="col" className="px-3 py-2 text-left text-xs text-slate-600">大类名称</th>
+                              <th scope="col" className="px-3 py-2 text-left text-xs text-slate-600">{systemText('preInvestment.classAllocation.assetName')}</th>
                               {dates.map((d) => (
                                 <th scope="col" key={d} className="px-3 py-2 text-left text-xs text-slate-600">{d}</th>
                               ))}
@@ -1683,7 +1679,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                   })() || (
                     <div className="min-w-0 overflow-x-auto rounded-lg border">
                       <table className="min-w-full">
-                        <thead className="bg-slate-50 text-xs text-slate-600"><tr><th scope="col" className="px-3 py-2 text-left">大类名称</th><th scope="col" className="px-3 py-2 text-left">资金权重(%)</th></tr></thead>
+                        <thead className="bg-slate-50 text-xs text-slate-600"><tr><th scope="col" className="px-3 py-2 text-left">{systemText('preInvestment.classAllocation.assetName')}</th><th scope="col" className="px-3 py-2 text-left">{systemText('preInvestment.classAllocation.fundingWeight')}</th></tr></thead>
                         <tbody className="text-sm">
                           {s.rows.map((r,i)=> (
                             <tr key={i} className="border-t">
@@ -1699,24 +1695,21 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                   <div className="rounded-lg border p-3 text-sm">
                     <div className="grid grid-cols-3 gap-3 items-end">
                       <div>
-                        <label className="block text-xs text-slate-600">窗口模式</label>
+                        <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.windowMode')}</label>
                         <select value={s.cfg?.window_mode || 'rollingN'} onChange={e=> setStrategies(prev=> prev.map(x=> x.id===s.id? { ...x, cfg: { ...(x.cfg||{}), window_mode: e.target.value } } : x))} className="mt-1 w-full rounded-lg border-slate-300">
-                          <option value="all">所有数据</option>
-                          <option value="rollingN">最近N条</option>
+                          <option value="all">{systemText('preInvestment.classAllocation.allData')}</option>
+                          <option value="rollingN">{systemText('preInvestment.classAllocation.mostRecentNObservations')}</option>
                         </select>
                       </div>
                       { (s.cfg?.window_mode==='rollingN') && (
                         <div>
-                          <label className="block text-xs text-slate-600">N（交易日）</label>
+                          <label className="block text-xs text-slate-600">{systemText('preInvestment.classAllocation.nTradingDays')}</label>
                           <input type="number" min={2} value={s.cfg?.data_len ?? 60} onChange={e=> setStrategies(prev=> prev.map(x=> x.id===s.id? { ...x, cfg: { ...(x.cfg||{}), data_len: Number(e.target.value) } } : x))} className="mt-1 w-full rounded-lg border-slate-300 px-2 py-1"/>
                         </div>
                       )}
                     </div>
                     <p className="mt-2 text-xs text-slate-600">
-                      模式说明：
-                      <span className="ml-1 font-medium">所有数据</span> 使用回测开始至当期的全部样本；
-                      <span className="ml-1 font-medium">最近N条</span> 使用当期之前最近 N 条的滚动窗口（推荐）。
-                    </p>
+                      {systemText('preInvestment.classAllocation.modeGuidance')}<span className="ml-1 font-medium">{systemText('preInvestment.classAllocation.allData')}</span> {" " + systemText('preInvestment.classAllocation.usesAllSamplesFromBacktestStartTo')}<span className="ml-1 font-medium">{systemText('preInvestment.classAllocation.mostRecentNObservations')}</span> {" " + systemText('preInvestment.classAllocation.usesTheNObservationsPrecedingTheCurrent')}</p>
                   </div>
 
                   <div>
@@ -1738,13 +1731,13 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                             setStrategies(prev => prev.map(x => x.id === s.id ? applyWeightVector(x, weights) : x));
                           }
                         }catch(e:any){
-                          setError(e?.message || '权重计算失败');
+                          setError(e?.message || systemText('preInvestment.classAllocation.weightCalculationFailed'));
                         }finally{
                           setBusyStrategy(null);
                           setBtBusy(false);
                         }
                       }}
-                    >反推资金权重</button>
+                    >{systemText('preInvestment.classAllocation.inferFundingWeights')}</button>
                   </div>
 
                   {/* 已替换为横向表格展示（见上）*/}
@@ -1758,17 +1751,16 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
             <div className="mt-4">
               <button
                 onClick={() => {
-                  if (assetNames.length === 0) { setError('请先加载方案'); return; }
+                  if (assetNames.length === 0) { setError(systemText('preInvestment.classAllocation.loadASchemeFirst')); return; }
                   setShowAddPicker(true);
                 }}
                 className="rounded-lg bg-accent-600 text-white px-3 py-2 text-sm">
-                + 添加新的组合策略
-              </button>
+                {systemText('preInvestment.classAllocation.addPortfolioStrategy')}</button>
             </div>
           )}
               {showAddPicker && (
                 <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <span className="text-sm text-slate-700">选择策略类型：</span>
+                  <span className="text-sm text-slate-700">{systemText('preInvestment.classAllocation.selectStrategyType')}</span>
                   {(['fixed','risk_budget','target'] as StrategyType[]).map(t => (
                     <button key={t} disabled={equalWeightLoading} className="rounded-lg bg-slate-100 px-3 py-1 text-sm disabled:cursor-wait disabled:opacity-60" onClick={async () => {
                       const id = `s${Date.now()}`;
@@ -1778,36 +1770,36 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                           const eqArr = await loadEqualPercents(assetNames);
                           setStrategies(prev => {
                           const rows = assetNames.map((n,i)=> ({ className:n, weight: eqArr[i], budget: 100 }));
-                          const name = uniqueStrategyName('固定比例策略', prev);
+                          const name = uniqueStrategyName(systemText('preInvestment.classAllocation.fixedWeightStrategy'), prev);
                           return [...prev, { id, type: t, name, rows, cfg: { mode: 'equal' } }];
                           });
                         } catch (reason) {
-                          setError(reason instanceof Error ? reason.message : '等权计算失败');
+                          setError(reason instanceof Error ? reason.message : systemText('preInvestment.classAllocation.equalWeightCalculationFailed'));
                           return;
                         }
                       } else if (t==='risk_budget') {
                         setStrategies(prev => {
                           const rows = assetNames.map(n=> ({ className:n, budget:100, weight: null }));
-                          const name = uniqueStrategyName('风险预算策略', prev);
+                          const name = uniqueStrategyName(systemText('preInvestment.classAllocation.riskBudgetStrategy'), prev);
                           return [...prev, { id, type: t, name, rows, cfg: { risk_metric:'vol', window_mode:'rollingN', data_len:60 } }];
                         });
                       } else {
                         setStrategies(prev => {
                           const rows = assetNames.map(n=> ({ className:n, weight: null }));
-                          const name = uniqueStrategyName('指定目标策略', prev);
+                          const name = uniqueStrategyName(systemText('preInvestment.classAllocation.targetStrategy'), prev);
                           return [...prev, { id, type: t, name, rows, cfg: { target:'min_risk', return_metric:'cumulative', window_mode:'all', data_len:60 } }];
                         });
                       }
                       setShowAddPicker(false);
-                    }}>{t==='fixed'?'固定比例': t==='risk_budget'?'风险预算':'指定目标'}</button>
+                    }}>{t==='fixed'?systemText('preInvestment.classAllocation.fixedWeights'): t==='risk_budget'?systemText('preInvestment.classAllocation.riskBudget'):systemText('preInvestment.classAllocation.specifiedTarget')}</button>
                   ))}
-                  <button className="ml-2 rounded-lg bg-white border px-2 py-1 text-xs" onClick={()=> setShowAddPicker(false)}>取消</button>
+                  <button className="ml-2 rounded-lg bg-white border px-2 py-1 text-xs" onClick={()=> setShowAddPicker(false)}>{systemText('preInvestment.classAllocation.cancel')}</button>
                 </div>
               )}
 
           {/* 策略回测 */}
           <div className="rounded-lg border p-4">
-            <h3 className="font-medium text-slate-700">策略回测</h3>
+            <h3 className="font-medium text-slate-700">{systemText('preInvestment.classAllocation.strategyBacktest')}</h3>
             <div className="mt-3">
               <HistoricalRegimeBacktestSelector
                 value={historicalRegime}
@@ -1818,11 +1810,11 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                 }}
               />
             </div>
-            <p className="mt-2 text-xs text-slate-600">回测、权重求解与上方候选构建共享结束日；实际区间以有效数据覆盖为准。调仓方式见各策略，当前回测为未扣交易费用的历史表现。</p>
+            <p className="mt-2 text-xs text-slate-600">{systemText('preInvestment.classAllocation.backtestsWeightSolvingAndCandidateConstructionShare')}</p>
             <div className="mt-2 flex flex-wrap items-center gap-3">
-              <label htmlFor="saa-backtest-start" className="text-sm text-slate-600">回测开始日期</label>
+              <label htmlFor="saa-backtest-start" className="text-sm text-slate-600">{systemText('preInvestment.classAllocation.backtestStartDate')}</label>
               <input id="saa-backtest-start" type="date" value={btStart} onChange={e=> setBtStart(e.target.value)} className="rounded-lg border-slate-300 px-2 py-1"/>
-              <label htmlFor="saa-backtest-end" className="text-sm text-slate-600">回测结束日期</label>
+              <label htmlFor="saa-backtest-end" className="text-sm text-slate-600">{systemText('preInvestment.classAllocation.backtestEndDate')}</label>
               <input id="saa-backtest-end" type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="rounded-lg border-slate-300 px-2 py-1" />
               <button
                 ref={backtestButtonRef}
@@ -1830,7 +1822,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                 className="rounded-lg bg-accent-600 px-3 py-2 text-sm text-white disabled:opacity-50"
                 onClick={async ()=>{
                 try{
-                  if(!selectedAlloc || loadedAllocation !== selectedAlloc){ setError('请先加载当前大类方案。'); return; }
+                  if(!selectedAlloc || loadedAllocation !== selectedAlloc){ setError(systemText('preInvestment.classAllocation.loadTheCurrentAssetClassPlanFirst')); return; }
                   setBtBusy(true);
                   const expectedStudy = studyBounds.current;
                   const markersDraft: Record<string, ScheduleEntry> = { ...scheduleMarkers };
@@ -1884,22 +1876,22 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                   };
                   const res = await fetch('/api/strategy/backtest',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
                   const dat = await res.json();
-                  if (studyBounds.current !== expectedStudy) throw new Error('研究结束日或方案已变化，请重新运行回测。');
-                  if(!res.ok) throw new Error(apiErrorMessage(dat, '回测失败'));
-                  assertNativeNumericalExecution(dat?.execution, '大类配置策略回测');
+                  if (studyBounds.current !== expectedStudy) throw new Error(systemText('preInvestment.classAllocation.theResearchEndDateOrPlanChanged3'));
+                  if(!res.ok) throw new Error(apiErrorMessage(dat, systemText('preInvestment.classAllocation.backtestFailed')));
+                  assertNativeNumericalExecution(dat?.execution, systemText('preInvestment.classAllocation.assetAllocationStrategyBacktest'));
                   if (dat?.regime_conditioning) {
-                    assertNativeNumericalExecution(dat.regime_conditioning.execution, '组合历史情景条件统计');
+                    assertNativeNumericalExecution(dat.regime_conditioning.execution, systemText('preInvestment.classAllocation.historicalRegimeConditionalPortfolioStatistics'));
                   }
                   backtestInputRef.current = stableStringify({ selectedAlloc, btStart, endDate, strategies: prepared, historicalRegime, singleLimits, groupLimits, riskFreePct });
                   setBtSeries(dat);
-                }catch(e:any){ setError(e?.message||'回测失败'); }
+                }catch(e:any){ setError(e?.message||systemText('preInvestment.classAllocation.backtestFailed')); }
                 finally { setBtBusy(false); }
-              }}>开始策略回测</button>
+              }}>{systemText('preInvestment.classAllocation.runStrategyBacktest')}</button>
             </div>
             {btSeries && (
               <div className="mt-4 space-y-6">
                 <PitDecisionNotice lineage={btSeries.pit} />
-                {btSeries.research_interval && <p className="text-xs text-slate-600">实际回测区间：{btSeries.research_interval.actual_start ?? '—'} 至 {btSeries.research_interval.actual_end ?? '—'}。</p>}
+                {btSeries.research_interval && <p className="text-xs text-slate-600">{systemText('preInvestment.classAllocation.actualBacktestInterval')}{btSeries.research_interval.actual_start ?? '—'} {" " + systemText('preInvestment.classAllocation.to') + " "}{btSeries.research_interval.actual_end ?? '—'}。</p>}
                 <ReactECharts
                   style={{height: 360}}
                   onEvents={{ datazoom: handleBacktestZoom }}
@@ -1941,7 +1933,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                   xAxis: { type:'category', data: btSeries.dates },
                   yAxis: {
                     type:'value',
-                    name:'组合净值',
+                    name:systemText('preInvestment.classAllocation.portfolioNav'),
                     axisLabel: { formatter: (v: any) => Number(v).toFixed(2) },
                     scale: true,
                     ...(btYAxisRange ? { min: btYAxisRange.min, max: btYAxisRange.max } : {})
@@ -1971,7 +1963,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
           </div>
         </div>
       </Section>
-      <details className="mt-5 rounded-xl border bg-white p-4"><summary className="cursor-pointer text-sm">已保存组合的风险压测</summary><PortfolioRiskSection context="选择由本配置生成的已保存产品组合，测试实际持仓；压测结果不会更改这里的大类权重。" /></details>
+      <details className="mt-5 rounded-xl border bg-white p-4"><summary className="cursor-pointer text-sm">{systemText('preInvestment.classAllocation.riskStressTestForSavedPortfolios')}</summary><PortfolioRiskSection context={systemText('preInvestment.classAllocation.selectASavedProductPortfolioGeneratedBy')} /></details>
     </div>
   );
 }

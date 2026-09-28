@@ -121,3 +121,17 @@ describe('factor return module', () => {
     expect(screen.getByLabelText('滚动 IC 窗口（期）')).toHaveValue(12)
   })
 })
+
+it.each(['construct', 'datasets', 'attribution'])('收益率子页 %s 读取失败独立重试，不冒充加载成功', async tab => {
+  const method = tab === 'construct' ? 'returnCatalog' : 'datasets'
+  const value = tab === 'construct' ? fixtureReturnCatalog : { items: fixtureDatasetSummaries }
+  const call = vi.spyOn(factorApi, method).mockRejectedValueOnce(new Error('database unavailable')).mockResolvedValue(value as never)
+  const view = open(`?module=returns&tab=${tab}`)
+  expect(await screen.findByRole('alert')).toHaveTextContent('暂时无法读取数据，请重试。')
+  expect(view.container.querySelectorAll('img[src*="mascot-error"]')).toHaveLength(1)
+  expect(screen.queryByText(/加载收益率.*已完成|加载归因数据已完成/)).not.toBeInTheDocument()
+  await click('重试')
+  await waitFor(() => expect(view.container.querySelector('img[src*="mascot-error"]')).toBeNull())
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  call.mockRestore()
+})

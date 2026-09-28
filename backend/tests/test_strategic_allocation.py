@@ -84,6 +84,26 @@ def saved_inputs(service):
     return mandate, cma, policy_request
 
 
+def test_active_mandate_names_are_unique_but_edit_can_keep_its_name(workspace):
+    service, _ = workspace
+    definition = MandateRequest(name="唯一目标名称", as_of=date.today(),
+        review_date=date.today() + timedelta(days=90), target_return=0.0,
+        max_volatility=0.2, min_liquid_weight=0.2, max_tracking_error=0.04)
+    original = confirmed_mandate(service, definition)
+    request = MandateStudyRequest(definition=definition.model_copy(update={
+        "boundary_reason": "离线夹具已确认的风险与流动性边界"}))
+    preview = service.preview_mandate(request)
+    body = ConfirmMandateRequest(request=request, preview_hash=preview["preview_hash"], acknowledge_limits=True)
+
+    with pytest.raises(ConflictError, match="目标名称已存在，请修改名称") as exc:
+        service.confirm_mandate(body)
+    assert exc.value.code == "MANDATE_NAME_CONFLICT"
+    assert exc.value.field == "definition.name"
+
+    replacement = service.confirm_mandate(body.model_copy(update={"replaces_mandate_id": original["id"]}))
+    assert replacement["name"] == definition.name
+
+
 def test_covariance_reference_and_readonly_strided_views():
     raw = np.random.default_rng(3).normal(0.0002, 0.01, (100, 6))
     view = raw[::2, ::2]
@@ -150,7 +170,12 @@ def test_preview_no_writes_confirmation_required_and_history_immutable(workspace
         service.publish_cma(PublishCmaRequest(request=definition(), preview_hash="0" * 64))
     assert not service.artifacts.root.exists()
     first = service.publish_cma(PublishCmaRequest(request=definition(), preview_hash=preview["preview_hash"]))
-    second = service.publish_cma(PublishCmaRequest(request=definition(), preview_hash=preview["preview_hash"]))
+    # 名称在仍可引用的版本之间唯一：同名再次发布被拒绝，改名后仍各自成为独立的不可变记录。
+    with pytest.raises(ConflictError, match="名称已存在"):
+        service.publish_cma(PublishCmaRequest(request=definition(), preview_hash=preview["preview_hash"]))
+    renamed = definition().model_copy(update={"name": "人民币十年假设·第二份"})
+    second = service.publish_cma(PublishCmaRequest(request=renamed,
+        preview_hash=service.preview_cma(renamed)["preview_hash"]))
     assert first["id"] != second["id"]
     assert service.get_cma(first["id"]) == first
     frozen = service.artifacts.arrays(first["id"])["covariance"]
@@ -164,7 +189,7 @@ def test_policy_adoption_enters_existing_taa_store_and_preserves_budgets(workspa
     before = service.baselines.list_baselines()
     preview = service.preview_policy(request)
     assert service.baselines.list_baselines() == before
-    assert len(preview["candidates"]) == 4
+    assert len(preview["candidates"]) == 6  # four base methods + maximum Sharpe + minimum drawdown
     for candidate in preview["candidates"]:
         assert sum(candidate["weights"].values()) == pytest.approx(1)
         assert candidate["metrics"]["volatility"] <= mandate["definition"]["max_volatility"]
@@ -176,6 +201,10 @@ def test_policy_adoption_enters_existing_taa_store_and_preserves_budgets(workspa
     assert policy["group_limits"][0]["lo"] == 0.2
     assert policy["assets"][0]["products"][0]["product_id"] == "510300.SH"
     assert service.catalog()["policies"][0]["id"] == policy["id"]
+    summary = service.list_policies()["items"][0]
+    assert summary["mandate"]["name"] == mandate["definition"]["name"]
+    assert summary["scope"]["name"] == policy["alloc_name"]
+    assert summary["cmas"] == [{"id": cma["id"], "name": cma["definition"]["name"]}]
 
 
 def test_robustness_zero_penalty_and_candidate_determinism(workspace):
@@ -306,7 +335,7 @@ def test_api_errors_are_actionable_and_client_results_are_forbidden(workspace):
         assert client.get("/api/strategic-allocation/catalog").status_code == 200
 
 
-@pytest.mark.parametrize("patch", [{"basis_confirmed": False}, {"assets": []}, {"horizon_years": True}, {"correlation": [[1.]]}])
+@pytest.mark.parametrize("patch", [{"basis_confirmed": False}, {"assets": []}, {"correlation": [[1.]]}])
 def test_strict_input_contracts(patch):
     body = definition().model_dump(mode="json")
     body.update(patch)

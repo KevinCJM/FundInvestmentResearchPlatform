@@ -142,22 +142,27 @@ test('两步目标流程只收集目标、风险等级和现金，并展示双�
     effective_from: '2020-01-01', effective_to: null, evaluation_plans: [], members: [], investable_count: 1,
     member_counts: { approved: 1, pending: 0, watch: 0, rejected: 0 }, immutable: true, created_at: fixture.today }
   const snapshot = { id: 'handoff-universe', name: 'Handoff scope', research_date: fixture.today,
-    version_ids: ['handoff-version'], groups: [], product_count: 1, immutable: true }
-  await page.route('**/api/product-pool-versions?*', route => route.fulfill({ json: { items: [poolVersion], total: 1 } }))
-  await page.route('**/api/investable-universe-snapshots**', route => route.fulfill({ json: snapshot }))
+    version_ids: ['handoff-version'], groups: [], product_count: 1, immutable: true,
+    mandate_id: saved.id, mandate_hash: saved.content_hash }
+  await page.route(/\/api\/product-pool-versions(?:\?.*)?$/, route => route.fulfill({ json: { items: [poolVersion], total: 1 } }))
+  await page.route('**/api/investable-universe-snapshots**', route => route.fulfill({ json:
+    route.request().method() === 'GET' && !route.request().url().includes('/handoff-universe') ? { items: [], total: 0 } : snapshot }))
   await page.getByRole('link', { name: /下一步：确定投资范围/ }).click()
+  await page.getByRole('link', { name: '新建研究范围', exact: true }).click()
   await page.getByRole('checkbox', { name: /Handoff pool/ }).check()
   await page.getByRole('button', { name: '生成锁定快照', exact: true }).click()
-  await expect(page.getByText('可投资域快照已锁定', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '已保存的产品范围', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '进入手动构建大类', exact: true }).click()
   await expect(page).toHaveURL(/asset-classes\?universe=handoff-universe/)
   const journey = await page.evaluate(() => JSON.parse(sessionStorage.getItem('allocation-journey:v1')!))
   expect(journey.mandateId).toBe(saved.id)
   expect(journey.baselineId).toBeUndefined()
   expect(journey.taaRunId).toBeUndefined()
-  // Reuse the fixture's existing classification; the SAA URL deliberately carries no mandate.
+  // Reuse the fixture's existing classification; the SAA URL deliberately carries no mandate,
+  // so the page must render it unselected and offer the saved research as an explicit resume.
   await page.goto('/pre-investment/saa/policy?alloc=' + encodeURIComponent('浏览器离线股债'))
-  await expect(page.getByRole('combobox', { name: '投资目标版本', exact: true })).toHaveValue(saved.id)
+  await expect(page.getByRole('combobox', { name: /^投资目标版本/ })).toHaveValue('')
+  await expect(page.getByRole('link', { name: '按上次研究继续', exact: true })).toHaveAttribute('href', new RegExp(`mandate=${saved.id}`))
   await page.goto('/pre-investment/objectives')
   await row.getByRole('link', { name: '修改', exact: true }).click()
   await expect(page.getByRole('heading', { name: '修改投资目标与约束', exact: true })).toBeVisible()
@@ -278,5 +283,90 @@ test('英语页面在无PIT时研究日可编辑，字段顺序和移动端布�
   await expect(page.getByLabel(/^Base currency/)).toHaveAttribute('readonly')
   await expect(page.getByRole('navigation', { name: 'Objective workflow steps' }).getByRole('button')).toHaveCount(2)
   await layout(page, info, 'english-compact', 'Add investment objective')
+  expect(errors).toEqual([])
+})
+
+test('三种目标在输入页显示同口径收益要求并保留累计目标', async ({ page, request }, info) => {
+  const errors = await connect(page)
+  const fixture = await (await request.get(`${api}/fixture`)).json()
+  await page.clock.setFixedTime(new Date(`${fixture.today}T12:00:00Z`))
+  await page.goto('/pre-investment/objectives/new')
+  await page.getByLabel('目标名称', { exact: true }).fill(`收益口径-${info.project.name}`)
+  await page.getByRole('combobox', { name: /风险标尺版本/ }).selectOption(fixture.scale.id)
+  await page.getByRole('button', { name: /^C3 / }).click()
+  await page.getByLabel(/^最低预期年收益/).fill('4')
+  const echo = page.getByRole('region', { name: '这套配置需要的收益', exact: true })
+  await expect(echo).toContainText('4.00%')
+  await page.getByLabel(/^填写口径/).selectOption('total')
+  await page.getByLabel(/年期间总收益/).fill('50')
+  await expect(echo).toContainText('4.14%')
+  await page.getByLabel(/^投资期限/).fill('5')
+  await expect(page.getByLabel(/年期间总收益/)).toHaveValue('50')
+  await expect(echo).toContainText('8.45%')
+  await layout(page, info, 'compound-return-echo', '添加投资目标与约束')
+  await page.getByRole('button', { name: '下一步：结果与确认', exact: true }).click()
+  const compoundPreview = page.waitForResponse(r => r.url().endsWith('/mandates/preview') && r.request().method() === 'POST')
+  await page.getByRole('button', { name: '运行目标诊断', exact: true }).click()
+  const diagnosed = await (await compoundPreview).json()
+  expect(diagnosed.definition.target_return_basis).toBe('annual_compound')
+  expect(diagnosed.reference_diagnosis.target_curve.length).toBeGreaterThan(2)
+  expect(diagnosed.reference_diagnosis.target_curve[0].expected_return).toBeCloseTo(1.5 ** .2 - 1)
+  await layout(page, info, 'compound-target-frontier', '添加投资目标与约束')
+  await page.getByRole('button', { name: '1. 目标与约束', exact: true }).click()
+  const kind = page.getByRole('combobox', { name: '投资目标类型', exact: false })
+  await kind.selectOption('benchmark_relative')
+  const relativeResponse = page.waitForResponse(r => r.url().endsWith('/mandates/funding') && r.status() === 200 && r.request().postDataJSON().definition.objective_kind === 'benchmark_relative' && r.request().postDataJSON().definition.target_excess_return === .005)
+  await page.getByLabel(/目标年超额收益/).fill('0.5')
+  const relative = (await (await relativeResponse).json()).return_requirements
+  expect(relative.arithmetic_floor).toBeCloseTo(relative.benchmark_return + .005)
+  await expect(echo).toContainText(`${(relative.arithmetic_floor * 100).toFixed(2)}%`)
+  await kind.selectOption('funding_goal')
+  await page.getByLabel(/期末目标金额/).fill('1250000')
+  const fundingResponse = page.waitForResponse(r => r.url().endsWith('/mandates/funding') && r.status() === 200 && r.request().postDataJSON().definition.objective_kind === 'funding_goal' && r.request().postDataJSON().definition.cash_budget?.total_capital === 1000000)
+  await page.getByLabel(/总资金（CNY）/).fill('1000000')
+  const funding = (await (await fundingResponse).json()).return_requirements
+  expect(funding.compound_floor).toBeCloseTo(1.25 ** (1/5)-1)
+  await expect(echo).toContainText('4.56%')
+  await layout(page, info, 'cashflow-return-echo', '添加投资目标与约束')
+  expect(errors).toEqual([])
+})
+
+test('SAA 沿用累计目标并展示随风险变化的收益要求', async ({ page, request }, info) => {
+  const errors = await connect(page)
+  const fixture = await (await request.get(`${api}/fixture`)).json()
+  await page.clock.setFixedTime(new Date(`${fixture.today}T12:00:00Z`))
+  const study = { definition: { schema_version: '2.0', name: `复利承接-${info.project.name}`,
+    as_of: fixture.today, horizon_years: 10, objective_kind: 'absolute_return', target_return: .02,
+    target_return_basis: 'annual_compound', max_volatility: null,
+    risk_authorization: { mode: 'manual_level', authorized_max_level: 3, selected_max_level: 3,
+      risk_scale_ref: { id: fixture.scale.id, content_hash: fixture.scale.content_hash } } } }
+  const preview = await request.post(`${api}/api/strategic-allocation/mandates/preview`, { data: study })
+  expect(preview.status(), await preview.text()).toBe(200)
+  const savedResponse = await request.post(`${api}/api/strategic-allocation/mandates/confirm`, {
+    data: { request: study, preview_hash: (await preview.json()).preview_hash, acknowledge_limits: true } })
+  expect(savedResponse.status(), await savedResponse.text()).toBe(201)
+  const saved = await savedResponse.json()
+  await page.goto(`/pre-investment/saa/policy?mandate=${saved.id}`)
+  await page.getByRole('combobox', { name: /^研究范围/ }).selectOption('allocation:浏览器离线股债')
+  await page.getByRole('combobox', { name: /^选择已确认 LTCMA/ }).selectOption(fixture.cma.id)
+  const frontierResponse = page.waitForResponse(r => r.url().endsWith('/policy/frontier') && r.request().method() === 'POST')
+  await page.getByRole('button', { name: /^3\. / }).click()
+  const response = await frontierResponse
+  expect(response.status(), await response.text()).toBe(200)
+  const result = await response.json()
+  expect(result.target_check.status).toBe('feasible')
+  const view = result.views[0]
+  expect(view.return_requirements.compound_floor).toBe(.02)
+  expect(view.target_return).toBeNull()
+  expect(view.target_curve.at(-1).expected_return).toBeGreaterThan(.02)
+  await expect(page.getByTestId('saa-frontier-chart')).toBeVisible()
+  const target = page.getByRole('checkbox', { name: '目标与约束', exact: true })
+  await target.uncheck()
+  await expect(target).not.toBeChecked()
+  await target.check()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy()
+  await expect.poll(() => page.evaluate(auditTextContrast)).toEqual([])
+  await page.getByTestId('saa-frontier-chart').scrollIntoViewIfNeeded()
+  await page.screenshot({ path: info.outputPath('saa-compound-target.png'), fullPage: true })
   expect(errors).toEqual([])
 })

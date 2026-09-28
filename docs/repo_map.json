@@ -106,7 +106,7 @@
       "name": "AI research assistant and durable execution harness",
       "path": "backend/agent",
       "kind": "full_stack_research_module",
-      "purpose": "Shares one conversational assistant across indicator authoring, product research, comparison and immutable portfolio diagnosis. Registered tools reuse existing research services; signed projections keep raw market arrays out of every model request. SQLite owns sessions, execution lifecycle, tool receipts and human decisions. Pending work derives from the committed transcript; physical tool completion and content admission remain separate. Business saves and durable memory changes require independent human confirmation. LLM profiles are explicitly selected and keys are write-only at the HTTP boundary. Application-owned service bindings are explicit; tools do not discover HTTP routers. Tool declarations own current-data versus immutable-run policy. Indicator preview loading and context adoption belong to the indicator frontend adapter.",
+      "purpose": "Shares one conversational assistant across indicator authoring, product research, comparison and immutable portfolio diagnosis. Registered tools reuse existing research services; signed projections keep raw market arrays out of every model request. SQLite owns sessions, execution lifecycle, tool receipts and human decisions. Pending work derives from the committed transcript; physical tool completion and content admission remain separate. Business saves and durable memory changes require independent human confirmation. LLM profiles are explicitly selected and keys are write-only at the HTTP boundary. Application-owned service bindings are explicit; tools do not discover HTTP routers. Tool declarations own current-data versus immutable-run policy. Indicator preview loading and context adoption belong to the indicator frontend adapter. Scenario authoring uses an isolated regime_graph domain, current graph evidence, registered template/node/source lookup and the existing graph validator; human application preserves editor-owned research bindings. Named scenario explanations search the saved-definition repository independently of templates and read explicit revisions through a bounded read-only graph projection; no market calculation or draft is created.",
       "module_tags": [
         "agent",
         "llm",
@@ -164,7 +164,10 @@
         "docs/research/ai-agent-indicator-product-research-implementation-design-2026-09-19.md",
         "docs/research/ai-assistant-conversation-ui-design-2026-09-20.md",
         "docs/research/ai-assistant-conversation-ui-prototype-2026-09-20.html",
-        "frontend/src/components/agent/useIndicatorPreview.ts"
+        "frontend/src/components/agent/useIndicatorPreview.ts",
+        "backend/agent/regimes.py",
+        "frontend/src/components/agent/RegimeAgentPanel.tsx",
+        "frontend/src/services/regimeAgent.ts"
       ],
       "upstream_dependencies": [
         "backend_api_shell",
@@ -172,13 +175,15 @@
         "backend_portfolio_research",
         "backend_etf_product_api",
         "backend_data_storage",
-        "market_data_snapshot_lifecycle"
+        "market_data_snapshot_lifecycle",
+        "backend_regime_research"
       ],
       "downstream_dependencies": [
         "frontend_indicator_studio",
         "frontend_etf_research_pages",
         "frontend_portfolio_research",
-        "frontend_app_shell"
+        "frontend_app_shell",
+        "frontend_regime_research"
       ],
       "out_of_scope_dependencies": [
         "Live model quality, cost and provider availability",
@@ -212,7 +217,10 @@
         "frontend/e2e/agent-panel.spec.ts",
         "frontend/e2e/agent-research-pages.spec.ts",
         "frontend/e2e/llm-settings.spec.ts",
-        "backend/tests/test_instrument_routes.py"
+        "backend/tests/test_instrument_routes.py",
+        "backend/tests/test_agent_regimes.py",
+        "frontend/src/components/agent/RegimeAgentPanel.test.tsx",
+        "frontend/e2e/regime-agent.spec.ts"
       ],
       "related_configs": [
         "frontend/playwright.agent-research.config.ts",
@@ -282,14 +290,15 @@
       "name": "SAA-linked tactical decision workbench",
       "path": "backend/tactical_allocation",
       "kind": "full_stack_research_module",
-      "purpose": "SAA-linked tactical research over frozen budgets and explicit product mappings. Momentum, manual hypotheses, published regimes and dated composite scores share one recursive engine. Optional decision/execution clocks add frequency, lag, minimum holdings and thresholds; non-trading weights drift and observed holding-budget breaches affect feasibility. Missing decision_policy preserves original daily-target outputs without copying expanded paths. Cost basis is explicit and independent of frequency. Only mature training labels select strength; holdout and expanding folds remain independent. Unknown or expired positive-weight components invalidate the composite without renormalization. Preflight reports common coverage, signal readiness, outcome maturity and NAV quality. Current application uses actual dated holdings and the shared portfolio bridge. Saved inputs, scenarios, mapping and policy evidence remain immutable and research-only. Fixed-target stress is not execution-strategy replay. New signal/clock kernels and batch direction validation participate in PID-bound readiness without request compilation.",
+      "purpose": "SAA-linked tactical research over frozen budgets, using frozen strategic research proxies without requiring trading-product mappings. Fully mapped historical baselines without research proxies retain their original product-NAV source. Trading products remain required only by the implementation bridge. Momentum, manual hypotheses, published regimes and dated composite scores share one recursive engine. Optional decision/execution clocks add frequency, lag, minimum holdings and thresholds; non-trading weights drift and observed holding-budget breaches affect feasibility. Missing decision_policy preserves original daily-target outputs without copying expanded paths. Cost basis is explicit and independent of frequency. Only mature training labels select strength; holdout and expanding folds remain independent. Unknown or expired positive-weight components invalidate the composite without renormalization. Preflight reports common coverage, signal readiness, outcome maturity and NAV quality. Current application uses actual dated holdings and the shared portfolio bridge. Saved inputs, scenarios, mapping and policy evidence remain immutable and research-only. Fixed-target stress is not execution-strategy replay. New signal/clock kernels and batch direction validation participate in PID-bound readiness without request compilation. Research proxy prices use complete common-date intervals, ACT/365.25 cash and elapsed-time risk, with per-source date diagnostics; date-only proxy signals become usable after publication day.",
       "entry_files": [
         "backend/tactical_allocation",
         "backend/services/tactical_allocation_routes.py",
         "frontend/src/pages/TacticalAllocationWorkspace.tsx",
         "frontend/src/services/tacticalAllocation.ts",
         "frontend/src/components/tactical-allocation",
-        "backend/tactical_allocation/walk_forward.py"
+        "backend/tactical_allocation/walk_forward.py",
+        "backend/tactical_allocation/research_data.py"
       ],
       "key_symbols": [
         "TacticalAllocationService",
@@ -347,6 +356,7 @@
       "related_tests": [
         "backend/tests/test_tactical_allocation_numeric.py",
         "backend/tests/test_tactical_allocation_data.py",
+        "backend/tests/test_tactical_research_proxies.py",
         "backend/tests/test_tactical_allocation_service.py",
         "backend/tests/test_tactical_allocation_bridge.py",
         "backend/tests/test_historical_regime_taa.py",
@@ -362,7 +372,8 @@
         "backend/tests/test_bettersaataa_final_audit.py",
         "backend/tests/benchmark_taa_clocks.py",
         "frontend/src/components/tactical-allocation/TaaPolicySignals.test.tsx",
-        "frontend/e2e/better-saataa-01-04.spec.ts"
+        "frontend/e2e/better-saataa-01-04.spec.ts",
+        "frontend/src/components/tactical-allocation/TaaResearchContext.test.tsx"
       ],
       "related_configs": [
         "backend/app.py",
@@ -857,7 +868,6 @@
         "frontend/src/services/factorResearch.ts",
         "frontend/src/pages/FactorResearchCenter.tsx",
         "frontend/src/components/factor-research",
-        "frontend/src/components/FactorEvidencePanel.tsx",
         "frontend/src/test/factorFixtures.ts",
         "frontend/src/test/factorReturnFixtures.ts",
         "frontend/e2e/factor-returns.spec.ts",
@@ -888,7 +898,6 @@
         "backend/product_pools/service.py",
         "backend/custom_indicators/series_provider.py",
         "frontend/src/services/factorResearch.ts",
-        "frontend/src/components/FactorEvidencePanel.tsx",
         "frontend/src/layouts/StageLayout.tsx",
         "frontend/src/pages/ProductDetail.tsx",
         "docs/verification/factors.md",
@@ -966,7 +975,6 @@
         "Study",
         "StudyFields",
         "FactorResearchCenter",
-        "FactorEvidencePanel",
         "IndicatorEvaluationGateway",
         "build_router",
         "execution_audit"
@@ -2550,7 +2558,7 @@
       "name": "Historical regime graph, research-series, and scenario-stress services",
       "path": "backend/historical_regimes/v2_service.py",
       "kind": "backend_api_feature",
-      "purpose": "Exposes primitive/composite/coupled granularity metadata, nominal nullable conditions and phase directions, and pure authoring expansion for threshold, quadrant and PS composites. Expanded and stored compatibility entries share fixed-signature numerical kernels; all original ports, explicit edges and temporal knowledge remain intact. New step-template identities leave old template hashes and saved runs unchanged. Provides the versioned Regime Graph v2 registry, typed graph inference, explicit fixed-signature NJIT preparation and execution, non-authorizing persistent plan manifests, immutable artifacts, research-series catalog/profile, historical-state experiments, and published-state scenario-stress integration. Completed previews expose a read-only overview from deep-frozen definitions and final series; saved details use the same observation-index segment and full-sample summary contract without rerunning the graph. The version-2 bull/bear template uses causal log-index Super Smoother, prior-return RMS scaling, directional efficiency and persistent three-state confirmation. KAMA is available for comparison; short reversed runs can only be merged retrospectively. Final series persist traceable trend and raw-price risk evidence. Legacy PS-style peak/trough dating has retrospective monthly and daily compatibility templates with independent left/right/head/tail windows; legacy symmetric parameters and two-state definitions remain supported. Those legacy templates classify sideways intervals by merging bounded small reversed waves with low full-path efficiency, minimum duration and a directional peak/trough structure guard; only complete intervals are classified and full-sample availability never becomes an executable trading date. Daily peak template v2 separates local-extrema detection, complete interval boundaries, independently selected statistics and threshold classification; legacy templates retain their old definitions. A bounded graph-authoring adapter roundtrips registered node calls and port references; numeric expressions and 24 causal operator nodes use the Indicator Center typed registry and warmed numeric plan. Enum and named numeric series outputs have explicit contracts; presentation metadata is frozen with results and empty metadata is omitted for legacy compatibility. Full-input dating availability follows node metadata through final-output ancestors. The read-only authoring resolver returns per-output mathematical notation and dependency equations; numeric expressions reuse the canonical indicator renderer, while domain operators preserve their exact names and parameters without computing data. Independent node previews project unfinished drafts onto one main output plus up to seven selected comparison outputs and their dependency union, preserve realtime eligibility and as-of checks, reuse warmed graph execution, and cannot be saved or published as regime definitions. A read-only normalized-chart endpoint rebases frozen numeric preview outputs using the existing warmed binary arithmetic kernel; it rejects enums and invalid bases and never changes graph results or stored source values. Node-series pages retain the frozen upstream-output catalog and expose all computed overlay outputs with node/port labels, plotting eligibility and upstream/other/same-node relationships. Comparisons share one frozen run and source cache; read-only overlays never resolve sources or rerun the graph. Comparison targets are bound to preparation tokens and all selected ancestors retain realtime gates. Source-file decoding accepts bounded CSV/XLSX/JSON input with explicit sheet/column selection and no persistence until profile registration. Named upload receipts are immutable and searchable through /research-series/uploads, including older artifacts without receipts. Production indicator catalog uses the same built-in/custom exact-version registry as indicator execution and declares compatible product kinds and unsupported-version reasons. Workspace-only indicator/upload catalogs do not require a market snapshot. Exact Indicator Center revisions can also become upstream-fed indicator calculation nodes with named numeric outputs, original runtime parameters and supported scalar-to-rolling conversion; unavailable contracts carry reasons. Exact indicator references preserve their DSL/registry revision and bind reserved date/risk-free context from the real shared axis and locked definition, not user-connectable series ports. Scope-aware validation accepts trailing-window reductions while rejecting naked full-sample reductions, including a shared reducer also used outside a scope. Each regime output keeps its prepared execution and temporal provenance; timing indicator multi-channel outputs share one prepared bundle. Creation of inline/product-bound indicator source nodes is hidden while stored definitions retain their execution contract. ETF price fields optionally use exact-date fund_adj factors with separate frozen checksums, warmed fixed-signature price adjustment, post-cutoff forward-adjustment anchors and date-based availability checks. Missing factors disable adjusted market-price choices. ETF adjusted NAV reads the separately published etf_daily_df.parquet fund_nav source without price factors; per-field bindings pin the correct file checksum, preserve announcement cutoffs and allow realtime analysis. Adjusted data retains unverified historical PIT metadata for formal publication checks; QFQ source and evaluation caches include the request cutoff before rebasing. NAV-only ETFs remain selectable. Alignment diagnostics name the blocked node. Merrill macro template v3 binds manufacturing PMI and CPI year-on-year on common monthly dates, uses editable trend/quadrant/confirmation steps and defaults to retrospective research. Macro source aliases and catalog filenames share a whitelist; unknown releases retain acquisition-time knowledge and cannot produce historical executable dates or enter realtime mode. Research activation accepts exact saved revisions and a warmed plan, reuses immutable results per revision/mode/cutoff under a separate process-shared lock, and enables research_display/product_research only. Empty classifications and tampered lineage are rejected; stored optional default_mode is omitted from legacy serialization and does not alter old definition hashes. Shared Butterworth forward-backward, centered Savitzky-Golay and Ehlers error-correcting filters use fixed readonly-strided NJIT kernels; hindsight dependencies propagate to all outputs and block realtime use. Daily smoothing reference templates v2 use the same smoothed curve for candidate pivots and PS filtering, while interval returns and primary price evidence retain raw prices; filtered evidence is separate. Butterworth uses segment scaling to prevent premature finite-value overflow. Shared numeric parameter validation rejects oversized integers without server errors. Explicit realtime studies require an immutable verified historical reference and valid state mapping before research activation/publication; unbound drafts remain previewable. Continuous market state authoring uses state.continuous: explicit causal initialization, hold on absent proposals, switch only on confirmation date, fail on invalid observed prices, and prefix availability propagation. Evidence is separate from confidence; existing operators and immutable snapshots retain their contracts.",
+      "purpose": "Exposes primitive/composite/coupled granularity metadata, nominal nullable conditions and phase directions, and pure authoring expansion for threshold, quadrant and PS composites. Expanded and stored compatibility entries share fixed-signature numerical kernels; all original ports, explicit edges and temporal knowledge remain intact. New step-template identities leave old template hashes and saved runs unchanged. Provides the versioned Regime Graph v2 registry, typed graph inference, explicit fixed-signature NJIT preparation and execution, non-authorizing persistent plan manifests, immutable artifacts, research-series catalog/profile, historical-state experiments, and published-state scenario-stress integration. Completed previews expose a read-only overview from deep-frozen definitions and final series; saved details use the same observation-index segment and full-sample summary contract without rerunning the graph. The version-2 bull/bear template uses causal log-index Super Smoother, prior-return RMS scaling, directional efficiency and persistent three-state confirmation. KAMA is available for comparison; short reversed runs can only be merged retrospectively. Final series persist traceable trend and raw-price risk evidence. Legacy PS-style peak/trough dating has retrospective monthly and daily compatibility templates with independent left/right/head/tail windows; legacy symmetric parameters and two-state definitions remain supported. Those legacy templates classify sideways intervals by merging bounded small reversed waves with low full-path efficiency, minimum duration and a directional peak/trough structure guard; only complete intervals are classified and full-sample availability never becomes an executable trading date. Daily peak template v2 separates local-extrema detection, complete interval boundaries, independently selected statistics and threshold classification; legacy templates retain their old definitions. A bounded graph-authoring adapter roundtrips registered node calls and port references; numeric expressions and 24 causal operator nodes use the Indicator Center typed registry and warmed numeric plan. Enum and named numeric series outputs have explicit contracts; presentation metadata is frozen with results and empty metadata is omitted for legacy compatibility. Full-input dating availability follows node metadata through final-output ancestors. The read-only authoring resolver returns per-output mathematical notation and dependency equations; numeric expressions reuse the canonical indicator renderer, while domain operators preserve their exact names and parameters without computing data. Independent node previews project unfinished drafts onto one main output plus up to seven selected comparison outputs and their dependency union, preserve realtime eligibility and as-of checks, reuse warmed graph execution, and cannot be saved or published as regime definitions. A read-only normalized-chart endpoint rebases frozen numeric preview outputs using the existing warmed binary arithmetic kernel; it rejects enums and invalid bases and never changes graph results or stored source values. Node-series pages retain the frozen upstream-output catalog and expose all computed overlay outputs with node/port labels, plotting eligibility and upstream/other/same-node relationships. Comparisons share one frozen run and source cache; read-only overlays never resolve sources or rerun the graph. Comparison targets are bound to preparation tokens and all selected ancestors retain realtime gates. Source-file decoding accepts bounded CSV/XLSX/JSON input with explicit sheet/column selection and no persistence until profile registration. Named upload receipts are immutable and searchable through /research-series/uploads, including older artifacts without receipts. Production indicator catalog uses the same built-in/custom exact-version registry as indicator execution and declares compatible product kinds and unsupported-version reasons. Workspace-only indicator/upload catalogs do not require a market snapshot. Exact Indicator Center revisions can also become upstream-fed indicator calculation nodes with named numeric outputs, original runtime parameters and supported scalar-to-rolling conversion; unavailable contracts carry reasons. Exact indicator references preserve their DSL/registry revision and bind reserved date/risk-free context from the real shared axis and locked definition, not user-connectable series ports. Scope-aware validation accepts trailing-window reductions while rejecting naked full-sample reductions, including a shared reducer also used outside a scope. Each regime output keeps its prepared execution and temporal provenance; timing indicator multi-channel outputs share one prepared bundle. Creation of inline/product-bound indicator source nodes is hidden while stored definitions retain their execution contract. ETF price fields optionally use exact-date fund_adj factors with separate frozen checksums, warmed fixed-signature price adjustment, post-cutoff forward-adjustment anchors and date-based availability checks. Missing factors disable adjusted market-price choices. ETF adjusted NAV reads the separately published etf_daily_df.parquet fund_nav source without price factors; per-field bindings pin the correct file checksum, preserve announcement cutoffs and allow realtime analysis. Adjusted data retains unverified historical PIT metadata for formal publication checks; QFQ source and evaluation caches include the request cutoff before rebasing. NAV-only ETFs remain selectable. Alignment diagnostics name the blocked node. Merrill macro template v3 binds manufacturing PMI and CPI year-on-year on common monthly dates, uses editable trend/quadrant/confirmation steps and defaults to retrospective research. Macro source aliases and catalog filenames share a whitelist; unknown releases retain acquisition-time knowledge and cannot produce historical executable dates or enter realtime mode. Research activation accepts exact saved revisions and a warmed plan, reuses immutable results per revision/mode/cutoff under a separate process-shared lock, and enables research_display/product_research only. Empty classifications and tampered lineage are rejected; stored optional default_mode is omitted from legacy serialization and does not alter old definition hashes. Shared Butterworth forward-backward, centered Savitzky-Golay and Ehlers error-correcting filters use fixed readonly-strided NJIT kernels; hindsight dependencies propagate to all outputs and block realtime use. Daily smoothing reference templates v2 use the same smoothed curve for candidate pivots and PS filtering, while interval returns and primary price evidence retain raw prices; filtered evidence is separate. Butterworth uses segment scaling to prevent premature finite-value overflow. Shared numeric parameter validation rejects oversized integers without server errors. Explicit realtime studies require an immutable verified historical reference and valid state mapping before research activation/publication; unbound drafts remain previewable. Continuous market state authoring uses state.continuous: explicit causal initialization, hold on absent proposals, switch only on confirmation date, fail on invalid observed prices, and prefix availability propagation. Evidence is separate from confidence; existing operators and immutable snapshots retain their contracts. LTCMA consumes immutable published references and calibrated causal recognition through a separate strategic-allocation evidence adapter; the original reliability CMA-evidence restriction remains in force. Current-state recognition qualification never grants future-forecast or SAA eligibility. Run selectors opt into summary projections before copying records; exact-ID details retain frozen series and audits. Read-only candidate/reference catalogs reuse one request-local run-store snapshot without cross-request eligibility caching.",
       "module_tags": [
         "backend",
         "historical-regime",
@@ -2664,7 +2672,9 @@
         "backend/historical_regimes/reliability/references.py",
         "backend/tests/benchmark_smoothing.py",
         "docs/regimes/continuous-state.md",
-        "docs/indicators/computation-graph.md"
+        "docs/indicators/computation-graph.md",
+        "backend/historical_regimes/reliability/consumer.py",
+        "backend/historical_regimes/reliability/service.py"
       ],
       "upstream_dependencies": [
         "backend_api_shell",
@@ -2673,7 +2683,8 @@
       ],
       "downstream_dependencies": [
         "frontend_regime_research",
-        "backend_portfolio_research"
+        "backend_portfolio_research",
+        "strategic_allocation_policy"
       ],
       "out_of_scope_dependencies": [
         "arbitrary Python user code",
@@ -2775,7 +2786,9 @@
       "pitfall_ids": [
         "P01",
         "P09",
-        "P14"
+        "P14",
+        "P23",
+        "P33"
       ],
       "minimum_regression": [
         "python3 -m pytest backend/tests/test_regime_granularity.py backend/tests/test_regime_segments.py -q",
@@ -2848,7 +2861,7 @@
       "name": "Historical regime graph workbench, data lab, and scenario UI",
       "path": "frontend/src/pages/HistoricalRegimeWorkbench.tsx",
       "kind": "frontend_feature_pages",
-      "purpose": "Separates primitives, expandable composites and coupled kernels in the resource library. Add-and-expand and explicit expansion in canvas/guided editors create one undoable draft edit, preserve existing layout and reject stale replies; undo/redo is available in all authoring modes. State-code parameters display user-defined labels and retain integer payloads. Recommended step templates do not auto-migrate saved definitions. Lets researchers build typed historical-regime graphs through an Indicator-Studio-like same-page library, definition and preview layout with lossless guided forms or expandable canvases, open tools in non-resizing drawers, inspect frozen complete final results separately from node debugging, compare experiments, publish immutable versions, and reuse eligible versions in scenario simulation and portfolio workflows. Trend results show the identification index and filter separately from the replaceable evaluation series, with raw-risk and pre-merge phase evidence. The main scenario-center entry opens the studio directly; its library separates real-time and retrospective templates and retains the old directory for historical versions and migration; loading a retrospective graph selects retrospective mode after the catalog loads. Peak/trough evidence has an independent identification-index plot, retained extrema and complete-phase boundaries. Legacy peak/trough forms expose four independent windows and sideways controls while displaying inherited legacy values; evidence distinguishes original waves from merged sideways boundaries, width, ER and wave count. Three authoring modes share one definition: canvas, guided typed connections and full-graph formula source. Pending formula edits block running/saving/mode switching; explicit apply or restore is required, stale async responses cannot overwrite newer drafts, and original node positions survive formula apply. Resource classification uses the existing registry; CalculationSteps and SeriesOutputFields are shared with Indicator Center, whose storage and computation semantics remain unchanged. Guided configuration summarizes dependencies of the selected output and opens one selected calculation step in a drawer; output configuration supports an enum main channel and optional numeric channels. Numeric charts use frozen channel metadata and preserve missing values. Execution mode, cutoff and data controls belong to preview. Switching scenario-center tabs retains drafts; asynchronous template and saved-definition loads cannot overwrite newer selections or edits. Server-authored mathematical LaTeX is rendered with KaTeX in all three modes; preview follows the selected output and hides outdated or unapplied drafts, with dependency equations and parameters available on demand. Canvas and guided node drawers can preview a main node and search/select up to seven numeric comparison outputs from other branches before a final output exists; selected curves appear automatically, with same-axis, right-axis and synchronized subplot layouts. Node previews have separate transient job state, mode and cutoff, stale-result and cancellation handling, full paginated chart history and a recent-row table. Node charts offer a display-only first-visible-observation-equals-one switch. Slider and inside zoom select the exact category base; backend-normalized values and percentage changes preserve raw tables and zoom bounds. Late responses are ignored and nonpositive or missing bases are rejected. Node charts optionally load transitive upstream numeric outputs from the same preview with full pagination. Each overlay selects a shared left axis, shared right axis or independent subplot; all panels share date-based zoom and tooltips. Sparse calendars retain original observations and missing values. Numeric overlays normalize against the same visible date using the warmed backend endpoint; missing bases remain explicit errors. Raw comparison tables remain available. Scenario help tips render in a fixed body portal to escape drawer overflow, clamp to the viewport and flip below the trigger when necessary. Hover and keyboard access are retained; Escape dismisses the hint before the drawer, and container scrolling removes detached hints. The shared-left-axis overlay is labeled 同图同轴. Scenario source editors share single-binding controls across canvas and guided forms. Uploads support file preview, column mapping, confirmation and saved-version selection; cancelled or failed uploads preserve the old binding. Stored product-bound indicator source definitions retain their separate version and fund/ETF target choices as a compatibility contract. Index/macro/upload/indicator identity fields are read-only; replacing a source clears old identity and provenance. Indicator Center implementation remains unchanged. The node library uses one dropdown and text search, exposes Indicator Center calculations as a distinct category, and hides manual-entry and product-bound indicator creation. Native multi-output indicator nodes connect explicit upstream inputs without a second product picker. Existing inline data is read-only; the manual editor was removed. Binary arithmetic preview errors offer one user-triggered, undoable insertion of an explicit common-date alignment node followed by preview; structured server diagnostics remain visible. Unavailable adjusted source fields show their reason and cannot be selected. One ETF picker switches between market prices and downloaded adjusted NAV, rebinding field-specific files within the same frozen generation; field editing waits for catalog metadata and older generations require explicit product reselection. Adjusted NAV and market-price labels no longer imply retrospective-only use; help text explains announcement dates and the QFQ cutoff anchor. Preview settings show asynchronous run failures and progress beside Run, support source-node navigation, and honor the catalog template default mode. Save Scenario combines definition saving, plan preparation and research activation into one user action. Technical version/run/publication tools remain under collapsed advanced management. Product research chooses named algorithm versions, refreshes available scenarios and preserves selected immutable references when deduplicating results. Workspaces below 1280px switch library, definition and preview with tabs; metadata forms use two columns from 640px and three from 1536px. The shared graph canvas retains readable React Flow attribution at 12px. Manual event editing and immutable event studies belong to the Global Event Library workspace. Historical recognition filters manual templates, saved definitions and nodes; old exact manual links redirect to the event workspace. Ordinary regime overviews ignore inapplicable empty manual summaries; real manual results still require consistent event summaries. New realtime authoring starts with a frozen historical reference; an explicit advanced exploration path saves drafts without activating research versions. Empty new models inherit reference states while existing rules use explicit mappings. The history-to-realtime handoff resolves confirmed references from the server by exact definition, revision and cutoff after reload, preferring the research_display publication returned by save. Dirty drafts and late replies cannot enable it; lookup errors support retry. Reference and calibration evidence remain visible across realtime/validation steps.",
+      "purpose": "Separates primitives, expandable composites and coupled kernels in the resource library. Add-and-expand and explicit expansion in canvas/guided editors create one undoable draft edit, preserve existing layout and reject stale replies; undo/redo is available in all authoring modes. State-code parameters display user-defined labels and retain integer payloads. Recommended step templates do not auto-migrate saved definitions. Lets researchers build typed historical-regime graphs through an Indicator-Studio-like same-page library, definition and preview layout with lossless guided forms or expandable canvases, open tools in non-resizing drawers, inspect frozen complete final results separately from node debugging, compare experiments, publish immutable versions, and reuse eligible versions in scenario simulation and portfolio workflows. Trend results show the identification index and filter separately from the replaceable evaluation series, with raw-risk and pre-merge phase evidence. The market-state center lands on the saved-study list of the selected step: the studio opens only when the address bar carries a study identity (definition with revision, template, or new), and the studio offers an explicit return to that list. Lists and the studio library share one purpose predicate, so a study is filed in exactly one step. The simulation workspace lands on published scenarios and reaches its builder only from that list. Its library separates real-time and retrospective templates and retains the old directory for historical versions and migration; loading a retrospective graph selects retrospective mode after the catalog loads. Peak/trough evidence has an independent identification-index plot, retained extrema and complete-phase boundaries. Legacy peak/trough forms expose four independent windows and sideways controls while displaying inherited legacy values; evidence distinguishes original waves from merged sideways boundaries, width, ER and wave count. Three authoring modes share one definition: canvas, guided typed connections and full-graph formula source. Pending formula edits block running/saving/mode switching; explicit apply or restore is required, stale async responses cannot overwrite newer drafts, and original node positions survive formula apply. Resource classification uses the existing registry; CalculationSteps and SeriesOutputFields are shared with Indicator Center, whose storage and computation semantics remain unchanged. Guided configuration summarizes dependencies of the selected output and opens one selected calculation step in a drawer; output configuration supports an enum main channel and optional numeric channels. Numeric charts use frozen channel metadata and preserve missing values. Execution mode, cutoff and data controls belong to preview. Switching scenario-center tabs retains drafts; asynchronous template and saved-definition loads cannot overwrite newer selections or edits. Server-authored mathematical LaTeX is rendered with KaTeX in all three modes; preview follows the selected output and hides outdated or unapplied drafts, with dependency equations and parameters available on demand. Canvas and guided node drawers can preview a main node and search/select up to seven numeric comparison outputs from other branches before a final output exists; selected curves appear automatically, with same-axis, right-axis and synchronized subplot layouts. Node previews have separate transient job state, mode and cutoff, stale-result and cancellation handling, full paginated chart history and a recent-row table. Node charts offer a display-only first-visible-observation-equals-one switch. Slider and inside zoom select the exact category base; backend-normalized values and percentage changes preserve raw tables and zoom bounds. Late responses are ignored and nonpositive or missing bases are rejected. Node charts optionally load transitive upstream numeric outputs from the same preview with full pagination. Each overlay selects a shared left axis, shared right axis or independent subplot; all panels share date-based zoom and tooltips. Sparse calendars retain original observations and missing values. Numeric overlays normalize against the same visible date using the warmed backend endpoint; missing bases remain explicit errors. Raw comparison tables remain available. Scenario help tips render in a fixed body portal to escape drawer overflow, clamp to the viewport and flip below the trigger when necessary. Hover and keyboard access are retained; Escape dismisses the hint before the drawer, and container scrolling removes detached hints. The shared-left-axis overlay is labeled 同图同轴. Scenario source editors share single-binding controls across canvas and guided forms. Uploads support file preview, column mapping, confirmation and saved-version selection; cancelled or failed uploads preserve the old binding. Stored product-bound indicator source definitions retain their separate version and fund/ETF target choices as a compatibility contract. Index/macro/upload/indicator identity fields are read-only; replacing a source clears old identity and provenance. Indicator Center implementation remains unchanged. The node library uses one dropdown and text search, exposes Indicator Center calculations as a distinct category, and hides manual-entry and product-bound indicator creation. Native multi-output indicator nodes connect explicit upstream inputs without a second product picker. Existing inline data is read-only; the manual editor was removed. Binary arithmetic preview errors offer one user-triggered, undoable insertion of an explicit common-date alignment node followed by preview; structured server diagnostics remain visible. Unavailable adjusted source fields show their reason and cannot be selected. One ETF picker switches between market prices and downloaded adjusted NAV, rebinding field-specific files within the same frozen generation; field editing waits for catalog metadata and older generations require explicit product reselection. Adjusted NAV and market-price labels no longer imply retrospective-only use; help text explains announcement dates and the QFQ cutoff anchor. Preview settings show asynchronous run failures and progress beside Run, support source-node navigation, and honor the catalog template default mode. Save Scenario combines definition saving, plan preparation and research activation into one user action. Technical version/run/publication tools remain under collapsed advanced management. Product research chooses named algorithm versions, refreshes available scenarios and preserves selected immutable references when deduplicating results. Workspaces below 1280px switch library, definition and preview with tabs; metadata forms use two columns from 640px and three from 1536px. The shared graph canvas retains readable React Flow attribution at 12px. Manual event editing and immutable event studies belong to the Global Event Library workspace. Historical recognition filters manual templates, saved definitions and nodes; old exact manual links redirect to the event workspace. Ordinary regime overviews ignore inapplicable empty manual summaries; real manual results still require consistent event summaries. New realtime authoring starts with a frozen historical reference; an explicit advanced exploration path saves drafts without activating research versions. Empty new models inherit reference states while existing rules use explicit mappings. The history-to-realtime handoff resolves confirmed references from the server by exact definition, revision and cutoff after reload, preferring the research_display publication returned by save. Dirty drafts and late replies cannot enable it; lookup errors support retry. Reference and calibration evidence remain visible across realtime/validation steps.",
       "module_tags": [
         "frontend",
         "historical-regime",
@@ -2864,6 +2877,7 @@
         "frontend/src/pages/ResearchDataLab.tsx",
         "frontend/src/pages/ScenarioAlgorithmCenter.tsx",
         "frontend/src/pages/ScenarioCenters.tsx",
+        "frontend/src/pages/MarketStateResearchCenter.tsx",
         "frontend/src/pages/TacticalAllocationWorkspace.tsx",
         "frontend/src/pages/regime-workbench",
         "frontend/src/components/HistoricalRegimeBacktest.tsx",
@@ -2881,6 +2895,7 @@
         "frontend/src/pages/regime-workbench/RegimeSeriesOutputs.tsx",
         "frontend/src/pages/regime-workbench/RegimeNumericOutputs.tsx",
         "frontend/src/pages/regime-workbench/RegimeDefinitionLibrary.tsx",
+        "frontend/src/pages/regime-workbench/RegimeStudyList.tsx",
         "frontend/src/pages/regime-workbench/RegimeGuidedFormulaPanel.tsx",
         "frontend/src/pages/regime-workbench/RegimeMathPreview.tsx",
         "frontend/src/services/eventLibrary.ts"
@@ -2951,7 +2966,8 @@
         "backend/tests/scenario_remediation_app.py",
         "docs/verification/regimes.md",
         "frontend/src/services/regimeProspective.ts",
-        "docs/regimes/smoothing.md"
+        "docs/regimes/smoothing.md",
+        "frontend/src/pages/regime-workbench/useRegimeAsOf.ts"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -2982,6 +2998,7 @@
         "frontend/src/pages/regime-workbench/RegimeTrend.test.tsx",
         "frontend/src/pages/regime-workbench/RegimeFormulaEditor.test.tsx",
         "frontend/src/pages/regime-workbench/RegimeSeriesOutputs.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeStudyList.test.tsx",
         "frontend/e2e/historical-regime-workbench.spec.ts",
         "frontend/src/pages/regime-workbench/RegimeMathPreview.test.tsx",
         "frontend/src/pages/regime-workbench/RegimeResearchSeriesPicker.test.tsx",
@@ -3051,7 +3068,8 @@
       "pitfall_ids": [
         "P01",
         "P07",
-        "P14"
+        "P14",
+        "P33"
       ],
       "minimum_regression": [
         "npm run test --prefix frontend -- --run useRegimeCompositeExpansion.test.tsx RegimeResourceLibrary.test.tsx",
@@ -3073,7 +3091,8 @@
         "npm run test --prefix frontend -- --run eventLibrary.test.ts RegimeQualityPanel.test.tsx HistoricalRegimeWorkbench.test.tsx ScenarioAlgorithmCenter.test.tsx",
         "npm run test:e2e --prefix frontend -- --config=e2e/scenario-remediation.config.ts",
         "npm run test --prefix frontend -- --run regimeProspective.test.ts regimeReliability.test.ts",
-        "npm run test:e2e --prefix frontend -- --config=e2e/scenario-remediation.config.ts market-state-workflow.spec.ts"
+        "npm run test:e2e --prefix frontend -- --config=e2e/scenario-remediation.config.ts market-state-workflow.spec.ts",
+        "/bin/sh -c 'cd frontend && npm run test -- --run src/pages/regime-workbench/RegimeStudyList.test.tsx src/pages/ScenarioCenters.test.tsx src/pages/PublishedRiskFlow.test.tsx'"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -3137,7 +3156,7 @@
       "name": "React app shell, routing, and Vite config",
       "path": "frontend/src/App.tsx",
       "kind": "frontend_entrypoint",
-      "purpose": "React BrowserRouter shell, top navigation, page route table, Vite proxy to the FastAPI backend, Tailwind setup, and Vitest setup. Integrates the PIT settings page and shared context/provenance UI. Server-held defaults remain separate from a sessionStorage tab-only viewing override sent on data-request headers; changing the temporary view does not update global settings. Result footnotes describe the saved run lineage rather than inferring it from the current page badge. Numerical response gates accept independently validated NJIT or C++ AOT execution evidence.",
+      "purpose": "React BrowserRouter shell, top navigation, page route table, Vite proxy to the FastAPI backend, Tailwind setup, and Vitest setup. Integrates the PIT settings page and shared context/provenance UI. Server-held defaults remain separate from a sessionStorage tab-only viewing override sent on data-request headers; changing the temporary view does not update global settings. Result footnotes describe the saved run lineage rather than inferring it from the current page badge. Numerical response gates accept independently validated NJIT or C++ AOT execution evidence. Installs a feature-detected UUID v4 compatibility layer before application imports for LAN HTTP, using Web Crypto randomness and preserving native implementations.",
       "module_tags": [
         "frontend",
         "react",
@@ -3148,6 +3167,7 @@
         "frontend/src/App.tsx",
         "frontend/src/main.tsx",
         "frontend/src/components/Header.tsx",
+        "frontend/src/components/CommandPalette.tsx",
         "frontend/src/utils/returnNavigation.ts",
         "frontend/src/index.css",
         "frontend/vite.config.ts",
@@ -3166,11 +3186,14 @@
         "docs/frontend/homepage.md",
         "docs/homepage/screenshots",
         "docs/verification/engineering.md",
-        "frontend/src/components/ui.tsx"
+        "frontend/src/components/ui.tsx",
+        "frontend/src/i18n",
+        "frontend/src/utils/browserCompatibility.ts"
       ],
       "key_symbols": [
         "App",
         "Header",
+        "CommandPalette",
         "defineConfig"
       ],
       "child_modules": [
@@ -3208,6 +3231,7 @@
         "frontend/src/components/localization/LanguageColumnsEditor.tsx",
         "frontend/src/components/localization/TranslationMatrix.tsx",
         "docs/frontend/i18n.md",
+        "scripts/check_i18n.mjs",
         "frontend/src/test/cppAotFixture.ts"
       ],
       "upstream_dependencies": [
@@ -3219,6 +3243,8 @@
       ],
       "related_tests": [
         "frontend/src/App.test.tsx",
+        "frontend/src/components/ui.test.tsx",
+        "frontend/src/components/CommandPalette.test.tsx",
         "frontend/src/utils/fixedNjitExecution.test.ts",
         "frontend/src/utils/returnNavigation.test.ts",
         "frontend/src/app/ResearchContext.test.tsx",
@@ -3230,9 +3256,16 @@
         "frontend/e2e/homepage.spec.ts",
         "frontend/e2e/contrast.spec.ts",
         "frontend/e2e/helpers/contrast.ts",
+        "frontend/src/pages/RiskScaleStandalone.test.tsx",
+        "frontend/src/pages/LanguageTerminology.test.tsx",
+        "frontend/src/pages/FactorReturnCenter.test.tsx",
+        "frontend/src/i18n/researchMessages.test.ts",
+        "frontend/e2e/pre-investment-i18n.spec.ts",
         "frontend/src/utils/cppAotExecution.test.ts",
         "frontend/e2e/cpp-aot-execution.spec.ts",
-        "frontend/src/services/nativeExecutionContracts.test.ts"
+        "frontend/src/services/nativeExecutionContracts.test.ts",
+        "frontend/src/utils/browserCompatibility.test.ts",
+        "frontend/e2e/browser-compatibility.spec.ts"
       ],
       "related_configs": [
         "frontend/vite.config.ts",
@@ -3248,7 +3281,8 @@
         "react_router_version_mismatch_possible",
         "vite_proxy_contract",
         "tab_pit_view_is_distinct_from_server_system_settings",
-        "result_provenance_must_not_be_inferred_from_current_view"
+        "result_provenance_must_not_be_inferred_from_current_view",
+        "lan_http_has_no_native_random_uuid"
       ],
       "edit_risk": "medium",
       "blast_radius": [
@@ -3289,7 +3323,7 @@
       "name": "Investment lifecycle, actual portfolio, allocation, and accounting prototype",
       "path": "frontend/src/app/processRegistry.ts",
       "kind": "frontend_workflow_framework",
-      "purpose": "Defines the product research through feedback lifecycle, actual-portfolio registry, effective-dated external-account and portfolio-manager relationships, cross-portfolio fair allocation, source-account reconciliation, fund-accounting Booking, double-entry controls, dual-entity statements, static-demo boundaries, and legacy route redirects. Stage child pages use compact context above the workspace, one persistent navigation sidebar from 1280px, and a keyboard-dismissible navigation panel below that width. Financial statements prioritize the table before expandable accounting explanations, preserve visible demo warnings and keep row labels fixed during horizontal scrolling.",
+      "purpose": "Defines the product research through feedback lifecycle, actual-portfolio registry, effective-dated external-account and portfolio-manager relationships, cross-portfolio fair allocation, source-account reconciliation, fund-accounting Booking, double-entry controls, dual-entity statements, static-demo boundaries, and legacy route redirects. Stage child pages use compact context above the workspace, one persistent navigation sidebar from 1280px, and a keyboard-dismissible navigation panel below that width. Financial statements prioritize the table before expandable accounting explanations, preserve visible demo warnings and keep row labels fixed during horizontal scrolling. The pre-investment overview is an identity-free, three-phase connected workflow with registered node links, action/output summaries, expandable product-first and strategy-first paths, confirmed-LTCMA handoff and optional TAA: it hides current-research and progress/resume UI without clearing the browser research bookmark; individual study workspaces retain their context and gates.",
       "module_tags": [
         "frontend",
         "investment-lifecycle",
@@ -3308,6 +3342,7 @@
         "frontend/src/app/processRegistry.ts",
         "frontend/src/app/actualPortfolioDemoData.ts",
         "frontend/src/layouts/StageLayout.tsx",
+        "frontend/src/components/ResumeResearch.tsx",
         "frontend/src/components/ActualPortfolioSelector.tsx",
         "frontend/src/components/LegacyRedirect.tsx",
         "frontend/src/components/StaticDemoBanner.tsx",
@@ -3322,9 +3357,9 @@
         "frontend/src/pages/PortfolioSolutionCatalog.tsx",
         "frontend/src/pages/PortfolioSolutionShowcase.tsx",
         "frontend/src/pages/PrototypeWorkspace.tsx",
-        "frontend/src/pages/ToolHubPage.tsx",
         "frontend/src/services/businessNumeric.ts",
-        "backend/tests/business_numeric_app.py"
+        "backend/tests/business_numeric_app.py",
+        "frontend/src/pages/PreInvestmentOverview.tsx"
       ],
       "key_symbols": [
         "businessStages",
@@ -3347,6 +3382,7 @@
       "then_check_files": [
         "docs/product/requirements.md",
         "frontend/src/layouts/StageLayout.tsx",
+        "frontend/src/components/ResumeResearch.tsx",
         "frontend/src/pages/PortfolioCenterWorkspace.tsx",
         "frontend/src/pages/PortfolioOnboardingWorkspace.tsx",
         "frontend/src/pages/TradeAllocationWorkspace.tsx",
@@ -3354,7 +3390,8 @@
         "frontend/src/pages/AccountingBookingWorkspace.tsx",
         "frontend/src/pages/FinancialStatementsWorkspace.tsx",
         "frontend/src/ProcessFramework.test.tsx",
-        "frontend/e2e/process-framework.spec.ts"
+        "frontend/e2e/process-framework.spec.ts",
+        "frontend/src/pages/PreInvestmentOverview.tsx"
       ],
       "upstream_dependencies": [
         "frontend_app_shell"
@@ -3378,7 +3415,10 @@
         "frontend/src/pages/AccountStatementAllocationWorkspace.test.tsx",
         "frontend/src/pages/AccountingBookingWorkspace.test.tsx",
         "frontend/src/pages/FinancialStatementsWorkspace.test.tsx",
-        "frontend/e2e/process-framework.spec.ts"
+        "frontend/e2e/process-framework.spec.ts",
+        "frontend/src/components/ResumeResearch.test.tsx",
+        "frontend/src/layouts/StageLayout.test.tsx",
+        "frontend/src/pages/PreInvestmentOverview.test.tsx"
       ],
       "related_configs": [
         "frontend/package.json",
@@ -3400,7 +3440,8 @@
         "portfolio performance source data"
       ],
       "pitfall_ids": [
-        "P07"
+        "P07",
+        "P26"
       ],
       "minimum_regression": [
         "npm run test --prefix frontend -- --run",
@@ -3424,7 +3465,8 @@
           "frontend/src/pages/AccountStatementAllocationWorkspace.tsx",
           "frontend/src/pages/AccountingBookingWorkspace.tsx",
           "frontend/src/app/actualPortfolioDemoData.test.ts",
-          "frontend/e2e/process-framework.spec.ts"
+          "frontend/e2e/process-framework.spec.ts",
+          "frontend/src/pages/PreInvestmentOverview.tsx"
         ],
         "unsampled_paths": []
       }
@@ -3725,6 +3767,7 @@
         "frontend/src/pages/ProductPools.tsx",
         "frontend/src/pages/ProductPoolLifecycle.tsx",
         "frontend/src/pages/ProductPoolSelection.tsx",
+        "frontend/src/pages/ProductPoolWorkspacePage.tsx",
         "frontend/src/components/product-pools",
         "frontend/src/services/productAnalysis.ts",
         "frontend/src/services/productCompare.ts",
@@ -3811,6 +3854,7 @@
       "related_tests": [
         "frontend/src/pages/ProductPools.test.tsx",
         "frontend/src/pages/ProductPoolSelection.test.tsx",
+        "frontend/src/pages/ProductPoolWorkspacePage.test.tsx",
         "frontend/src/services/productAnalysis.test.ts",
         "frontend/src/services/productPools.test.ts",
         "frontend/src/App.test.tsx",
@@ -4022,7 +4066,8 @@
         "frontend/src/components/HorizontalMetricComparison.tsx",
         "frontend/src/utils/performance.ts",
         "frontend/src/app/allocationJourney.ts",
-        "frontend/src/components/frontier-grid/FrontierGrid.tsx"
+        "frontend/src/components/frontier-grid/FrontierGrid.tsx",
+        "frontend/src/components/ResumeResearch.tsx"
       ],
       "key_symbols": [
         "ManualConstruction",
@@ -4056,6 +4101,7 @@
         "frontend/src/layouts/StageLayout.tsx",
         "frontend/src/pages/ProductPools.tsx",
         "frontend/src/pages/ProductPoolSelection.tsx",
+        "frontend/src/pages/ProductPoolWorkspacePage.tsx",
         "docs/verification/allocation.md",
         "docs/pre-investment/README.md",
         "frontend/src/components/frontier-grid/FrontierGrid.tsx"
@@ -4082,10 +4128,12 @@
         "frontend/src/app/allocationJourney.test.tsx",
         "frontend/src/layouts/StageLayout.test.tsx",
         "frontend/src/pages/ProductPoolSelection.test.tsx",
+        "frontend/src/pages/ProductPoolWorkspacePage.test.tsx",
         "frontend/src/pages/ProductPools.test.tsx",
         "frontend/src/components/HorizontalMetricComparison.test.tsx",
         "frontend/src/components/frontier-grid/FrontierGrid.test.tsx",
-        "frontend/e2e/strategic-allocation.spec.ts"
+        "frontend/e2e/strategic-allocation.spec.ts",
+        "frontend/src/components/ResumeResearch.test.tsx"
       ],
       "related_configs": [
         "frontend/package.json",
@@ -4119,7 +4167,7 @@
         "P21"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd frontend && npm run test -- --run src/components/HorizontalMetricComparison.test.tsx src/app/allocationJourney.test.tsx src/layouts/StageLayout.test.tsx src/pages/ManualConstruction.test.tsx src/pages/ProductPoolSelection.test.tsx src/pages/ProductPools.test.tsx src/pages/ClassAllocation.test.tsx src/pages/PortfolioConstruction.test.tsx'",
+        "/bin/sh -c 'cd frontend && npm run test -- --run src/components/HorizontalMetricComparison.test.tsx src/app/allocationJourney.test.tsx src/layouts/StageLayout.test.tsx src/pages/ManualConstruction.test.tsx src/pages/ProductPoolSelection.test.tsx src/pages/ProductPoolWorkspacePage.test.tsx src/pages/ProductPools.test.tsx src/pages/ClassAllocation.test.tsx src/pages/PortfolioConstruction.test.tsx'",
         "npm run test --prefix frontend -- --run",
         "npm run build --prefix frontend",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
@@ -4872,7 +4920,7 @@
       "name": "Investment objectives, CMA and immutable SAA policies",
       "path": "backend/strategic_allocation",
       "kind": "full_stack_research_module",
-      "purpose": "Freezes mandates, forward-looking CMA and adopted SAA policies. Optional institutional context separates cash-purpose floors, economic snapshots and dated manual evidence; these are not legal approval or complete ALM. Independent immutable strategic universes support research without product NAV; explicit implementation maps preserve gaps and gate TAA. The product-first path and historical frontier remain. The independent LTCMA center supplies manual, Black-Litterman, explicit scenarios, historical statistics, daily NIW and historical regime occupancy through cma_application to one policy search, funding diagnosis and TAA risk checks. Statistical evidence is currently CNY/SSE daily and requires calendar coverage. The SAA workspace selects frozen CMA versions rather than editing them. V2 CMA is independent of mandate and implementation mapping; implementation mapping is chosen separately at policy creation. Mutable drafts, explicit idempotent publication, copy-to-new research and retirement are separate from immutable analytical versions. Posterior mean uncertainty is not asset-return risk. Single-CMA SAA may explicitly use a frozen mean-error ellipsoid for Historical, NIW or Black-Litterman evidence; the legacy box model remains the default, multi-CMA mean-error dependence is not inferred, and BL basket views reuse the same Gaussian update with diagnostics only. Optional signed Euler risk-budget scoring preserves the four original candidates; zero-risk budget candidates are unavailable. Funding cashflows, cent-rounded capital replay, preview/confirm hashes, immutable history, clock invalidation and exact SAA return navigation remain enforced. Model and institutional kernels join PID-bound startup readiness. Mandate schema 2.0 separates shared cash budgets from the three success criteria, records explicitly confirmed policy snapshots and resolves risk caps from immutable scale references. The current objective workspace is a two-step user flow: objective with risk/cash constraints, then results/confirmation. It binds a research-date-valid RiskScaleVersion, derives a cash-constrained reference frontier from that scale's frozen reference inputs, and keeps C1-C5 anchored to the original scale. Reference research separates search from fixed-candidate validation and labels failed-search capital diagnostics as non-authorizing. Actual SAA rechecks funding independently; TAA consumes the frozen effective cash-role floor and reference expiry rather than inheriting a reference success probability. Saved research does not certify current implementation eligibility. Risk Scale Center publishes immutable reference assets, historical moments and C1-C5 boundaries, with revision-checked drafts, default pointers and retirement. The frontier and historical optimizer use one fixed-signature QP core; reference publication supports idempotent crash recovery. Parameter-average SAA accepts hash-bound, same-date V2 CMA references with matching economic scope and moment semantics. It averages means and within-model covariance, freezes all sources and model disagreement inside a schema-2 policy, and cross-evaluates each candidate under the original models. Source-model failures are diagnostic, while the fused model governs adoption and TAA. Compatible-all-model SAA now independently solves maximum-return anchors and a continuous common minimax-regret or maximin-return problem. A bounded outer approximation checks each original variance and benchmark TE, uses a certified bounded-LP Phase I, and distinguishes infeasibility from unresolved budgets. Every source gates adoption and TAA; funding filters the joint candidate and is independently revalidated per source. Equal-weight display moments never replace the all-model contract. Predictive mixtures, common C1-C5 frontiers and general concave-utility objectives remain unsupported. Legacy single-CMA request echoes and saved policies retain their existing contract. Publication checks source retirement under the governance lock and bounds metadata and total funding work before execution or persistence.",
+      "purpose": "Freezes mandates, forward-looking CMA and adopted SAA policies. Optional institutional context separates cash-purpose floors, economic snapshots and dated manual evidence; these are not legal approval or complete ALM. Independent immutable strategic universes support research without product NAV; explicit implementation maps preserve gaps and gate TAA. The scope editor, the risk-scale reference step and the LTCMA statistical proxies share one CategoryEditor for index/ETF/fund research proxies and cash-return inputs, hides internal IDs and redundant role/liquidity inputs, derives cash classification from asset type while preserving existing non-cash liquidity limits, and carries frozen defaults into new LTCMA drafts without creating implementation eligibility. The product-first path and historical frontier remain. The independent LTCMA center supplies manual, Black-Litterman, explicit scenarios, historical statistics, daily NIW and historical regime occupancy through cma_application to one policy search, funding diagnosis and TAA risk checks. Statistical evidence is currently CNY/SSE daily and requires calendar coverage. The SAA workspace selects frozen CMA versions rather than editing them. V2 CMA is independent of mandate and implementation mapping; implementation mapping is chosen separately at policy creation. Mutable drafts, explicit idempotent publication, in-place study edits, copy-to-new research and retirement are separate from immutable analytical versions. Study edits replace the current list entry under one stable study identity, retain frozen downstream references, and preserve edit intent in drafts; stale edits/deletes are rejected under the lifecycle lock. Posterior mean uncertainty is not asset-return risk. Single-CMA SAA may explicitly use a frozen mean-error ellipsoid for Historical, NIW or Black-Litterman evidence; the legacy box model remains the default, multi-CMA mean-error dependence is not inferred, and BL basket views reuse the same Gaussian update with diagnostics only. Optional signed Euler risk-budget scoring preserves the four original candidates; zero-risk budget candidates are unavailable. Funding cashflows, cent-rounded capital replay, preview/confirm hashes, immutable history, clock invalidation and exact SAA return navigation remain enforced. Model and institutional kernels join PID-bound startup readiness. Mandate schema 2.0 separates shared cash budgets from the three success criteria, records explicitly confirmed policy snapshots and resolves risk caps from immutable scale references. The current objective workspace is a two-step user flow: objective with risk/cash constraints, then results/confirmation. It binds a research-date-valid RiskScaleVersion, derives a cash-constrained reference frontier from that scale's frozen reference inputs, and keeps C1-C5 anchored to the original scale. Reference research separates search from fixed-candidate validation and labels failed-search capital diagnostics as non-authorizing. Actual SAA rechecks funding independently; TAA consumes the frozen effective cash-role floor and reference expiry rather than inheriting a reference success probability. Saved research does not certify current implementation eligibility. Risk Scale Center publishes immutable reference assets, historical moments and C1-C5 boundaries, with revision-checked drafts, default pointers and retirement. The frontier and historical optimizer use one fixed-signature QP core; reference publication supports idempotent crash recovery. Parameter-average SAA accepts hash-bound, same-date V2 CMA references with matching economic scope and moment semantics. It averages means and within-model covariance, freezes all sources and model disagreement inside a schema-2 policy, and cross-evaluates each candidate under the original models. Source-model failures are diagnostic, while the fused model governs adoption and TAA. Compatible-all-model SAA now independently solves maximum-return anchors and a continuous common minimax-regret or maximin-return problem. A bounded outer approximation checks each original variance and benchmark TE, uses a certified bounded-LP Phase I, and distinguishes infeasibility from unresolved budgets. Every source gates adoption and TAA; funding filters the joint candidate and is independently revalidated per source. Equal-weight display moments never replace the all-model contract. Predictive mixtures, common C1-C5 frontiers and general concave-utility objectives remain unsupported. Legacy single-CMA request echoes and saved policies retain their existing contract. Publication checks source retirement under the governance lock and bounds metadata and total funding work before execution or persistence. Long-term scenario CMA and conditional scenario CMA reuse frozen historical references and the scenario center evidence adapter. Long-term estimates separate state-return risk from block-bootstrap mean uncertainty. Conditional studies bind calibrated current-state evidence to the same published historical reference and compute finite-horizon Markov research projections; current recognition calibration is not future-forecast validation. Conditional versions remain readable and publishable for research, but method-based downstream guards exclude them from SAA, NIW priors and multi-CMA selection. Strategic scope compatibility now compares canonical economic facts across saved record IDs for NIW, SAA selection, multi-CMA and scoped mandate constraints. Unchanged scope edits reuse the original record; mutable read projections expose factual differences while frozen record IDs and integrity hashes remain unchanged. Actual research proxies, dates, fee/FX conventions and retirement still gate use. Step 02 now offers read-only historical scope feasibility before LTCMA publication, using the existing CMA evidence, SAA constraints, matrix frontier and continuous compatibility solver. It supports unsaved strategic proxies and product-pool selections, never writes preview snapshots, keeps insufficient data and unresolved numerical work undetermined, and displays the objective boundary point and attainable region. Cash, dated risk authorization, product weight limits and unclassified liquidity remain explicit. Risk Scale editing releases the form after required reference validation and resolves missing proxy labels through a bounded metadata-only batch; display names never grant data eligibility. LTCMA base and method-specific options load separately, with cancellable local retries and request-local regime snapshots. LTCMA historical-reference selection is explicit even for one eligible study, while saved bindings are restored. All eight generation methods expose independent bilingual calculation help inside the method menu; reading help does not select a method or change the draft, and the form shows one concise method summary. The SAA entry lists adopted policies with frozen objective, scope and all CMA sources; fresh creation URLs isolate browser drafts while existing research tools remain accessible. LTCMA state-transition counts, regularization folds and held-out horizons honor the frozen return-interval continuity mask after date intersection; missing intervals never become adjacent daily transitions, and historical snapshots remain unchanged. Long-term scenario mean-error resampling honors the same retained-interval continuity: gapped samples use disjoint contiguous blocks and disclose independent-observation fallback, while continuous samples preserve circular resampling. Complete episodes require observed continuous entry and exit.",
       "module_tags": [
         "SAA",
         "CMA",
@@ -4880,6 +4928,7 @@
         "asset-allocation"
       ],
       "entry_files": [
+        "frontend/src/services/cmaCompatibility.ts",
         "backend/strategic_allocation",
         "backend/services/strategic_allocation_routes.py",
         "frontend/src/pages/InvestmentObjectivesWorkspace.tsx",
@@ -4901,14 +4950,24 @@
         "frontend/src/pages/LtcmaCenter.tsx",
         "frontend/src/pages/LtcmaWorkspace.tsx",
         "frontend/src/pages/LtcmaVersionView.tsx",
-        "frontend/src/services/ltcma.ts"
+        "frontend/src/services/ltcma.ts",
+        "frontend/src/services/ltcmaHandoff.ts",
+        "frontend/src/pages/SaaCenter.tsx",
+        "backend/strategic_allocation/policy_catalog.py"
       ],
       "key_symbols": [
         "StrategicAllocationService",
         "build_router",
         "funding_paths_kernel",
         "funding_capital_successes_kernel",
-        "funding_payment_kernel"
+        "funding_payment_kernel",
+        "CmaScenarioEvidence",
+        "scenario_result",
+        "downstream_eligibility",
+        "require_downstream_eligible",
+        "LtcmaInputFields",
+        "LtcmaMethodSelect",
+        "LtcmaMethodHelp"
       ],
       "child_modules": [],
       "first_read_files": [
@@ -4923,6 +4982,7 @@
         "docs/pre-investment/risk-scale.md"
       ],
       "then_check_files": [
+        "backend/strategic_allocation/scope_facts.py",
         "docs/verification/allocation.md",
         "docs/pre-investment/README.md",
         "docs/research/allocation-methods.md",
@@ -4989,12 +5049,37 @@
         "docs/pre-investment/ltcma.md",
         "docs/research/cma-model-decisions.md",
         "docs/pre-investment/saa.md",
-        "docs/pre-investment/funding.md"
+        "docs/pre-investment/funding.md",
+        "backend/strategic_allocation/cma_service.py",
+        "backend/strategic_allocation/cma_center_routes.py",
+        "backend/strategic_allocation/cma_evidence.py",
+        "backend/strategic_allocation/cma_model_contracts.py",
+        "backend/strategic_allocation/cma_scenario_evidence.py",
+        "backend/strategic_allocation/cma_scenario_models.py",
+        "backend/strategic_allocation/cma_scenario_kernels.py",
+        "backend/strategic_allocation/cma_selection.py",
+        "frontend/src/components/ltcma/LtcmaScenarioFields.tsx",
+        "frontend/src/components/ltcma/LtcmaScenarioSelect.tsx",
+        "frontend/src/components/ltcma/LtcmaScenarioResults.tsx",
+        "frontend/src/components/ltcma/model.ts",
+        "frontend/src/components/ltcma/LtcmaInputFields.tsx",
+        "frontend/src/components/ltcma/LtcmaStatisticsFields.tsx",
+        "frontend/src/components/ltcma/LtcmaNiwStrengths.tsx",
+        "backend/strategic_allocation/policy_frontier.py",
+        "frontend/src/components/strategic-allocation/PolicyFrontier.tsx",
+        "frontend/src/components/strategic-allocation/policyFrontierPresentation.ts",
+        "frontend/src/pages/SaaCenter.tsx",
+        "backend/strategic_allocation/policy_catalog.py",
+        "backend/tests/fixtures/saa_common_near_parallel.json",
+        "backend/strategic_allocation/return_targets.py",
+        "frontend/src/components/WarningMark.tsx",
+        "frontend/src/services/versioning.ts"
       ],
       "upstream_dependencies": [
         "backend_quant_core",
         "frontend_allocation_workflows",
-        "backend_data_storage"
+        "backend_data_storage",
+        "backend_regime_research"
       ],
       "downstream_dependencies": [
         "tactical_allocation_workbench"
@@ -5005,6 +5090,8 @@
         "investment validity of assumed CMA"
       ],
       "related_tests": [
+        "backend/tests/test_cma_scope_facts.py",
+        "frontend/src/services/cmaCompatibility.test.ts",
         "backend/tests/test_strategic_allocation.py",
         "frontend/src/pages/StrategicAllocationWorkspace.test.tsx",
         "frontend/src/test/strategicAllocationFixtures.ts",
@@ -5016,6 +5103,8 @@
         "frontend/src/test/mandateFixtures.ts",
         "backend/tests/test_bettersaataa_m1.py",
         "backend/tests/test_bettersaataa_scope_journey.py",
+        "backend/tests/test_universe_annotation_contracts.py",
+        "backend/tests/test_scope_lifecycle.py",
         "backend/tests/test_bettersaataa_final_audit.py",
         "backend/tests/test_cma_models.py",
         "backend/tests/test_cma_model_integration.py",
@@ -5045,7 +5134,7 @@
         "frontend/e2e/mandate-boundaries.spec.ts",
         "frontend/e2e/risk-scales.spec.ts",
         "frontend/src/components/investment-mandate/flowMonths.test.ts",
-        "frontend/src/components/risk-scales/ReferenceEditor.test.tsx",
+        "frontend/src/components/risk-scales/CategoryEditor.test.tsx",
         "frontend/src/components/risk-scales/RiskScaleInputs.test.tsx",
         "frontend/src/components/risk-scales/RiskScaleResults.test.tsx",
         "frontend/src/pages/InvestmentObjectivesBoundaries.test.tsx",
@@ -5067,13 +5156,35 @@
         "backend/tests/test_cma_uncertainty.py",
         "frontend/src/components/ltcma/CmaReview.test.tsx",
         "frontend/src/components/ltcma/LtcmaStatisticsFields.test.tsx",
+        "frontend/src/components/ltcma/LtcmaNiwStrengths.test.tsx",
         "frontend/src/pages/LtcmaCenter.test.tsx",
         "frontend/src/test/ltcmaFixtures.ts",
         "frontend/e2e/helpers/ltcma.ts",
         "frontend/e2e/ltcma.spec.ts",
+        "frontend/e2e/research-scope-ui.spec.ts",
         "backend/tests/test_ltcma_evidence.py",
+        "backend/tests/test_ltcma_sample.py",
         "backend/tests/test_ltcma_lifecycle.py",
-        "backend/tests/benchmark_ltcma.py"
+        "backend/tests/benchmark_ltcma.py",
+        "frontend/src/pages/LtcmaHandoff.test.tsx",
+        "backend/tests/test_ltcma_scenarios.py",
+        "backend/tests/test_ltcma_scenario_evidence.py",
+        "backend/tests/test_ltcma_regime_intervals.py",
+        "backend/tests/test_cma_scenario_selection.py",
+        "backend/tests/cma_scenario_fixtures.py",
+        "frontend/src/components/ltcma/LtcmaScenarioFields.test.tsx",
+        "frontend/src/components/ltcma/LtcmaScenarioSelect.test.tsx",
+        "backend/tests/test_ltcma_statistics.py",
+        "backend/tests/test_policy_frontier.py",
+        "frontend/src/components/strategic-allocation/PolicyFrontier.test.tsx",
+        "backend/tests/test_scope_feasibility.py",
+        "frontend/e2e/scope-feasibility.spec.ts",
+        "frontend/src/pages/SaaCenter.test.tsx",
+        "backend/tests/test_saa_policy_catalog.py",
+        "frontend/e2e/saa-center.spec.ts",
+        "backend/tests/test_return_requirements.py",
+        "backend/tests/test_policy_risk_adjusted.py",
+        "backend/tests/test_scope_weight_limits.py"
       ],
       "related_configs": [
         "frontend/playwright.strategic.config.ts",
@@ -5087,6 +5198,8 @@
         "backend/tests/ltcma_app.py"
       ],
       "minimum_regression": [
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_cma_scope_facts.py backend/tests/test_scope_lifecycle.py -q",
+        "npm run test --prefix frontend -- --run cmaCompatibility.test.ts LtcmaStatisticsFields.test.tsx LtcmaHandoff.test.tsx",
         "python3 -m pytest backend/tests/test_strategic_allocation.py backend/tests/test_tactical_walk_forward.py backend/tests/test_frontier_grid.py -q",
         "npm run test --prefix frontend -- --run StrategicAllocationWorkspace.test.tsx ClassAllocation.test.tsx FrontierGrid.test.tsx",
         "npm run build --prefix frontend",
@@ -5098,20 +5211,30 @@
         "npm run test:e2e --prefix frontend -- --config=playwright.better-saataa.config.ts --workers=1",
         "npm run test:e2e --prefix frontend -- --config=playwright.m1.config.ts --workers=1",
         "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_risk_scale_frontier.py backend/tests/test_risk_scale_independent_audit.py backend/tests/test_risk_scale_reference.py backend/tests/test_risk_scale_segmentation.py backend/tests/test_risk_scale_service.py backend/tests/test_risk_scale_storage.py backend/tests/test_mandate_boundary_contracts.py backend/tests/test_mandate_reference_diagnosis.py -q",
-        "npm run test --prefix frontend -- --run RiskScale InvestmentObjectives riskScales ReferenceEditor flowMonths",
+        "npm run test --prefix frontend -- --run RiskScale InvestmentObjectives riskScales CategoryEditor flowMonths",
         "npm run test:e2e --prefix frontend -- --config=playwright.risk-scales.config.ts",
         "npm run test:e2e --prefix frontend -- --config=playwright.mandate.config.ts",
         "/usr/bin/env PYTHONPATH=.:backend python3 scripts/export_mandate_contracts.py --check",
         "/usr/bin/env PYTHONPATH=.:backend python3 scripts/export_risk_scale_contracts.py --check",
         "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_multi_cma.py backend/tests/test_cma_model_integration.py backend/tests/test_strategic_allocation.py -q",
-        "npm run test --prefix frontend -- --run MultiCmaWorkspace.test.tsx StrategicAllocationWorkspace.test.tsx StrategicAllocationModels.test.tsx",
+        "npm run test --prefix frontend -- --run MultiCmaWorkspace.test.tsx StrategicAllocationWorkspace.test.tsx StrategicAllocationModels.test.tsx LtcmaHandoff.test.tsx",
         "npm run test:e2e --prefix frontend -- --config=playwright.multi-cma.config.ts",
         "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 scripts/export_ltcma_contracts.py --check",
         "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_multi_cma_compatibility.py backend/tests/test_multi_cma.py backend/tests/test_optimizer_strategy_numba.py backend/tests/test_frontier_grid.py -q",
         "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 backend/tests/benchmark_multi_cma_compatibility.py",
         "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_cma_review.py backend/tests/test_cma_uncertainty.py backend/tests/test_cma_diagnostics.py backend/tests/test_cma_models.py backend/tests/test_cma_model_integration.py backend/tests/test_ltcma_statistics.py -q",
         "npm run test --prefix frontend -- --run CmaReview.test.tsx StrategicAllocationWorkspace.test.tsx StrategicAllocationModels.test.tsx",
-        "npm run test:e2e --prefix frontend -- --config=playwright.ltcma.config.ts"
+        "npm run test:e2e --prefix frontend -- --config=playwright.ltcma.config.ts",
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_ltcma_scenarios.py backend/tests/test_ltcma_scenario_evidence.py backend/tests/test_ltcma_regime_intervals.py backend/tests/test_cma_scenario_selection.py -q",
+        "npm run test --prefix frontend -- --run LtcmaScenarioFields.test.tsx LtcmaScenarioSelect.test.tsx LtcmaStatisticsFields.test.tsx LtcmaCenter.test.tsx LtcmaHandoff.test.tsx",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_scope_feasibility.py backend/tests/test_scope_lifecycle.py -q",
+        "npm run test --prefix frontend -- --run ScopeFeasibility.test.tsx ScopeFrontierChart.test.tsx ProductPoolWorkspacePage.test.tsx",
+        "npm run test:e2e --prefix frontend -- --config=playwright.ltcma.config.ts scope-feasibility.spec.ts",
+        "python3 -m pytest backend/tests/test_saa_policy_catalog.py -q",
+        "npm run test --prefix frontend -- --run SaaCenter.test.tsx StrategicAllocationWorkspace.test.tsx",
+        "npm run test:e2e --prefix frontend -- saa-center.spec.ts --workers=1",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_return_requirements.py -q",
+        "python3 -m pytest backend/tests/test_policy_risk_adjusted.py backend/tests/test_scope_weight_limits.py -q"
       ],
       "pitfall_ids": [
         "P04",
@@ -5125,7 +5248,11 @@
         "immutable_cma_and_policy",
         "forward_risk_is_distinct_from_historical_outcome",
         "joint_constraints",
-        "fixed_signature_njit"
+        "fixed_signature_njit",
+        "recognition_calibration_is_not_future_forecast_validation",
+        "conditional_scenario_is_research_only",
+        "scenario_mean_uncertainty_is_not_asset_return_risk",
+        "finite_horizon_work_and_simulation_budgets"
       ],
       "edit_risk": "high",
       "routing_confidence": "high",
@@ -5134,7 +5261,7 @@
         "research_only"
       ],
       "grounding": {
-        "fact_status": "grounded",
+        "fact_status": "mixed",
         "evidence": [
           "backend/strategic_allocation/service.py",
           "backend/strategic_allocation/kernels.py",
@@ -5153,9 +5280,30 @@
           "backend/tests/test_multi_cma_compatibility.py",
           "backend/tests/test_cma_review.py",
           "backend/tests/test_cma_uncertainty.py",
-          "backend/tests/test_cma_diagnostics.py"
+          "backend/tests/test_cma_diagnostics.py",
+          "backend/strategic_allocation/cma_scenario_evidence.py",
+          "backend/strategic_allocation/cma_scenario_models.py",
+          "backend/strategic_allocation/cma_scenario_kernels.py",
+          "backend/strategic_allocation/cma_selection.py",
+          "backend/tests/test_ltcma_scenarios.py",
+          "backend/tests/test_ltcma_scenario_evidence.py",
+          "backend/tests/test_ltcma_regime_intervals.py",
+          "backend/tests/test_cma_scenario_selection.py",
+          "backend/tests/cma_scenario_fixtures.py",
+          "frontend/src/components/ltcma/LtcmaScenarioFields.test.tsx",
+          "frontend/src/components/ltcma/LtcmaScenarioSelect.test.tsx",
+          "frontend/src/components/ltcma/LtcmaScenarioFields.tsx",
+          "frontend/src/components/ltcma/LtcmaScenarioSelect.tsx",
+          "frontend/src/components/ltcma/LtcmaScenarioResults.tsx",
+          "frontend/src/components/ltcma/LtcmaInputFields.tsx",
+          "frontend/src/components/ltcma/LtcmaStatisticsFields.tsx",
+          "frontend/src/pages/LtcmaCenter.test.tsx",
+          "frontend/e2e/ltcma.spec.ts",
+          "locales/system.json"
         ],
-        "unsampled_paths": []
+        "unsampled_paths": [
+          "frontend/e2e/ltcma.spec.ts"
+        ]
       }
     },
     {
@@ -5531,6 +5679,19 @@
         "read_when": "长期资本市场假设、模型与估计口径"
       },
       {
+        "path": "docs/pre-investment/versioning.md",
+        "title": "投前产物的版本与依赖管理",
+        "topic": "投前研究",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "strategic_allocation_policy",
+          "tactical_allocation_workbench",
+          "pre_investment_implementation"
+        ],
+        "read_when": "上游版本变更、系列删除、等价范围与下游可用性"
+      },
+      {
         "path": "docs/pre-investment/mandate.md",
         "title": "投资目标与约束",
         "topic": "投前研究",
@@ -5667,7 +5828,7 @@
       },
       {
         "path": "docs/indicators/README.md",
-        "title": "指标中心：独立定义与共享执行",
+        "title": "行情指标中心：独立定义与共享执行",
         "topic": "指标与计算图",
         "role": "topic",
         "status": "active",
@@ -5678,7 +5839,7 @@
           "frontend_indicator_studio",
           "frontend_portfolio_research"
         ],
-        "read_when": "指标中心定义、运行及共享能力入口"
+        "read_when": "行情指标中心定义、运行及共享能力入口；持仓指标中心边界见领域语言"
       },
       {
         "path": "docs/indicators/canvas.md",

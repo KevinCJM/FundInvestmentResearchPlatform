@@ -8,6 +8,10 @@ export interface AllocationJourney {
   implementationMappingId?: string
   researchDate?: string
   universeId?: string
+  /** 本次研究选定的主 LTCMA 版本；SAA 的假设从这里续接，顶部流程条据此点亮 03。 */
+  ltcmaId?: string
+  /** Exact selected CMA set; the primary ID alone cannot represent a multi-CMA study. */
+  ltcmaIds?: string[]
   poolVersionIds?: string[]
   allocationName?: string
   baselineId?: string
@@ -52,10 +56,11 @@ function decode<T>(raw: string | null, fallback: T): T {
 function journeyFrom(raw: string | null): AllocationJourney {
   const value = decode<Record<string, unknown>>(raw, {})
   const journey: AllocationJourney = {}
-  for (const key of ['name', 'researchDate', 'universeId', 'allocationName', 'baselineId', 'taaRunId', 'mandateId', 'strategicUniverseId', 'implementationMappingId'] as const) {
+  for (const key of ['name', 'researchDate', 'universeId', 'allocationName', 'baselineId', 'taaRunId', 'mandateId', 'strategicUniverseId', 'implementationMappingId', 'ltcmaId'] as const) {
     if (typeof value[key] === 'string' && value[key].trim()) journey[key] = value[key]
   }
   if (Array.isArray(value.poolVersionIds) && value.poolVersionIds.every(id => typeof id === 'string' && id.trim())) journey.poolVersionIds = value.poolVersionIds
+  if (Array.isArray(value.ltcmaIds) && value.ltcmaIds.length <= 20 && value.ltcmaIds.every(id => typeof id === 'string' && id.trim())) journey.ltcmaIds = [...new Set(value.ltcmaIds)]
   if (journey.researchDate && !/^\d{4}-\d{2}-\d{2}$/.test(journey.researchDate)) delete journey.researchDate
   return journey
 }
@@ -77,6 +82,8 @@ function activeJourneyRaw(): string {
   }
 }
 
+const CMA_SCOPE_KEYS = ['mandateId', 'universeId', 'allocationName', 'strategicUniverseId', 'implementationMappingId'] as const
+
 export function updateAllocationJourney(patch: Partial<AllocationJourney>): AllocationJourney {
   const current = readAllocationJourney()
   const next = { ...current }
@@ -96,6 +103,11 @@ export function updateAllocationJourney(patch: Partial<AllocationJourney>): Allo
   if ('implementationMappingId' in patch && patch.implementationMappingId !== current.implementationMappingId) {
     delete next.baselineId; delete next.taaRunId
   }
+  // LTCMA 绑定目标的币种与研究日区间，也绑定范围身份（后端 preview_policy 的 SAA_MANDATE_CMA_BASIS / SAA_CMA_SOURCE_CHANGED）；上游一改，原来选的假设就不再可用。
+  if (CMA_SCOPE_KEYS.some(key => key in patch && patch[key] !== current[key])) { delete next.ltcmaId; delete next.ltcmaIds }
+  if ('ltcmaId' in patch && !('ltcmaIds' in patch)) delete next.ltcmaIds
+  if ('ltcmaIds' in patch && JSON.stringify(patch.ltcmaIds) !== JSON.stringify(current.ltcmaIds)) { delete next.baselineId; delete next.taaRunId }
+  if ('ltcmaId' in patch && patch.ltcmaId !== current.ltcmaId) { delete next.baselineId; delete next.taaRunId }
   if ('baselineId' in patch && patch.baselineId !== current.baselineId) delete next.taaRunId
   Object.assign(next, patch)
   const raw = JSON.stringify(next)
@@ -116,20 +128,33 @@ export function useAllocationJourney() {
   return [journey, updateAllocationJourney] as const
 }
 
-export type AllocationJourneyStep = 'pool' | 'classes' | 'ltcma' | 'saa' | 'taa' | 'products'
+export type AllocationJourneyStep = 'objectives' | 'pool' | 'classes' | 'ltcma' | 'saa' | 'taa' | 'products'
+/** 06 要等 TAA 交接出草稿才真的有东西可看；没有草稿时点开只会被送回 TAA。 */
+export function productsHandoffReady(journey = readAllocationJourney()): boolean {
+  return Boolean(journey.taaRunId && readAllocationDraft(`products:${journey.universeId || 'local'}:${journey.taaRunId}`))
+}
+
 export function allocationJourneyPath(step: AllocationJourneyStep, journey = readAllocationJourney()): string {
-  if (step === 'products' && journey.taaRunId && !readAllocationDraft(`products:${journey.universeId || 'local'}:${journey.taaRunId}`)) return allocationJourneyPath('taa', journey)
+  if (step === 'products' && journey.taaRunId && !productsHandoffReady(journey)) return allocationJourneyPath('taa', journey)
   const paths = {
-    pool: '/pre-investment/product-pool', classes: '/pre-investment/saa/asset-classes',
-    ltcma: '/pre-investment/ltcma', saa: '/pre-investment/saa/policy', taa: '/pre-investment/taa',
+    // 已选定目标时直接回到那一版详情，而不是回列表页重找。
+    objectives: journey.mandateId ? '/pre-investment/objectives/new' : '/pre-investment/objectives',
+    // 已选定范围时直接回到编辑页那一版，而不是回列表页重找。
+    pool: (journey.universeId || journey.strategicUniverseId) ? '/pre-investment/product-pool/new' : '/pre-investment/product-pool',
+    classes: '/pre-investment/saa/asset-classes',
+    // 已选定假设时直接回到那一版，而不是回中心页重找。
+    ltcma: journey.ltcmaId ? `/pre-investment/ltcma/${encodeURIComponent(journey.ltcmaId)}` : '/pre-investment/ltcma',
+    saa: '/pre-investment/saa/policy', taa: '/pre-investment/taa',
     products: '/pre-investment/product-allocation-timing/construction',
   }
   const query = new URLSearchParams()
+  if (step === 'objectives' && journey.mandateId) query.set('view', journey.mandateId)
   if (step === 'pool' && !journey.universeId && journey.poolVersionIds?.length === 1) query.set('version', journey.poolVersionIds[0])
   if (step === 'saa' && journey.baselineId) query.set('baseline', journey.baselineId)
   if (step === 'saa' && !journey.strategicUniverseId && journey.allocationName) query.set('alloc', journey.allocationName)
   if (['pool', 'classes', 'saa', 'products'].includes(step) && journey.universeId) query.set('universe', journey.universeId)
   if (['pool', 'saa'].includes(step) && journey.mandateId) query.set('mandate', journey.mandateId)
+  if (step === 'saa') (journey.ltcmaIds?.length ? journey.ltcmaIds : journey.ltcmaId ? [journey.ltcmaId] : []).forEach(id => query.append('cma', id))
   if (['pool', 'saa'].includes(step) && journey.strategicUniverseId) {
     query.set('strategic_universe', journey.strategicUniverseId)
     if (step === 'pool') query.set('scope', 'strategic')

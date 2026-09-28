@@ -11,7 +11,7 @@ from .institution_contracts import InstitutionalContext
 from .mandate_contracts import CapitalTarget, CashProtection, MandatePolicy, RiskAuthorization
 
 from .common_contracts import Contract, Number, Identifier, Fingerprint, Currency
-from .cma_model_contracts import CmaModelRequest
+from .cma_model_contracts import CmaModelRequest, StatisticalCmaContext
 
 
 class FundingFlow(Contract):
@@ -92,6 +92,7 @@ class MandateRequest(Contract):
     currency: Currency = "CNY"
     horizon_years: int = Field(default=10, ge=1, le=30, strict=True)
     target_return: Number = Field(default=0.0, ge=-0.5, le=1)
+    target_return_basis: Literal["annual_arithmetic", "annual_compound"] = "annual_arithmetic"
     target_excess_return: Number = Field(default=0.0, ge=-0.5, le=1)
     min_cash_weight: Number = Field(default=0.0, ge=0, le=1)
     max_volatility: Number | None = Field(default=0.15, gt=0, le=2)
@@ -136,12 +137,18 @@ class MandateRequest(Contract):
         else:
             self._validate_budget_authorization()
         if self.objective_kind == "benchmark_relative":
-            if self.schema_version == "1.0" and self.benchmark is None:
-                raise ValueError("旧版相对目标须提供真实基准权重。")
+            if self.benchmark is None and (self.schema_version == "1.0"
+                    or self.risk_authorization.mode == "explicit_numeric"):
+                raise ValueError("相对收益目标须提供真实基准权重，或选择可生成基准的风险标尺。")
+            if self.schema_version == "2.0" and self.benchmark is not None and abs(
+                    self.target_excess_return - self.benchmark.target_excess_return) > 1e-10:
+                raise ValueError("目标超额收益与基准中的超额要求须一致。")
         elif self.benchmark is not None:
             raise ValueError("非相对目标不能残留基准设置。")
         if self.objective_kind != "absolute_return" and self.target_return != 0:
             raise ValueError("非绝对收益目标不使用最低算术收益字段，请清零；所需复合收益另行计算。")
+        if self.objective_kind != "absolute_return" and self.target_return_basis != "annual_arithmetic":
+            raise ValueError("非绝对收益目标不能残留绝对收益口径。")
         if self.objective_kind != "benchmark_relative" and self.target_excess_return != 0:
             raise ValueError("非相对目标不使用目标超额收益字段，请清零。")
         if self.objective_kind != "benchmark_relative" and self.stated_benchmark:
@@ -260,7 +267,7 @@ class AssetAssumption(Contract):
     id: Identifier
     role: Literal["growth", "rates", "inflation", "credit", "liquidity", "diversifier"]
     liquidity: Literal["liquid", "illiquid"]
-    rationale: str = Field(min_length=3, max_length=1000)
+    rationale: str = Field(max_length=1000)
     annual_return: Number | None = Field(default=None, ge=-0.5, le=2)
     annual_volatility: Number | None = Field(default=None, ge=0, le=3)
     mean_uncertainty: Number = Field(ge=0, le=1)
@@ -277,9 +284,8 @@ class CmaRequest(Contract):
     implementation_mapping_id: Identifier | None = None
     as_of: date
     currency: Currency = "CNY"
-    horizon_years: int = Field(default=10, ge=1, le=30, strict=True)
     return_basis: Literal["annual_arithmetic_total_return"] = "annual_arithmetic_total_return"
-    source: str = Field(min_length=3, max_length=2000)
+    source: str = Field(max_length=2000)
     basis_confirmed: Literal[True]
     assets: list[AssetAssumption] = Field(min_length=1, max_length=30)
     correlation: list[list[Number]] | None = Field(default=None, min_length=1, max_length=30)
@@ -288,8 +294,21 @@ class CmaRequest(Contract):
     risk_reference: RiskReferenceRequest | None = None
     risk_reference_hash: Fingerprint | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def discard_retired_horizon(cls, value):
+        # Old drafts/clients may send this label; annual moments never used it.
+        # Frozen artifacts are read as stored and are not rewritten here.
+        if isinstance(value, dict) and "horizon_years" in value:
+            return {key: item for key, item in value.items() if key != "horizon_years"}
+        return value
+
     @model_validator(mode="after")
     def shape(self):
+        if self.schema_version == "1.0" and (len(self.source) < 3
+                or any(len(a.rationale) < 3 for a in self.assets)
+                or self.model is not None and len(self.model.source) < 3):
+            raise ValueError("旧版 CMA 须保留至少三字的来源与分类依据。")
         if self.schema_version == "1.0" and any(a.annual_volatility == 0 for a in self.assets):
             raise ValueError("旧版 CMA 波动率必须为正；确定性现金须使用 2.0 的显式现金角色。")
         if self.schema_version == "2.0":
@@ -303,7 +322,7 @@ class CmaRequest(Contract):
                 raise ValueError("独立 LTCMA 不绑定实施映射；请在 SAA 交接时单独选择。")
         elif any(v is not None for v in (self.moment_semantics, self.fee_basis, self.fx_hedging_basis)):
             raise ValueError("新收益语义字段须使用 LTCMA 2.0，不能改写旧请求口径。")
-        if self.model is not None and self.model.method in {"historical_statistics", "bayesian_niw", "historical_regime_occupancy"}:
+        if isinstance(self.model, StatisticalCmaContext):
             if self.schema_version != "2.0" or self.moment_semantics != "annualized_periodic_arithmetic":
                 raise ValueError("统计生成器须使用 LTCMA 2.0 的基础期算术年化语义。")
             if any(a.mean_uncertainty != 0 for a in self.assets):
@@ -409,6 +428,6 @@ class PolicyRequest(Contract):
 class PublishPolicyRequest(Contract):
     request: PolicyRequest
     preview_hash: Fingerprint
-    candidate_id: Literal["minimum-risk", "nominal-utility", "robust-utility", "maximum-return", "risk-budget", "compatible"]
+    candidate_id: Literal["minimum-risk", "nominal-utility", "robust-utility", "maximum-return", "maximum-sharpe", "minimum-drawdown", "risk-budget", "compatible"]
     name: Identifier
     reason: str = Field(min_length=5, max_length=2000)

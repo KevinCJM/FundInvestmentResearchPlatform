@@ -1,4 +1,6 @@
+import { systemText } from '../i18n/runtime'
 import type { ProductKind } from './customIndicators'
+import type { Versioned } from './versioning'
 
 export type ProductPoolResearchStatus = 'pending' | 'approved' | 'watch' | 'rejected'
 export type ProductPoolUsageStatus = 'normal' | 'limited' | 'no_new' | 'hold_only' | 'unavailable'
@@ -183,6 +185,8 @@ export interface InvestableUniverseGroup {
 
 export interface InvestableUniverseSnapshot {
   id: string
+  mandate_id?: string
+  mandate_hash?: string
   name: string
   research_date: string
   version_ids?: string[]
@@ -215,6 +219,33 @@ export interface InvestableUniverseEvaluationSource {
   evaluation_plan_name: string
   source_rank: number | null
   source_score: number | null
+}
+
+/**
+ * Immutable library row for the saved-scope list.
+ *
+ * A projection of the frozen record: counts and hash as saved, no member or
+ * product payload, so the library can never imply the scope was re-screened.
+ */
+export interface InvestableUniverseSummary extends Versioned {
+  id: string
+  mandate_id?: string
+  mandate_hash?: string
+  name: string
+  research_date: string
+  version_ids?: string[]
+  pool_ids?: string[]
+  product_count?: number
+  summary?: {
+    pool_count?: number
+    member_count?: number
+    eligible_count?: number
+    restricted_count?: number
+    watch_count?: number
+  }
+  content_hash?: string
+  immutable: true
+  created_at: string
 }
 
 export interface InvestableUniverseSearchItem {
@@ -298,7 +329,7 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
     const detail = payload?.detail
     const message = typeof detail === 'string'
       ? detail
-      : detail?.message ?? payload?.message ?? `请求失败（${response.status}）`
+      : detail?.message ?? payload?.message ?? systemText('preInvestment.productPools.requestFailed', { p0: response.status })
     throw new ProductPoolApiError(message, response.status, detail?.code, detail?.field)
   }
   return payload as T
@@ -431,22 +462,42 @@ export const diffProductPoolVersions = (versionId: string, againstId: string) =>
 
 export const createInvestableUniverseSnapshot = (input: {
   name: string
+  mandate_id?: string
   research_date: string
   version_ids: string[]
   excluded_product_keys?: string[]
+  /** 编辑保存：以新不可变版本替代同一名称的当前版本。 */
+  replaces_snapshot_id?: string
 }) => apiRequest<InvestableUniverseSnapshot>('/api/investable-universe-snapshots', {
   method: 'POST',
   body: JSON.stringify(input),
 })
 
-export const getInvestableUniverseSnapshot = (snapshotId: string) =>
+export const bindInvestableUniverseMandate = (id: string, mandate_id: string, signal?: AbortSignal) =>
+  apiRequest<{ mandate_id: string }>(`/api/investable-universe-snapshots/${encodeURIComponent(id)}/mandate`, {
+    method: 'POST', body: JSON.stringify({ mandate_id }), signal,
+  })
+
+export const retireInvestableUniverseSnapshot = (snapshotId: string) =>
+  apiRequest<{ deleted: true; id: string }>(
+    `/api/investable-universe-snapshots/${encodeURIComponent(snapshotId)}`,
+    { method: 'DELETE' },
+  )
+
+export const getInvestableUniverseSnapshot = (snapshotId: string, signal?: AbortSignal) =>
   apiRequest<InvestableUniverseSnapshot>(
     `/api/investable-universe-snapshots/${encodeURIComponent(snapshotId)}`,
+    { signal },
   )
 
 // Downstream research pages use the shorter name while the repository keeps
 // the immutable-snapshot endpoint for backward compatibility.
 export const getInvestableUniverse = getInvestableUniverseSnapshot
+
+export const listInvestableUniverseSnapshots = () =>
+  apiRequest<{ items: InvestableUniverseSummary[]; total: number }>(
+    '/api/investable-universe-snapshots',
+  )
 
 export const searchInvestableUniverseProducts = (
   snapshotId: string,

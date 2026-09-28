@@ -4,6 +4,7 @@ import { builtinBundle, builtinCatalogs, DEFAULT_LANGUAGES, normalizeLocale, rou
 import { businessText, chooseLocale, formatDate, formatNumber, i18n, installBusinessBundle, installLanguageRegistry, resolveActiveLocale, LANGUAGE_KEY, systemText, useI18n } from './runtime'
 import { localizeIndicatorMeta } from './indicatorMetadata'
 import { allStages } from '../app/processRegistry'
+import { localizeStage } from './navigation'
 import type { IndicatorMeta } from '../services/customIndicators'
 import { canvasModel, emptyOutput, graphSignature } from '../components/indicator-graph/indicatorGraphAdapter'
 import type { GraphDocument } from '../services/indicatorGraph'
@@ -101,13 +102,29 @@ describe('isolated system and business translations', () => {
     expect(formatDate('2026-09-07', 'en-US')).toBe('09/07/2026')
     expect(formatDate('invalid')).toBe('—')
   })
-  it('all navigation labels are registered in the system catalog', () => {
+  it('all stage labels and descriptions have English translations without changing identities', async () => {
+    const original = JSON.stringify(allStages)
     for (const stage of allStages) {
-      expect(Object.prototype.hasOwnProperty.call(builtinCatalogs.system, routeTranslationKey(stage.path)), stage.path).toBe(true)
-      for (const entry of [...stage.nodes, ...(stage.tools || [])]) {
-        expect(Object.prototype.hasOwnProperty.call(builtinCatalogs.system, routeTranslationKey(entry.path)), entry.path).toBe(true)
+      for (const entry of [stage, ...stage.nodes, ...(stage.tools || [])]) {
+        for (const suffix of ['', '.description']) {
+          const key = `${routeTranslationKey(entry.path)}${suffix}`
+          expect(builtinCatalogs.system[key]?.['en-US'], key).toBeTruthy()
+          expect(builtinCatalogs.system[key]?.['en-US'], key).not.toMatch(/[\u3400-\u9fff]/u)
+        }
       }
     }
+    for (const locale of ['en-US', 'zh-CN']) {
+      await i18n.changeLanguage(locale)
+      for (const stage of allStages) {
+        const localized = localizeStage(stage)
+        expect(localized.nodes.map(node => [node.id, node.path, node.status])).toEqual(stage.nodes.map(node => [node.id, node.path, node.status]))
+        if (locale === 'en-US') expect([localized.label, localized.description, ...localized.nodes.flatMap(node => [node.label, node.description])].join(' ')).not.toMatch(/[\u3400-\u9fff]/u)
+      }
+      const execution = localizeStage(allStages.find(stage => stage.id === 'investment-execution')!)
+      const accounting = localizeStage(allStages.find(stage => stage.id === 'fund-accounting')!)
+      expect(execution.nodes.find(node => node.id === 'booking')!.description).not.toBe(accounting.nodes.find(node => node.id === 'account-statements')!.description)
+    }
+    expect(JSON.stringify(allStages)).toBe(original)
   })
   it('metadata projection changes only display fields', () => {
     const metadata: IndicatorMeta = { engine_version: 'test', workspace_scope: 'shared', periods: [], templates: [], limits: {}, variables: [{ name: 'periods_per_year', label: '年化因子', value_type: 'scalar', dtype: 'float64', latex: 'p', axes: [] }], operators: [] }

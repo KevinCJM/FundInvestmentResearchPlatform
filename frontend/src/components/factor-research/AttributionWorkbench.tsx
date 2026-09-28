@@ -1,3 +1,4 @@
+import { ErrorPanel, LoadingPanel } from '../ui'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { factorApi, parseCodes, type AttributionRequest, type AttributionRun, type FactorDataset, type StudyDraft } from '../../services/factorResearch'
@@ -18,24 +19,36 @@ export default function AttributionWorkbench({ seed, action, busy, preferredData
   const [dates, setDates] = useState({ start_date: seed.start_date, end_date: seed.end_date, oos_date: seed.oos_date })
   const [result, setResult] = useState<AttributionRun>()
   const [history, setHistory] = useState<Array<{ id: string; name: string }>>([])
+  const [readFailed, setReadFailed] = useState(false)
+  const [reading, setReading] = useState(true)
+  const [selectionError, setSelectionError] = useState('')
+  const [readRetry, setReadRetry] = useState(0)
   useEffect(() => {
     let active = true
-    void action('加载归因数据', async () => {
-      const [data, runs] = await Promise.all([factorApi.datasets(), factorApi.attributions()])
-      if (!active) return
-      setDatasets(data.items); setHistory(runs.items)
-      if (preferredDatasetId) {
-        const selected = data.items.find(item => item.id === preferredDatasetId)
-        if (!selected) throw new Error('所选因子收益数据集不存在，请返回数据集目录核对。')
-        setDatasetId(selected.id); setModel(isFF3Dataset(selected) ? 'ff3' : 'factor_regression'); setResult(undefined)
-      }
-    })
+    setReadFailed(false); setReading(true); setSelectionError('')
+    void (async () => {
+      try {
+        const [data, runs] = await Promise.all([factorApi.datasets(), factorApi.attributions()])
+        if (!active) return
+        setDatasets(data.items); setHistory(runs.items)
+        if (preferredDatasetId) {
+          const selected = data.items.find(item => item.id === preferredDatasetId)
+          if (!selected) { setSelectionError('所选因子收益数据集不存在，请返回数据集目录核对。'); return }
+          setDatasetId(selected.id); setModel(isFF3Dataset(selected) ? 'ff3' : 'factor_regression'); setResult(undefined)
+        }
+      } catch { if (active) setReadFailed(true) }
+      finally { if (active) setReading(false) }
+    })()
     return () => { active = false }
-  }, [action, preferredDatasetId])
+  }, [action, preferredDatasetId, readRetry])
   const request: AttributionRequest = { name, product_kind: kind, targets: parseCodes(targets), model, indices: model === 'rbsa' ? parseCodes(indices) : [], ...(model !== 'rbsa' ? { dataset_id: datasetId } : {}), market: 'CN', currency: 'CNY', exposure_mode: exposureMode, ...rolling, ...dates }
   const selectedDataset = datasets.find(dataset => dataset.id === datasetId)
   const compatible = (dataset: FactorDataset) => dataset.market === 'CN' && dataset.currency === 'CNY' && (model !== 'ff3' || isFF3Dataset(dataset))
+  if (reading && !datasets.length && !result) return <LoadingPanel text="正在读取归因数据…" mascot={false} />
+  if (readFailed && !datasets.length && !result) return <ErrorPanel onRetry={() => setReadRetry(value => value + 1)} />
   return <div className="min-w-0 space-y-5">
+    {selectionError && <p role="alert" className="text-sm text-rose-800">{selectionError}</p>}
+    {readFailed && <ErrorPanel mascot={false} onRetry={() => setReadRetry(value => value + 1)} />}
     <Card title="风格与收益贡献研究">
       <p className="mb-4 text-sm leading-6 text-slate-600">复用同一套因子收益与暴露，分解各因子、截距和残差的收益贡献，并与实际收益对账。暴露不等同持仓，截距和残差不直接等同经理能力。</p>
       <form onSubmit={event => { event.preventDefault(); setResult(undefined); void action('运行收益归因', async () => { const value = await factorApi.attribution(request); setResult(value); setHistory((await factorApi.attributions()).items); return value }) }}>

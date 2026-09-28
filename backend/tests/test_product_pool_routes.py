@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -227,6 +228,112 @@ def test_investable_universe_route_exposes_summary_and_search(monkeypatch, tmp_p
     assert search.status_code == 200
     assert search.json()["total"] == 1
     assert search.json()["items"][0]["product_id"] == "510300.SH"
+
+
+def _publish_pool_and_snapshot(client, name: str, research_date: str) -> dict:
+    pool = client.post("/api/product-pools", json={"name": f"{name} 产品池"}).json()
+    pool = client.post(
+        f"/api/product-pools/{pool['id']}/evaluation-plans",
+        json={"revision": pool["revision"], "plan_id": "plan-equity", "selection_mode": "all_ranked"},
+    ).json()
+    member = pool["members"][0]
+    pool = client.put(
+        f"/api/product-pools/{pool['id']}/members/batch",
+        json={
+            "revision": pool["revision"],
+            "items": [{
+                "kind": member["kind"], "product_id": member["product_id"],
+                "research_status": "approved", "usage_status": "normal",
+                "primary_plan_id": member["primary_plan_id"], "max_weight": None,
+                "reasons": [], "owner": "", "review_due_date": None,
+                "valid_until": None, "substitute_group": "",
+            }],
+        },
+    ).json()
+    published = client.post(
+        f"/api/product-pools/{pool['id']}/publish",
+        json={"revision": pool["revision"], "effective_from": "2026-09-01", "effective_to": None, "publication_note": ""},
+    ).json()
+    created = client.post(
+        "/api/investable-universe-snapshots",
+        json={"name": name, "research_date": research_date, "version_ids": [published["version"]["id"]]},
+    )
+    assert created.status_code == 201, created.text
+    return created.json()
+
+
+def test_universe_snapshot_list_returns_immutable_summaries_without_rewriting(monkeypatch, tmp_path: Path) -> None:
+    client = _client(monkeypatch, tmp_path)
+    first = _publish_pool_and_snapshot(client, "较早研究范围", "2026-09-04")
+    second = _publish_pool_and_snapshot(client, "较新研究范围", "2026-09-05")
+    store_path = tmp_path / "product_pools.json"
+    stored_before = store_path.read_text(encoding="utf-8")
+    full_before = client.get(f"/api/investable-universe-snapshots/{first['id']}").json()
+
+    listed = client.get("/api/investable-universe-snapshots")
+
+    assert listed.status_code == 200
+    payload = listed.json()
+    assert payload["total"] == 2
+    assert {item["id"] for item in payload["items"]} == {first["id"], second["id"]}
+    # Deterministic newest-first projection; ties fall back to the id so repeated
+    # reads cannot reshuffle the library.
+    assert payload["items"] == sorted(
+        payload["items"],
+        key=lambda item: (str(item["created_at"]), str(item["id"])),
+        reverse=True,
+    )
+    summary = next(item for item in payload["items"] if item["id"] == first["id"])
+    assert summary["name"] == "较早研究范围"
+    assert summary["research_date"] == "2026-09-04"
+    assert summary["version_ids"] == first["version_ids"]
+    assert summary["product_count"] == first["product_count"] == 1
+    assert summary["content_hash"] == first["content_hash"]
+    assert summary["summary"]["pool_count"] == 1
+    # The library is metadata only: no frozen member/product payloads.
+    assert "members" not in summary and "products" not in summary and "groups" not in summary
+
+    # Reading the library must not rewrite the frozen record or its hash.
+    assert store_path.read_text(encoding="utf-8") == stored_before
+    assert client.get(f"/api/investable-universe-snapshots/{first['id']}").json() == full_before
+
+
+def test_universe_snapshot_list_reads_legacy_and_restricted_records_without_rewriting(monkeypatch, tmp_path: Path) -> None:
+    """Legacy version_refs-only records stay readable and restricted members are
+    never presented as investable counts."""
+
+    client = _client(monkeypatch, tmp_path)
+    store_path = tmp_path / "product_pools.json"
+    legacy = {
+        "id": "universe-legacy",
+        "name": "旧版范围",
+        "research_date": "2026-08-01",
+        "version_refs": [{"version_id": "version-a"}, {"version_id": "version-b"}],
+        "members": [
+            {"eligible": True, "product_id": "510300.SH"},
+            {"eligible": False, "product_id": "000001.OF"},
+        ],
+        "immutable": True,
+        "created_at": "2026-08-01T00:00:00+00:00",
+    }
+    payload = json.loads(store_path.read_text(encoding="utf-8")) if store_path.exists() else {}
+    payload.setdefault("pools", [])
+    payload.setdefault("versions", [])
+    payload.setdefault("universe_snapshots", []).append(legacy)
+    store_path.write_text(json.dumps(payload), encoding="utf-8")
+    stored_before = store_path.read_text(encoding="utf-8")
+
+    listed = client.get("/api/investable-universe-snapshots")
+
+    assert listed.status_code == 200
+    item = listed.json()["items"][0]
+    assert item["version_ids"] == ["version-a", "version-b"]
+    assert item["product_count"] == 2
+    assert "members" not in item
+    # No frozen eligible_count exists for this record, so the summary must not
+    # invent one; the client shows a plain product count instead.
+    assert "eligible_count" not in item["summary"]
+    assert store_path.read_text(encoding="utf-8") == stored_before
 
 
 def test_attach_preserves_indicator_domain_error_instead_of_returning_500(

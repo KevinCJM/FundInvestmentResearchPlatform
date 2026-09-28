@@ -14,7 +14,8 @@ import { compactMandateDefinition } from '../components/investment-mandate/model
 const researchClock = vi.hoisted(() => ({ day: '2026-09-17' as string | null | undefined }))
 vi.mock('../app/ResearchContext', () => ({ useResearchDay: () => researchClock.day }))
 vi.mock('echarts-for-react', () => ({ default: ({ option }: { option: any }) => <div data-testid="echarts"
-  data-series={String(option?.series?.length ?? 0)} data-bands={String(option?.series?.[0]?.markLine?.data?.length ?? 0)} /> }))
+  data-series={String(option?.series?.length ?? 0)} data-bands={String(option?.series?.[0]?.markLine?.data?.length ?? 0)}
+  data-marks={(option?.series?.[0]?.markLine?.data ?? []).map((item: any) => item.name).join('|')} /> }))
 
 const root = '/api/strategic-allocation'
 const response = (body: unknown, status = 200) => Promise.resolve({ ok: status < 400, status, json: async () => body } as Response)
@@ -47,8 +48,11 @@ function install(overrides: Record<string, Override> = {}) {
       const request = JSON.parse(String(init?.body)) as MandateStudyRequest
       const echo = boundaryAssessment(request)
       return response({ funding: { ...echo.funding, cashflow_required_return: .042, cashflow_required_return_status: 'solved' },
-        effective_target_return: request.definition.objective_kind === 'absolute_return'
-          ? Math.max(request.definition.target_return, .042) : null, execution: echo.execution })
+        effective_target_return: request.definition.objective_kind === 'absolute_return' ? request.definition.target_return : null,
+        return_requirements: { arithmetic_floor: null, compound_floor: .042, volatility_cap: .09,
+          benchmark_return: null, target_excess_return: null, status: 'resolved',
+          reference_comparison: { within_limits: false, arithmetic_return: .035, volatility: .09,
+            required_arithmetic_return: .04584, level: 3 } }, execution: echo.execution })
     }
     if (key === `${root}/mandates/${savedVersion.id}`) return response(savedVersion)
     throw new Error(`Unexpected API ${key}`)
@@ -177,7 +181,8 @@ it.each(['view', 'editFrom'])('版本读取失败的%s页在PIT恢复后只提�
   const tree = () => <MemoryRouter initialEntries={[route]}><InvestmentObjectivesWorkspace /></MemoryRouter>
   writeAllocationDraft('mandate-study:editor', boundaryStudy())
   const view = render(tree())
-  expect(await screen.findByRole('alert')).toHaveTextContent('保存版本暂时不可读')
+  // 读取失败现在落在中间的错误态里，PIT 提示是另一条 alert，所以按文案定位而不是「页面上唯一那条 alert」。
+  expect(await screen.findByText('保存版本暂时不可读')).toBeInTheDocument()
   researchClock.day = '2026-09-18'; view.rerender(tree())
   expect(screen.queryByLabelText('目标名称')).not.toBeInTheDocument()
   expect(screen.queryByRole('navigation', { name: '投资目标步骤' })).not.toBeInTheDocument()
@@ -218,10 +223,19 @@ it('诊断同时展示原参考前沿和现金约束前沿，C1-C5仍来自冻�
   expect(screen.getAllByText('10.00%').length).toBeGreaterThan(0)
   expect(screen.getByText('5.00%')).toBeInTheDocument()
   const charts = screen.getAllByTestId('echarts')
-  const frontier = charts.find(node => node.getAttribute('data-series') === '2')
-  expect(frontier).toBeTruthy(); expect(frontier).toHaveAttribute('data-bands', '5')
+  const frontier = charts.find(node => (node.getAttribute('data-marks') ?? '').includes('授权上限'))
+  expect(frontier).toBeTruthy()
+  // 本次授权上限只是画在 C1-C5 之上的第六条线，五条等级线仍旧逐条来自冻结 Risk Scale。
+  // 本次授权落在 C3 上，那条线换成强调样式，其余四条等级线仍逐条来自冻结 Risk Scale。
+  expect(frontier!.getAttribute('data-marks')!.split('|')).toEqual(['C1', 'C2', '授权上限 C3 6.00%', 'C4', 'C5'])
+  expect(frontier).toHaveAttribute('data-bands', '5')
+  // 授权内可选的那一段是独立序列，所以序列数是参考前沿、约束前沿、可选段三条。
+  expect(frontier).toHaveAttribute('data-series', '3')
   expect(screen.getByText(/虚线：风险等级配置发布时的原始参考前沿/)).toBeInTheDocument()
   expect(screen.getByText(/实线：同一 Reference CMA 加入当前现金约束后的新前沿/)).toBeInTheDocument()
+  expect(screen.getByText(/竖线：本次授权上限 .*，右侧灰色区域本次不能选/)).toBeInTheDocument()
+  // 资金目标的所需收益是扣费前复合口径，和纵轴的算术年化收益不同轴，不画目标横线。
+  expect(screen.queryByText(/横线：目标年收益/)).not.toBeInTheDocument()
 })
 
 it('修改现金输入后迟到的旧诊断不能覆盖新输入', async () => {
@@ -290,9 +304,9 @@ it('诊断API失败时保留草稿并显示错误，不伪造前沿结果', asyn
 it('填写页底部回显考虑现金流后真正需要的收益，并判断所选风险等级够不够', async () => {
   install(); ready()
   const check = await screen.findByRole('region', { name: '这套配置需要的收益' })
-  expect(await within(check).findByText(/需要扣费前年复合收益 4\.20%/)).toBeInTheDocument()
-  // C3 的参考收益 3.50% 不到 4.20%，判断写在页面底部，不再只挂在上面的等级卡片上。
-  expect(within(check).getByText(/高于 C3 的参考收益 3\.50%.*需要 C4/)).toBeInTheDocument()
+  expect(await within(check).findByText('4.20%')).toBeInTheDocument()
+  expect(within(check).getByText(/参考组合收益 3\.50%.*未达到同口径收益要求 4\.58%/)).toBeInTheDocument()
+  expect(within(check).queryByText(/需要 C4/)).not.toBeInTheDocument()
 })
 
 it('非期末金额目标默认不打开本金与现金流计划', async () => {
@@ -458,4 +472,62 @@ it.each([3, 12] as const)('旧版每%s月循环只发生一次时保留频率，
   expect(screen.getByRole('combobox', { name: /^现金流 1 · 频率/ })).toHaveValue(String(frequency))
   fireEvent.change(screen.getByLabelText('投资期限（年）'), { target: { value: '3' } })
   expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.cash_budget!.flows[0]).toMatchObject({ first_month: 12, last_month: 36, every_months: frequency })
+})
+
+it('新建入口带 fresh 令牌时是空白表单，上一次没填完的草稿留在固定 key 上', () => {
+  install(); ready(boundaryStudy(), '/pre-investment/objectives/new?fresh=1758585600000')
+  expect(screen.getByLabelText('目标名称')).toHaveValue('')
+  expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.name).toBe('量化边界测试')
+})
+
+
+it('已保存资金目标的顶部摘要直接显示冻结的复利要求，查看输入也不重新测算', async () => {
+  const fetch = install()
+  ready(boundaryStudy(), `/pre-investment/objectives/new?view=${savedVersion.id}`)
+  await screen.findByRole('heading', { name: '已保存投资目标与约束' })
+  const summary = screen.getByRole('region', { name: '本目标将约束后续研究' })
+  expect(within(summary).getByText('计划所需年化收益率')).toBeInTheDocument()
+  expect(within(summary).getByText('4.20%')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '1. 目标与约束' }))
+  expect(within(summary).getByText('4.20%')).toBeInTheDocument()
+  expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/mandates/funding'))).toHaveLength(0)
+})
+
+it('编辑本金立即撤下旧收益要求，新的资金算账完成后回显新值', async () => {
+  let finish: ((value: Response) => void) | undefined
+  let calls = 0
+  install({ [`${root}/mandates/funding`]: () => {
+    calls += 1
+    if (calls === 1) return response({ funding: { ...savedAssessment.funding, cashflow_required_return: .0409, cashflow_required_return_status: 'solved' }, effective_target_return: null, execution: savedAssessment.execution })
+    return new Promise(resolve => { finish = resolve })
+  } })
+  ready()
+  const summary = screen.getByRole('region', { name: '本目标将约束后续研究' })
+  await within(summary).findByText('4.09%')
+  fireEvent.change(screen.getByLabelText(/^总资金/), { target: { value: '1200000' } })
+  expect(within(summary).queryByText('4.09%')).not.toBeInTheDocument()
+  await waitFor(() => expect(finish).toBeTypeOf('function'))
+  await act(async () => finish!(await response({ funding: { ...savedAssessment.funding, cashflow_required_return: .02, cashflow_required_return_status: 'solved' }, effective_target_return: null, execution: savedAssessment.execution })))
+  expect(within(summary).getByText('2.00%')).toBeInTheDocument()
+})
+
+it('累计目标保存复利口径，修改期限保留累计目标，切换算术口径要求重填', async () => {
+  install(); const user = userEvent.setup()
+  const request = boundaryStudy()
+  request.definition = { ...request.definition, objective_kind: 'absolute_return', target_return: .03,
+    cash_budget: null, funding_target: null }
+  ready(request)
+  await screen.findByLabelText(/^填写口径/)
+  const basis = screen.getByLabelText(/^填写口径/)
+  await user.selectOptions(basis, 'total')
+  fireEvent.change(screen.getByLabelText(/年期间总收益/), { target: { value: '50' } })
+  let draft = readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!
+  expect(draft.definition.target_return_basis).toBe('annual_compound')
+  expect((1 + draft.definition.target_return) ** draft.definition.horizon_years - 1).toBeCloseTo(.5)
+  fireEvent.change(screen.getByLabelText('投资期限（年）'), { target: { value: '5' } })
+  draft = readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!
+  expect((1 + draft.definition.target_return) ** 5 - 1).toBeCloseTo(.5)
+  expect(compactMandateDefinition(draft.definition, draft.definition.as_of).target_return_basis).toBe('annual_compound')
+  await user.selectOptions(basis, 'annual')
+  expect(screen.getByLabelText(/^最低预期年收益/)).toHaveValue('')
 })

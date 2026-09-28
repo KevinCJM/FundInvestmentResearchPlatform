@@ -1,3 +1,4 @@
+import { systemText } from '../i18n/runtime'
 import { apiErrorMessage } from '../utils/apiError'
 
 export type PitGrade = 'A' | 'B' | 'C'
@@ -110,7 +111,7 @@ export interface PitContextResolution {
   release_error?: string
 }
 
-async function request<T>(path: string, init?: RequestInit, fallback = '请求失败'): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, fallback = systemText('preInvestment.pit.requestFailed')): Promise<T> {
   const response = await fetch(path, init)
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(apiErrorMessage(body, `${fallback}（${response.status}）`))
@@ -119,11 +120,11 @@ async function request<T>(path: string, init?: RequestInit, fallback = '请求�
 
 export function fetchPitAudit(options: { refresh?: boolean; signal?: AbortSignal } = {}): Promise<PitAudit> {
   const query = options.refresh ? '?refresh=true' : ''
-  return request<PitAudit>(`/api/pit/audit${query}`, { signal: options.signal }, 'PIT 体检失败')
+  return request<PitAudit>(`/api/pit/audit${query}`, { signal: options.signal }, systemText('preInvestment.pit.pitHealthCheckFailed'))
 }
 
 export function fetchDataReleases(signal?: AbortSignal): Promise<{ releases: DataRelease[] }> {
-  return request<{ releases: DataRelease[] }>('/api/pit/releases', { signal }, '读取数据版本失败')
+  return request<{ releases: DataRelease[] }>('/api/pit/releases', { signal }, systemText('preInvestment.pit.unableToLoadDataVersions'))
 }
 
 /** Sealing a version defines a whole口径: the day, the vintage and the mode. */
@@ -137,7 +138,7 @@ export function createDataRelease(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: input.name, note: input.note ?? '', asOf: input.asOf, runMode: input.runMode }),
     },
-    '封版失败',
+    systemText('preInvestment.pit.unableToFreezeTheDataVersion'),
   )
 }
 
@@ -153,7 +154,7 @@ export function updateDataRelease(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: input.name, note: input.note ?? '', asOf: input.asOf, runMode: input.runMode }),
     },
-    '修改数据版本失败',
+    systemText('preInvestment.pit.unableToUpdateTheDataVersion'),
   )
 }
 
@@ -161,7 +162,7 @@ export function deleteDataRelease(id: string): Promise<{ deleted_id: string }> {
   return request<{ deleted_id: string }>(
     `/api/pit/releases/${encodeURIComponent(id)}`,
     { method: 'DELETE' },
-    '删除数据版本失败',
+    systemText('preInvestment.pit.unableToDeleteTheDataVersion'),
   )
 }
 
@@ -177,7 +178,7 @@ export function resolvePitContext(
       body: JSON.stringify(input),
       signal,
     },
-    '研究上下文校验失败',
+    systemText('preInvestment.pit.researchContextValidationFailed'),
   )
 }
 
@@ -248,12 +249,12 @@ export interface PitSettingsPayload {
 }
 
 export async function fetchPitSettings(signal?: AbortSignal): Promise<PitSettingsPayload> {
-  const payload = await request<PitSettingsPayload>('/api/pit/settings', { signal }, '读取 PIT 系统设置失败')
+  const payload = await request<PitSettingsPayload>('/api/pit/settings', { signal }, systemText('preInvestment.pit.unableToLoadPitSettings'))
   if (!payload?.settings || !payload.effective || typeof payload.effective.no_pit !== 'boolean'
     || !['RESEARCH', 'STRICT_PIT'].includes(payload.effective.run_mode)
     || (payload.effective.as_of !== null && typeof payload.effective.as_of !== 'string')
     || typeof payload.effective.label !== 'string' || !Array.isArray(payload.available_releases)) {
-    throw new Error('PIT 系统设置响应不完整，无法确认当前口径')
+    throw new Error(systemText('preInvestment.pit.incompletePitSettingsResponseCurrentContextCannot'))
   }
   return payload
 }
@@ -270,7 +271,7 @@ export function applyPitSettings(
       body: JSON.stringify({ ...input, note: input.note ?? '' }),
       signal,
     },
-    '应用 PIT 口径失败',
+    systemText('preInvestment.pit.unableToApplyPitContext'),
   )
 }
 
@@ -357,10 +358,10 @@ export interface PitUniverseView {
 }
 
 export const UNIVERSE_COVERAGE_LABELS: Record<PitUniverseCoverage, string> = {
-  REPLAYED: '域可回放 · 有当日维表快照',
-  INTERVAL: '域按上市/退市日还原',
-  LATEST_ONLY: '域仅最新态 · 有幸存者偏差',
-  NOT_APPLICABLE: '该数据集不涉及产品域',
+  get REPLAYED() { return systemText('preInvestment.pit.replayableUniverseSameDayDimensionSnapshotAvailable') },
+  get INTERVAL() { return systemText('preInvestment.pit.universeReconstructedFromListingDelistingDates') },
+  get LATEST_ONLY() { return systemText('preInvestment.pit.latestUniverseOnlySurvivorshipBias') },
+  get NOT_APPLICABLE() { return systemText('preInvestment.pit.productUniverseNotApplicableToThisDataset') },
 }
 
 export const UNIVERSE_COVERAGE_TONE: Record<PitUniverseCoverage, string> = {
@@ -378,7 +379,7 @@ export function fetchPitUniverse(
   return request<PitUniverseView>(
     `/api/pit/universe?${params.toString()}`,
     { signal: options.signal },
-    '读取可选产品域失败',
+    systemText('preInvestment.pit.unableToLoadAvailableProductUniverses'),
   )
 }
 
@@ -426,6 +427,6 @@ export function replayPoolVersion(
   return request<PoolReplayResult>(
     `/api/product-pool-versions/${encodeURIComponent(versionId)}/replay?as_of=${encodeURIComponent(asOf)}`,
     { signal },
-    '回放产品池失败',
+    systemText('preInvestment.pit.productPoolReplayFailed'),
   )
 }

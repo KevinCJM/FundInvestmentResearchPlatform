@@ -2,6 +2,29 @@
 
 `backend.tactical_allocation.numeric`，数组顺序由服务层固定并随快照保留。输入收益为小数，每期末日期对应 `period_start` 后一完整收益区间。Python 仅做输入边界、编排和输出封装，数值路径固定签名 NJIT，无请求期新签名或 Python 回退。
 
+战略范围来源通过 `research_data.load_research_data` 读取 SAA 冻结的研究代理定义，不要求实际产品映射。来源解码与时间对齐后，代理收益复用 LTCMA 的 `adjacent_returns`／`proxy_returns` 固定签名内核；现金使用有效年收益率按实际天数复利，作为固定假设。输入先按共同价格端点对齐，保留完整相邻区间的累计收益，不填零、不前填、不删除跨市场休市区间。输出只读收益、端点可得日期和来源指纹，再进入下述同一 TAA 引擎；现金假设和当前快照回放均不认证为历史 PIT。没有研究代理的已完整映射旧基线保留原冻结大类净值入口。研究数据入口不会生成交易产品或改变产品应用校验。
+
+### 共同区间数值口径
+
+研究代理方法 `common_observation_intervals/1.0.0`：先对每条来源严格有序的价格日期取交集；收益为相邻共同端点 `P(t1)/P(t0)-1`。类内权重／再平衡仍走唯一 `proxy_returns` 内核，规则中的 daily 指每个共同边界。原 `period_complete` 相邻性掩码仅作单日资格元数据，TAA 不据此删除收益或报错。CMA 等单日估计消费者仍沿用其原有筛选契约。
+
+新增三个独立固定签名 NJIT 原语（不是黑盒组合）：`interval_years_kernel` 将端点转为 ACT/365.25 年长 `dt`；`cash_interval_returns_kernel` 计算 `expm1(log1p(cash_return) * dt)`；`annual_rate_moments_kernel` 估计收益增量的年化算术漂移和方差。复用现有持仓推进、收益转换、最大回撤与成本内核；没有第二套组合回测引擎。
+
+对 `n` 个非等长收益增量 `r_i`，采用假设 `r_i = mu * dt_i + sigma * sqrt(dt_i) * epsilon_i`：
+
+- `mu = sum(r_i) / sum(dt_i)`。
+- `sigma² = sum((r_i - mu * dt_i)² / dt_i) / (n-1)`，`n > 1`。这是算术增量的时间缩放近似；长区间或不同步收盘会影响估计，不宣称精确日频波动。
+- TAA 净收益用该方差计算年化波动；净主动收益 `TAA-SAA` 用同式计算 TE；效用为 `mu_active - penalty * TE²`，IR 为 `mu_active/TE`。总收益和最大回撤继续来自完整净值路径，不丢掉长区间收益。
+- 单期假设冲击没有可估计的年化波动，仍返回 null。现金按上述有效年率复利，不代表观测利息。
+- `evaluate_candidates(..., period_years=...)`、`stress_compare(..., period_years=...)` 接受只读任意步长的一维 float64 年长数组。必须等长、有限且严格大于零。缺省时保留产品净值等间隔 `periods_per_year` 契约；不改变历史已保存结果。
+- 每个训练／留出／walk-forward 段只切自身时长视图。历史情景截取相同区间，保存该段时长；不从全样本（尤其留出）估计一个公共年化因子。
+
+代理端点可得日期作为标签成熟度证据；`signal_available_at = available_at + 1` 仅用于代理动量／组合动量的日期粒度可用门禁，不改写原始公布日期。缺失与未知不因对齐而成为已知。观察窗口、执行滞后、最小持有期均按共同观察期计数；周／月／季机会仍由日期边界生成，无额外休市交易。
+
+预检和预览增加 `alignment`（共同日、期数、非共同日、跨观察期、最长间隔、各来源覆盖和日期例子、日历未核验状态）。保存数组增加 `period_years`、`period_start_days`、`period_end_days`、`signal_available_days`；来源方法和时点规则进入指纹，过期预览不能保存，旧快照不会补写。UI 中英文同源展示，不对用户资产名进行翻译。
+
+必要分配限于价格对齐边界矩阵、时长／现金收益输出和每段主动收益工作数组；分段、候选和 walk-forward 共享原始收益与时长视图。新增内核纳入 worker PID 预热／执行审计，固定签名禁止请求期编译。版本为 `tactical-allocation-njit/1.2.0`。
+
 ## 搜索
 
 `evaluate_candidates(returns, probabilities, use_signal, base, state_tilts, min_weights, max_weights, max_abs_tilts, train_end_index, strengths, cost, periods_per_year, risk_penalty, max_tracking_error=1.0, max_turnover=1.0, objective='active_utility', selected_candidate_id=None, group_membership=None, group_min=None, group_max=None)`

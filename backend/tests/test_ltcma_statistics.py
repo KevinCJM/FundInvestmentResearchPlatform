@@ -39,6 +39,8 @@ def request(method="historical_statistics", **patch):
 
 
 def publish(service, req, key):
+    # 同一进程里发布的每份 LTCMA 名称必须不同；用操作键派生，避免夹具之间重名。
+    req = req.model_copy(update={"name": f"{req.name}·{key}"})
     preview = service.preview_cma(req)
     return service.publish_cma(CmaCenterPublish(request=req, preview_hash=preview["preview_hash"],
         confirm=True, idempotency_key=key))
@@ -162,7 +164,7 @@ def test_niw_uses_frozen_prior_and_generated_uncertainty(workspace):
     service, _ = workspace
     prior_request = CmaRequest.model_validate({**definition().model_dump(mode="json"),
         "schema_version": "2.0", "moment_semantics": "annualized_periodic_arithmetic",
-        "fee_basis": "explicit_assumption", "fx_hedging_basis": "explicit_assumption"})
+        "fee_basis": "source_embedded_no_additional_fee", "fx_hedging_basis": "same_currency_no_conversion"})
     prior = publish(service, prior_request, "manual-prior-operation")
     req = request("bayesian_niw", prior_ref={"id": prior["id"], "content_hash": prior["content_hash"]},
                   mean_prior_observations=20., covariance_prior_observations=30.)

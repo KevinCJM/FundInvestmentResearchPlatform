@@ -36,8 +36,11 @@ it('builds a risk scale directly from cash and adjusted product history without 
   fireEvent.change(screen.getByLabelText('来源类型'), { target: { value: 'etf' } })
   await screen.findByText('Synthetic ETF')
   expect(screen.queryByLabelText('冻结产品池')).not.toBeInTheDocument()
-  expect(screen.getByRole('button', { name: '选择' })).toBeEnabled()
-  fireEvent.click(screen.getByRole('button', { name: '选择' }))
+  // 批量选择：勾选后一次确认，避免每个来源都要重新搜索。
+  const choice = screen.getByRole('checkbox', { name: /Synthetic ETF/ })
+  expect(choice).toBeEnabled()
+  fireEvent.click(choice)
+  fireEvent.click(screen.getByRole('button', { name: '确认选择' }))
 
   fireEvent.click(screen.getByRole('button', { name: '检查参考数据' }))
   await screen.findByText(/共同历史区间/)
@@ -63,3 +66,16 @@ function withinRegion(region: HTMLElement, name: string) {
   if (!button) throw new Error(`missing button ${name}`)
   return button
 }
+
+
+it('replaces a failed initial read with one retry panel, then restores the editor', async () => {
+  vi.spyOn(riskScales, 'capabilities').mockRejectedValueOnce(new Error('database unavailable')).mockResolvedValue(riskCapabilities)
+  const view = render(<MemoryRouter><RiskScaleWorkspace /></MemoryRouter>)
+  expect(await screen.findByRole('alert')).toHaveTextContent('暂时无法读取数据，请重试。')
+  expect(view.container.querySelectorAll('img[src*="mascot-error"]')).toHaveLength(1)
+  expect(view.container.querySelector('.animate-pulse')).toBeNull()
+  expect(screen.queryByLabelText('标尺名称')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '重试' }))
+  expect(await screen.findByLabelText('标尺名称')).toBeInTheDocument()
+  expect(view.container.querySelector('img[src*="mascot-error"]')).toBeNull()
+})

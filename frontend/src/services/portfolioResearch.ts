@@ -1,3 +1,4 @@
+import { systemText } from '../i18n/runtime'
 import type { IndicatorDefinition, MetricPresentation } from './customIndicators'
 import { assertNativeNumericalExecution, type NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
 import type { HistoricalRegimeBacktestReference, RegimeConditioningResult } from './portfolioRegime'
@@ -118,7 +119,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   })
   if (!response.ok) {
-    let message = `请求失败（${response.status}）`
+    let message = systemText('preInvestment.portfolioResearch.requestFailed', { p0: response.status })
     try {
       const body = await response.json()
       message = body?.detail?.message ?? body?.detail ?? body?.message ?? message
@@ -140,13 +141,13 @@ function seriesPoints(dates: unknown, values: unknown): PortfolioSeriesPoint[] {
 }
 
 const SUMMARY_PRESENTATION: Record<string, { name: string; displayFormat: 'number' | 'percent'; precision: number; direction: 'higher_better' | 'lower_better' }> = {
-  cumulative_return: { name: '累计收益率', displayFormat: 'percent', precision: 2, direction: 'higher_better' },
-  annual_return: { name: '年化收益率', displayFormat: 'percent', precision: 2, direction: 'higher_better' },
-  annual_volatility: { name: '年化波动率', displayFormat: 'percent', precision: 2, direction: 'lower_better' },
-  sharpe_ratio: { name: '夏普比率', displayFormat: 'number', precision: 3, direction: 'higher_better' },
-  max_drawdown: { name: '最大回撤', displayFormat: 'percent', precision: 2, direction: 'lower_better' },
-  var_99: { name: '历史 VaR 99%', displayFormat: 'percent', precision: 3, direction: 'lower_better' },
-  es_99: { name: '历史 CVaR 99%', displayFormat: 'percent', precision: 3, direction: 'lower_better' },
+  cumulative_return: { get name() { return systemText('preInvestment.portfolioResearch.cumulativeReturn') }, displayFormat: 'percent', precision: 2, direction: 'higher_better' },
+  annual_return: { get name() { return systemText('preInvestment.portfolioResearch.annualizedReturn') }, displayFormat: 'percent', precision: 2, direction: 'higher_better' },
+  annual_volatility: { get name() { return systemText('preInvestment.portfolioResearch.annualVolatility') }, displayFormat: 'percent', precision: 2, direction: 'lower_better' },
+  sharpe_ratio: { get name() { return systemText('preInvestment.portfolioResearch.sharpeRatio') }, displayFormat: 'number', precision: 3, direction: 'higher_better' },
+  max_drawdown: { get name() { return systemText('preInvestment.portfolioResearch.maximumDrawdown') }, displayFormat: 'percent', precision: 2, direction: 'lower_better' },
+  var_99: { get name() { return systemText('preInvestment.portfolioResearch.historicalVar99') }, displayFormat: 'percent', precision: 3, direction: 'lower_better' },
+  es_99: { get name() { return systemText('preInvestment.portfolioResearch.historicalCvar99') }, displayFormat: 'percent', precision: 3, direction: 'lower_better' },
 }
 
 function fallbackMetricPresentation(id: string, name: string, unit?: string): MetricPresentation {
@@ -154,11 +155,11 @@ function fallbackMetricPresentation(id: string, name: string, unit?: string): Me
   const displayFormat = summary?.displayFormat ?? (unit === 'percent' ? 'percent' : 'number')
   return {
     indicator_id: `portfolio-summary-${id}`, revision: 1, name: summary?.name ?? name,
-    source: 'built_in', category: 'portfolio_summary', category_label: '组合汇总', context_kind: 'portfolio',
+    source: 'built_in', category: 'portfolio_summary', category_label: systemText('preInvestment.portfolioResearch.portfolioSummary'), context_kind: 'portfolio',
     catalog_status: 'current', display_format: displayFormat, precision: summary?.precision ?? 3,
     unit: displayFormat === 'percent' ? '%' : unit ?? '', notation: 'standard', value_scale: displayFormat === 'percent' ? 100 : 1,
     output_measure: displayFormat === 'percent' ? 'return_decimal' : 'dimensionless', direction: summary?.direction ?? 'higher_better',
-    description: '', methodology: '', data_basis: '锁定运行快照', minimum_observations: 1, applicable_product_kinds: ['portfolio'],
+    description: '', methodology: '', data_basis: systemText('preInvestment.portfolioResearch.lockRunSnapshot'), minimum_observations: 1, applicable_product_kinds: ['portfolio'],
   }
 }
 
@@ -272,15 +273,15 @@ function normalizeWeightPath(value: unknown, assets: unknown, dates: unknown): P
 
 function normalizeRun(raw: unknown): PortfolioRun {
   const source = (raw ?? {}) as Record<string, any>
-  assertNativeNumericalExecution(source.execution, '组合研究运行')
+  assertNativeNumericalExecution(source.execution, systemText('preInvestment.portfolioResearch.portfolioResearchRun'))
   const regimeConditioning = source.regime_conditioning && typeof source.regime_conditioning === 'object'
     ? source.regime_conditioning as RegimeConditioningResult
     : null
-  if (regimeConditioning) assertNativeNumericalExecution(regimeConditioning.execution, '组合历史情景条件统计')
+  if (regimeConditioning) assertNativeNumericalExecution(regimeConditioning.execution, systemText('preInvestment.portfolioResearch.historicalRegimeConditionalPortfolioStatistics'))
   const dates = source.dates ?? []
   const rawWeights = Array.isArray(source.weight_path) ? source.weight_path : Array.isArray(source.weights) ? source.weights : []
   return {
-    id: String(source.id ?? ''), target_id: source.target_id ?? null, name: String(source.name ?? source.target_name ?? '组合运行'),
+    id: String(source.id ?? ''), target_id: source.target_id ?? null, name: String(source.name ?? source.target_name ?? systemText('preInvestment.portfolioResearch.portfolioRun')),
     requested_as_of: source.requested_as_of ?? null, effective_as_of: source.effective_as_of ?? null,
     target_revision: source.target_revision ?? null,
     request: source.request,
@@ -298,7 +299,7 @@ function normalizeRun(raw: unknown): PortfolioRun {
 
 function normalizeDiagnosis(raw: unknown): PortfolioDiagnosis {
   const source = (raw ?? {}) as Record<string, any>
-  assertNativeNumericalExecution(source.execution, '组合研究诊断')
+  assertNativeNumericalExecution(source.execution, systemText('preInvestment.portfolioResearch.portfolioResearchDiagnosis'))
   return {
     summary: metricList(source.summary_metrics ?? source.metrics ?? source.summary), components: Array.isArray(source.components) ? source.components : [],
     custom_indicators: portfolioMetricList(source.custom_indicators), contributions: Array.isArray(source.contributions) ? source.contributions : [],
@@ -382,7 +383,7 @@ export async function diagnosePortfolioRun(id: string, indicatorIds: string[] = 
 }
 export async function runPortfolioScenario(id: string, input: { name: string; start_date: string; end_date: string }) {
   const response = await request<{ name: string; metrics?: PortfolioMetric[]; warnings?: unknown; execution: NativeNumericalExecutionAudit }>(`/api/portfolio-runs/${encodeURIComponent(id)}/scenario`, { method: 'POST', body: JSON.stringify(input) })
-  assertNativeNumericalExecution(response.execution, '组合历史情景')
+  assertNativeNumericalExecution(response.execution, systemText('preInvestment.portfolioResearch.portfolioHistoricalRegimes'))
   return { name: response.name, metrics: metricList(response.metrics), warnings: warningMessages(response.warnings) }
 }
 
@@ -396,12 +397,12 @@ export async function downloadPortfolioExport(
   if (options.scenario_start) params.set('scenario_start', options.scenario_start)
   if (options.scenario_end) params.set('scenario_end', options.scenario_end)
   const response = await fetch(`/api/portfolio-runs/${encodeURIComponent(id)}/export?${params}`)
-  if (!response.ok) throw new PortfolioResearchApiError(response.status, `导出失败（${response.status}）`)
+  if (!response.ok) throw new PortfolioResearchApiError(response.status, systemText('preInvestment.portfolioResearch.exportFailed', { p0: response.status }))
   const blob = await response.blob()
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = `组合研究_${id}.${format}`
+  link.download = systemText('preInvestment.portfolioResearch.portfolioResearch', { p0: id, p1: format })
   document.body.appendChild(link)
   link.click()
   link.remove()

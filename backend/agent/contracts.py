@@ -1,4 +1,4 @@
-"""External contracts for the indicator-center agent.
+"""External contracts for the shared research agent.
 
 Every request/response model forbids unknown fields. Server-owned facts such as
 hashes, tokens, revisions and preview state are never accepted from callers.
@@ -18,6 +18,7 @@ class Contract(BaseModel):
 
 
 AgentPage = Literal[
+    "regime-workbench",
     "indicator-studio",
     "product-detail",
     "product-research",
@@ -25,7 +26,7 @@ AgentPage = Literal[
     "holding-diagnosis",
     "evaluation-plan",
 ]
-AgentScope = Literal["indicator_center", "product_research"]
+AgentScope = Literal["indicator_center", "product_research", "scenario_center"]
 ViewState = Literal["unknown", "inherit", "explicit", "off"]
 
 
@@ -74,8 +75,15 @@ class PortfolioContext(Contract):
     run_id: str = Field(min_length=1, max_length=100)
 
 
+class RegimeContext(Contract):
+    context_kind: Literal["regime_graph"]
+    editor_token: Optional[str] = Field(default=None, max_length=64)
+    mode: Literal["retrospective", "realtime"]
+    as_of: Optional[str] = Field(default=None, min_length=8, max_length=10)
+
+
 CalculationContext = Annotated[
-    SingleProductContext | PortfolioContext,
+    SingleProductContext | PortfolioContext | RegimeContext,
     Field(discriminator="context_kind"),
 ]
 
@@ -94,6 +102,7 @@ class PageContext(Contract):
 
 # Curated page-evidence sections each page may submit. Unknown pages/sections fail closed.
 PAGE_SNAPSHOT_SECTIONS: dict[str, tuple[str, ...]] = {
+    "regime-workbench": ("editing",),
     "indicator-studio": ("editing", "results", "series"),
     "product-research": ("request", "results"), "product-compare": ("request", "results"),
     "holding-diagnosis": ("request", "results"),
@@ -174,7 +183,13 @@ class AgentMessageRequest(Contract):
     def _snapshot_belongs_to_page(self) -> "AgentMessageRequest":
         if self.page_snapshot is not None and self.page_snapshot.page != self.page_context.page:
             raise ValueError("页面快照与页面上下文不一致。")
-        if self.page_snapshot is not None and self.page_snapshot.page != 'indicator-studio':
+        if self.page_snapshot is not None and self.page_snapshot.page == 'regime-workbench':
+            editing = self.page_snapshot.sections.get('editing')
+            if (self.page_context.context_kind != 'regime_graph' or not isinstance(editing, dict)
+                    or editing.get('mode') != self.page_context.calculation.mode
+                    or editing.get('as_of') != self.page_context.calculation.as_of):
+                raise ValueError('情景页面快照与当前研究模式或研究日不一致。')
+        if self.page_snapshot is not None and self.page_snapshot.page not in {'indicator-studio', 'regime-workbench'}:
             from .research_pages import parse_request
             try:
                 frozen = parse_request(self.page_snapshot.page, self.page_snapshot.model_dump())
