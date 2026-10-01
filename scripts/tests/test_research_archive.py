@@ -20,6 +20,20 @@ def test_business_archive_dry_run_replay_and_corruption(tmp_path, monkeypatch, i
     from test_custom_indicator_service import _write_market_data
     monkeypatch.setenv('CUSTOM_INDICATOR_DATA_DIR', str(tmp_path/'data'))
     monkeypatch.setenv('INDICATOR_PROCESS_WORKERS', '1')
+    import httpx
+    principal = {'sub': 'alice', 'workspace': 'lab', 'scopes': ['assistant:use', 'research:read', 'scenario:research']}
+    monkeypatch.setenv('PORTABLE_AGENT_AUTH_MODE', 'jwt')
+    monkeypatch.setenv('PORTABLE_AGENT_AUTHORITY_URL', 'https://permissions.example.test/current')
+    monkeypatch.setenv('PORTABLE_AGENT_AUTHORITY_TOKEN', 'offline-authority-credential-0000000000')
+    monkeypatch.setenv('PORTABLE_AGENT_ISSUER_KEY', '1'*64)
+    monkeypatch.setenv('APP_ENV', 'development')
+    async_client = httpx.AsyncClient
+    def permissions(request):
+        requested = json.loads(request.content)
+        assert requested['workspace'] == 'lab' and requested['subject'] in {'alice', 'bob'}
+        return httpx.Response(200, json={**principal, 'sub': requested['subject']})
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: async_client(
+        transport=httpx.MockTransport(permissions), **kwargs))
     market = tmp_path/'market'; market.mkdir(); _write_market_data(market)
     page = authoring_context(); page['view_state'] = 'unknown'
     digest = module.definition_hash(APPROVED_DEFINITION)
@@ -77,6 +91,19 @@ def test_business_archive_dry_run_replay_and_corruption(tmp_path, monkeypatch, i
     store = ResearchStore(business)
     authoring = store.read_authoring(authority['authoring_id'], {'sub': 'alice', 'workspace': 'lab'})
     assert authoring['draft']['compile_token'] is None and authoring['draft']['valid'] is False
+    # The target owner can read/bootstrap imported history without draft permissions.
+    async def resume():
+        bridge = module.HostIntegration(None, {}, store=store)
+        try:
+            for item in prepared['sessions']:
+                await bridge.authorize('fund-research', 'alice', item['context'], action='read')
+                boot = await bridge.bootstrap(principal, item['context']['ref'])
+                import jwt
+                scopes = jwt.decode(boot['token'], options={'verify_signature': False})['scopes']
+                assert 'tool:metrics_validate' not in scopes
+        finally:
+            await bridge.close()
+    asyncio.run(resume())
     before = output.read_bytes()
     output = tmp_path/'recovered/output.json'
     assert run(True)['replayed'] and output.read_bytes() == before

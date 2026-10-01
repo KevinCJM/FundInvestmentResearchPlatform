@@ -32,7 +32,7 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
         raise ValueError('Unsupported or modified archive')
     if not archive.get('owner') or not archive.get('workspace'):
         raise ValueError('An explicit owner/workspace assignment is required')
-    principal = {'sub': archive['owner'], 'workspace': archive['workspace'], 'scopes': ['*']}
+    principal = {'sub': archive['owner'], 'workspace': archive['workspace']}
     result = {'schema_version': 'portable-agent-import/1', 'dataset_id': archive['dataset_id'], 'app': archive['app'],
               'owner': archive['owner'], 'workspace': archive['workspace'], 'profiles_hash': archive.get('profiles_hash'),
               'host_reviewed': True, 'sessions': [], 'memories': [], 'quarantined': list(archive.get('quarantined', []))}
@@ -40,9 +40,11 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
         return {'sessions_to_review': len(archive['sessions']), 'memories_to_review': len(archive['memories']), 'applied': False}
     store = ResearchStore(business_dir)
     service = CustomIndicatorService(business_dir.parent, market_dir)
-    integration = HostIntegration(service, {}, store=store, authority=lambda subject, workspace: principal)
+    integration = HostIntegration(service, {}, store=store)
     message_ids = {}
     try:
+        # Use the same trusted authority as live bootstrap; an archive cannot grant permissions.
+        principal = await integration.current_principal(principal['sub'], principal['workspace'])
         with store.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS migration_imports(dataset TEXT PRIMARY KEY, hash TEXT NOT NULL, result TEXT NOT NULL)')
             old = db.execute('SELECT hash,result FROM migration_imports WHERE dataset=?', (archive['dataset_id'],)).fetchone()

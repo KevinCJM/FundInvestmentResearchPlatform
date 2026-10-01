@@ -6,6 +6,7 @@ import json
 import os
 import time
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -108,7 +109,20 @@ class HostIntegration:
         catalog_version = build_catalog(self.indicators)['version']
         if page.context_kind == 'scenario':
             from historical_regimes.v2_registry import REGISTRY_VERSION
-            catalog_version = stable_hash([catalog_version, REGISTRY_VERSION, page.calculation.workspace])
+            from market_data import read_active_manifest
+            catalogs = {}
+            # ponytail: hash current repository metadata; add durable generations if catalog size makes this costly.
+            if graph := self.pages.get('graph'):
+                catalogs['definitions'] = graph.list_definitions()
+                catalogs['events'] = graph.event_library._entries()
+            if stress := self.pages.get('stress'):
+                catalogs['stress'] = stress.list_definitions()
+            if published := self.pages.get('published'):
+                catalogs['releases'] = published.releases(date.fromisoformat(page.calculation.as_of) if page.calculation.as_of else None)
+            if sources := self.pages.get('sources'):
+                catalogs['sources'] = {'snapshot': read_active_manifest(sources.data_dir),
+                                       'indicators': sources._indicator_versions()}
+            catalog_version = stable_hash([catalog_version, REGISTRY_VERSION, page.calculation.workspace, catalogs])
         return {'catalog_version': catalog_version,
                 'data_generation': market_data_generation(self.indicators.market_data_dir)}
 

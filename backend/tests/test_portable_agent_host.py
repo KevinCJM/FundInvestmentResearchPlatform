@@ -184,6 +184,64 @@ def test_signed_tool_wire_and_late_dependency_change(host):
     assert client.post('/internal/portable-agent/admission', headers=headers, json=after).status_code == 409
 
 
+@pytest.mark.parametrize('changed', ['graph', 'events', 'stress', 'source_manifest', 'source_indicator', 'releases'])
+def test_scenario_catalog_mutation_invalidates_model_evidence(host, tmp_path, changed):
+    from historical_regimes.v2_service import RegimeGraphV2Service
+    from historical_regimes.v2_templates import TEMPLATES_V2
+    from scenario_stress.service import ScenarioStressService
+    from scenario_stress.published import PublishedScenarioService
+    from custom_indicators.repository import IndicatorRepository
+    from test_research_series_routes import _write_fixture
+    from test_scenario_stress import _template
+    client, bridge, _, _ = host
+    graph = RegimeGraphV2Service(tmp_path, tmp_path)
+    stress = ScenarioStressService(tmp_path, tmp_path)
+    published = PublishedScenarioService(tmp_path)
+    sources = _write_fixture(tmp_path/'sources')
+    bridge.pages.update(graph=graph, stress=stress, published=published, sources=sources)
+    body = {'page_context': {'page': 'historical-regimes', 'page_instance_id': 'mutable-catalog',
+        'view_state': 'unknown', 'calculation': {'context_kind': 'scenario', 'workspace': 'graph'}}}
+    ctx = client.post('/api/integrations/portable-agent/contexts', json=body).json()
+    result, _ = tool(client, ctx, 'scenarios_catalog', {'section': 'definitions'})
+    assert result['status'] == 'succeeded'
+    messages = [{'role': 'user', 'content': '列出情景定义'},
+        {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'c', 'type': 'function', 'function': {
+            'name': 'scenarios_catalog', 'arguments': '{"section":"definitions"}'}}]},
+        {'role': 'tool', 'tool_call_id': 'c', 'content': json.dumps(result['model'])}]
+    wire = {'model': 'offline', 'messages': messages, 'tools': []}
+    before = {'application': 'fund-research', 'subject': 'alice', 'context': ctx,
+              'phase': 'before', 'wire': wire, 'payload_hash': stable_hash(wire)}
+    headers = {'Authorization': 'Bearer '+SERVICE_TOKEN}
+    admitted = client.post('/internal/portable-agent/admission', headers=headers, json=before)
+    assert admitted.status_code == 200, admitted.text
+    if changed == 'graph':
+        graph.definitions.create(TEMPLATES_V2[0]['definition'])
+    elif changed == 'events':
+        graph.event_library.create({'name': '新事件', 'windows': [{'id': 'event-window', 'label': '窗口',
+            'start_date': '2020-01-01', 'end_date': '2020-01-31', 'rationale': '固定测试窗口'}]})
+    elif changed == 'stress':
+        stress.create_definition(_template('factor_path'))
+    elif changed == 'source_manifest':
+        path = sources.data_dir/'tushare_active.json'
+        manifest = json.loads(path.read_text())
+        path.write_text(json.dumps({**manifest, 'generation': 'next-catalog-generation'}))
+    elif changed == 'source_indicator':
+        IndicatorRepository(sources.workspace_data_dir/'custom_indicators.json', []).create(_draft(name='新增来源'))
+    else:
+        published.artifacts.save('release', {'name': '新情景版本', 'lineage': [],
+            'effective_at': '2020-01-01T00:00:00+00:00', 'expires_at': '2099-01-01T00:00:00+00:00'})
+    after = {key: value for key, value in before.items() if key != 'wire'}
+    after.update(phase='after', receipt_id=admitted.json()['receipt_id'])
+    assert client.post('/internal/portable-agent/admission', headers=headers, json=after).status_code == 409
+    fresh = client.post('/api/integrations/portable-agent/contexts', json=body).json()
+    assert fresh['hash'] != ctx['hash']
+    prepared = client.post('/internal/portable-agent/admission', headers=headers, json={
+        'application': 'fund-research', 'subject': 'alice', 'context': fresh, 'phase': 'prepare', 'messages': messages})
+    assert prepared.status_code == 200, prepared.text
+    assert json.loads(prepared.json()['messages'][-1]['content'])['status'] == 'historical_stale'
+    assert tool(client, fresh, 'scenarios_catalog', {'section': 'definitions'})[0]['status'] == 'succeeded'
+
+
 def test_saved_object_recovers_after_receipt_gap_without_a_second_create(host, monkeypatch):
     client, _, service, _ = host
     ctx = context(client)
