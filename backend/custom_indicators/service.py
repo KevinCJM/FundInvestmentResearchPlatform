@@ -2317,7 +2317,8 @@ class CustomIndicatorService:
         source["name"] = str(source.get("indicator_name") or "")
         return {**derived, "source": source}
 
-    def create_indicator(self, fields: dict[str, Any]) -> dict[str, Any]:
+    def create_indicator(self, fields: dict[str, Any], *, expected_catalog_revision: str | None = None,
+                         operation_id: str | None = None) -> dict[str, Any]:
         normalized = self._normalize_definition(fields)
         validation = self._compile_or_raise(normalized)
         self._apply_compiled_contract(normalized, validation)
@@ -2325,7 +2326,7 @@ class CustomIndicatorService:
             self.series_service.warm(normalized)
         elif normalized.get("context_kind") == "single_product":
             self._warm_single_product_definition(normalized)
-        created = self.indicators.create(normalized)
+        created = self.indicators.create(normalized, expected_catalog_revision=expected_catalog_revision, operation_id=operation_id)
         self.cache.clear()
         self.plan_cache.clear()
         return self._decorate_definition(created)

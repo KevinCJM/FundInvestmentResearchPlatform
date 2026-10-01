@@ -61,6 +61,8 @@ npm run dev
 
 前端默认通过 Vite 将 `/api` 代理到后端。
 
+AI 助手由独立的 Portable Web Agent 服务提供；平台只保留业务工具和页面接入。开发时还需启动独立服务并配置 `/assistant` 代理与登录身份，步骤见[独立助手接入](deploy/README.md#independent-assistant-candidate)，当前开发验收和生产切换边界见[迁移设计](docs/research/portable-agent-platform-integration.md#182-2026-10-01-dev整合与验收收尾)。
+
 ### 一体化运行
 
 ```bash

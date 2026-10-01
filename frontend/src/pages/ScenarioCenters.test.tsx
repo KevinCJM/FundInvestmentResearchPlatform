@@ -6,10 +6,10 @@ import { describe, expect, it, vi } from 'vitest'
 import ScenarioCenters from './ScenarioCenters'
 import type { RegimeGraphDefinition } from '../services/regimeGraph'
 
-vi.mock('../components/agent/RegimeAgentPanel', async () => {
+vi.mock('../integrations/portable-agent/ScenarioAssistant', async () => {
   const { createBlankRegimeDefinition } = await vi.importActual<typeof import('../services/regimeGraph')>('../services/regimeGraph')
-  return { default: ({ onApply }: { onApply: (definition: RegimeGraphDefinition) => void }) =>
-    <button onClick={() => onApply(createBlankRegimeDefinition())}>使用 AI 提案</button> }
+  return { default: ({ onApply, active }: { active?: boolean; onApply: (definition: RegimeGraphDefinition) => void }) =>
+    active === false ? null : <button onClick={() => onApply(createBlankRegimeDefinition())}>使用 AI 提案</button> }
 })
 
 vi.mock('./HistoricalRegimeWorkbench', () => ({

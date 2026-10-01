@@ -1,0 +1,43 @@
+# docker compose -f docker-compose.yml -f deploy/portable-agent.compose.yml ...
+# Compose >= 2.24.4; only the gateway publishes a port.
+services:
+  fund-research:
+    ports: !reset []
+    environment:
+      PORTABLE_AGENT_AUTH_MODE: jwt
+      PORTABLE_AGENT_BROWSER_ORIGIN: ${PORTABLE_AGENT_BROWSER_ORIGIN:?Set the public HTTPS origin}
+      PORTABLE_AGENT_IDENTITY_KEY: ${PORTABLE_AGENT_IDENTITY_KEY:?Set the trusted identity signing key}
+      PORTABLE_AGENT_IDENTITY_ISSUER: ${PORTABLE_AGENT_IDENTITY_ISSUER:-fund-research}
+      PORTABLE_AGENT_WORKSPACE: ${PORTABLE_AGENT_WORKSPACE:?Set the workspace}
+      PORTABLE_AGENT_AUTHORITY_URL: ${PORTABLE_AGENT_AUTHORITY_URL:?Set the current-permissions HTTPS endpoint}
+      PORTABLE_AGENT_AUTHORITY_TOKEN: ${PORTABLE_AGENT_AUTHORITY_TOKEN:?Set the authority credential}
+      PORTABLE_AGENT_ISSUER_KEY: ${PORTABLE_AGENT_ISSUER_KEY:?Set the agent application signing key}
+      PORTABLE_AGENT_SERVICE_TOKEN: ${PORTABLE_AGENT_SERVICE_TOKEN:?Set the private host-tool credential}
+      PORTABLE_AGENT_RELEASE_FILE: /config/portable-agent/release.json
+      PORTABLE_AGENT_IMAGE: ${PORTABLE_AGENT_IMAGE:?Set the published image with its sha256 digest}
+    volumes:
+      - ${PORTABLE_AGENT_RELEASE_FILE:?Set the release.json path}:/config/portable-agent/release.json:ro
+
+  portable-agent:
+    image: ${PORTABLE_AGENT_IMAGE:?Set the published image with its sha256 digest}
+    environment:
+      PORTABLE_AGENT_HOST_AUTHORIZATION: Bearer ${PORTABLE_AGENT_SERVICE_TOKEN:?Set the private host-tool credential}
+    volumes:
+      - portable_agent_data:/data
+      - ${PORTABLE_AGENT_CONFIG_FILE:?Set the generated apps.json path}:/config/apps.json:ro
+    init: true
+    restart: unless-stopped
+
+  gateway:
+    image: ${PORTABLE_AGENT_GATEWAY_IMAGE:?Set a pinned nginx image digest}
+    ports:
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8000}:8080"
+    volumes:
+      - ./deploy/portable-agent.nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - fund-research
+      - portable-agent
+    restart: unless-stopped
+
+volumes:
+  portable_agent_data:

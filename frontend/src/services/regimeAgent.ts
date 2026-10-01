@@ -1,13 +1,5 @@
-import type { PageEvidenceSnapshot } from './agent'
-import { newPageSnapshotId } from './agentPageEvidence'
-import { cloneRegimeGraphDefinition, createBlankRegimeDefinition, definitionForRequest, type RegimeGraphDefinition, type RegimeMode } from './regimeGraph'
+import { cloneRegimeGraphDefinition, createBlankRegimeDefinition, type RegimeGraphDefinition } from './regimeGraph'
 import { invalidateStudyQualification } from '../pages/regime-workbench/regimeStudy'
-
-export function regimeAgentSnapshot(definition: RegimeGraphDefinition | undefined, mode: RegimeMode, asOf: string, pending: boolean, selectedNodeId = ''): PageEvidenceSnapshot {
-  return { version: 1, snapshot_id: newPageSnapshotId(), captured_at: new Date().toISOString(), page: 'regime-workbench',
-    sections: { editing: { definition: definition?.graph.nodes.length ? definitionForRequest(definition) : null,
-      mode, as_of: asOf || null, editor_pending: pending, selected_node_id: selectedNodeId } } }
-}
 
 /** AI owns only authored graph fields; saved identity, reference and validation stay with the editor. */
 export function mergeRegimeAgentDraft(current: RegimeGraphDefinition | undefined, proposal: Record<string, unknown>): RegimeGraphDefinition {

@@ -1,4 +1,5 @@
-import RegimeAgentPanel from '../components/agent/RegimeAgentPanel'
+import ScenarioAssistant from '../integrations/portable-agent/ScenarioAssistant'
+import { mergeRegimeAgentDraft } from '../services/regimeAgent'
 import RegimeQualityPanel from './regime-workbench/RegimeQualityPanel'
 import RegimeReliabilityPanel from './regime-workbench/RegimeReliabilityPanel'
 import { useResearchContextIdentity } from '../app/ResearchContext'
@@ -812,6 +813,17 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition, w
 
   return (
     <div className={focused ? 'fixed inset-0 z-[100] overflow-auto bg-slate-50 p-3 sm:p-5' : `mx-auto min-w-0 py-6 ${editorMode === 'canvas' ? 'max-w-[1920px]' : 'max-w-[1440px]'}`} data-testid="historical-regime-workbench" onKeyDown={event => { if (focused && !drawer && event.key === 'Escape') { event.preventDefault(); setFocused(false) } }}>
+      <ScenarioAssistant page="historical-regimes" workspace={eventWorkspace ? 'events' : 'graph'} purpose={purpose || (eventWorkspace ? 'manual_events' : 'research')}
+        active={active} busy={loadingCatalog || loadingDefinition || loadingTemplate || formulaPending || formulaBusy || savingDefinition || savingResearch || running}
+        mode={mode} asOf={asOf} definition={definition as unknown as Record<string, unknown>}
+        onApply={value => {
+          const next = mergeRegimeAgentDraft(definition, value)
+          editDefinition(next)
+          clearRunDisplay()
+          setSelectedNodeId(next.graph.nodes[0]?.id || '')
+          nodeSequence.current = next.graph.nodes.length + 1
+        }}
+        onView={value => { if (value.preview_id && value.result) { setRun(value.result as unknown as RegimePreviewRun); setDisplayedResult({ id: value.preview_id, kind: 'preview' }); setView('result') } }} />
       {!focused && <header aria-label="历史情景工作台命令栏" className="mb-6 flex flex-col gap-4 rounded-xl bg-gradient-to-r from-slate-950 via-slate-900 to-accent-950 px-5 py-5 text-white shadow-lg sm:px-7 sm:py-6 lg:flex-row lg:items-center lg:justify-between">
         <div><p className="text-sm font-semibold text-accent-200">{eventWorkspace ? '全球历史事件库 · 事件区间研究' : '市场状态研究 · 枚举时序算法'}</p><h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">{eventWorkspace ? '人工历史事件' : historicalTask ? '定义历史参考' : realtimeTask && taskFocus === 'validation' ? '验证识别能力' : realtimeTask ? '建立实时识别' : '历史情景识别'}</h1><p className="mt-2 max-w-2xl text-sm text-slate-200">{eventWorkspace ? '维护事件日期、说明和观察序列，查看独立事件区间与重叠情况。' : historicalTask ? '用完整历史数据定义可解释、可复用的市场状态参考。' : taskFocus === 'validation' ? '相对固定历史参考检查实时模型的状态级准确性、概率校准和前瞻证据。' : '只使用当时可得信息构建实时识别模型，并绑定精确的历史参考版本。'}</p></div>
         <div className="flex flex-wrap gap-2">
@@ -952,14 +964,6 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition, w
         </RegimeWorkbenchDrawer> : null}
         {dataLabOpen ? <div className="fixed inset-0 z-[120] min-w-0 overflow-auto bg-slate-50"><ResearchDataLab embedded boundSeriesIds={boundSeriesIds} onBindSeries={bindSeries} onClose={() => setDataLabOpen(false)} /></div> : null}
       {running || notice || loadingCatalog || loadingDefinition ? <footer role="status" className="flex shrink-0 flex-wrap items-center gap-2 border-t border-slate-200 bg-white px-3 py-2 text-xs text-slate-600"><span className="min-w-0 flex-1">{loadingCatalog ? '正在加载模板与可用节点…' : loadingDefinition ? '正在加载方案…' : running ? `${run?.stage || '正在识别'} · ${Math.round((run?.progress || 0) * 100)}%` : notice}</span>{running ? <button type="button" onClick={() => void cancelRun()} className="font-bold text-rose-700">取消识别</button> : null}{run?.status === 'completed' && view !== 'result' ? <button type="button" onClick={() => { if (run?.id) setDisplayedResult({ id: run.id, kind: 'preview' }); changeView('result') }} className="font-bold text-accent-700">查看结果</button> : null}{notice && !running ? <button type="button" aria-label="关闭状态提示" onClick={() => setNotice('')} className="px-2 font-bold text-slate-600">关闭</button> : null}</footer> : null}
-      {active && !eventWorkspace && <RegimeAgentPanel definition={definition} mode={mode} asOf={asOf}
-        selectedNodeId={selectedNodeId || undefined} busy={formulaPending || formulaBusy || running || savingResearch || savingDefinition || loadingDefinition || loadingTemplate || loadingCatalog}
-        onApply={next => {
-          editDefinition(next)
-          clearRunDisplay()
-          setSelectedNodeId(next.graph.nodes[0]?.id || '')
-          nodeSequence.current = next.graph.nodes.length + 1
-        }} />}
     </div>
   )
 }

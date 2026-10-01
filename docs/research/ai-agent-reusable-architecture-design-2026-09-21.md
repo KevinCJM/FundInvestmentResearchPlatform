@@ -1,6 +1,14 @@
 # AI 助手共用架构与接入设计
 
+迁移状态（2026-09-30）：本文保留迁移前的行为契约与历史实现证据。当前候选已通过外部框架挂载；最新调用链、已验证范围和剩余门槛见[整体迁移设计](portable-agent-platform-integration.md)，不能将下文旧运行器路径当作当前装配入口。
+
+下一阶段的整体迁移以[平台接入 Portable Web Agent](portable-agent-platform-integration.md)为目标设计：通用运行与界面归独立仓库，平台只保留业务和薄适配。当前候选已按此设计替换并删除旧运行器；下文实现描述只适用于迁移前历史基线。
+
 日期：2026-09-21。状态：已实施，功能回归通过；运行状态见验收记录。范围为现有 AI 助手前后端，不增加其他业务页入口、不改变数值算法、数据或保存授权。
+
+中央入口的增量实现见[平台意图与跨页交接详细设计](ai-functions-design.md#11-平台意图识别与跨页交接详细设计2026-09-23)：增加无计算上下文的 platform 工作域和共享内嵌聊天，复用既有运行控制；上述2026-09-21范围为历史基线。
+
+跨项目独立产品的选型验证见第11节；该部分仍是实验，不属于上文已实施的项目内复用，也未替换现有运行实现。
 
 ## 1. 首次抽象前的链路与问题（历史）
 
@@ -234,3 +242,190 @@ flowchart LR
 当前边界：公共DTO仍保留既有`draft`/`preview`字段，产品共享服务仍使用既有FastAPI错误/响应类型；本轮交付是项目内模块复用。统一SQLite提交边界和运行循环保留；将来出现新的业务成果或跨项目部署需求时，再针对实际契约扩展，不预建第二套实现。
 
 PR复审补充：`GET /api/agent/meta` 在读取模型配置和构建目录前检查当前应用的业务服务挂载；缺失时返回503 `AGENT_SERVICE_UNAVAILABLE`，不能因为模型已配置就展示可用状态。已挂载服务的目录构建失败继续保留原有空版本降级。回归 `test_meta_rejects_unmounted_service_but_tolerates_catalog_failure` 先复现200误报，再验证两种状态分别处理。
+
+## 9. CopilotKit 自带运行能力替换验证（2026-09-24）
+
+此节是选型实验，未更换当前生产实现。验证对象为 `@copilotkit/runtime@1.73.3` 的 `BuiltInAgent`、`InMemoryAgentRunner` 和 `@copilotkit/sqlite-runner@1.73.3`，配合 `ai@6.0.104`、`better-sqlite3@12.8.0`。本地基线为 `e13c2bf7107ef23f6f4124831794cb57b580dbda` 加现有未提交智能体改动。不启动 LangGraph，也不借用原 `RunController` 执行模型循环。
+
+### 验证方法与范围
+
+本地实验位于 `.run/copilotkit-validation/`：`probe.mjs` 使用真实发布包、真实运行器及官方 `MockLanguageModelV3`；`business_bridge.py` 使用临时数据目录、现有固定行情夹具、真实 `CustomIndicatorService`、现有工具分发和原人工提交 HTTP 路由。历史试算夹具显式补齐模拟披露日期；最初缺少披露日期时原PIT门禁返回不可计算，没有关闭门禁来取得成功结果。所有模型回复和工具选择均为固定脚本；服务路由通过 FastAPI TestClient 调用。另验证真实 CopilotKit HTTP handler 输出 SSE，但没有启动真实网页或外部模型调用。
+
+正常业务接入需要一层实验适配：把服务端工具 schema 转换为 AI SDK ToolSet，由 BuiltInAgent 的公共 `mcpClients` 接口消费（没有部署 MCP 服务）；跨语言调用复用 Python 业务工具。会话草稿、结果句柄与冻结确认继续存放于现有 `AgentSessionStore`，人工提交继续使用 `commit-preview` / `commit`。因此，接通业务不能表述为 CopilotKit 已替换全部会话存储，也不能把实验 `/probe/*` 路由描述成既有生产 API。
+
+`maxSteps` 在实验中明确设为20；这是验证用上限，不是对当前“按进展判断停止”契约的修改。完整计算结果留在临时业务存储，模型只接收现有工具投影。API确认测试模拟独立人工操作，不代表已完成真实浏览器点击验收。
+
+### 已确认的运行能力与缺口
+
+| 验证项 | 结果与适用边界 |
+| --- | --- |
+| 人工中断与恢复 | 内置 interrupt 工具能暂停，resume 能将人工拒绝送回模型；业务确认快照和实际保存仍由接入方负责 |
+| 已结束会话持久化 | SQLite 文件在第二个 Node 进程中能回放已结束会话的事件与回复 |
+| 运行中进程崩溃 | 在工具已开始后终止独立进程，重启后事件为空、运行标记仍为真；stop 返回false，下一轮报 `Thread already running`。不具备当前项目要求的中断恢复能力 |
+| 取消与物理执行 | 内存运行器发出终态后，忽略取消的已派发工具仍未结束；同一会话已经可接受下一轮。HTTP请求取消不能替代 Python 计算完成栅栏 |
+| SQLite旧运行取消 | 向正在运行的线程传入旧 `runId`，仍停止了当前运行；该版本SQLite实现没有执行内存运行器已有的精确运行ID校验 |
+| 原始数据准入 | 默认 BuiltInAgent 将固定行情表格哨兵值送入模拟模型；需要在所有模型入口继续执行项目自己的数据准入规则 |
+| 无进展停止 | 相同工具和相同结果连续执行6次，直到实验设定的步数上限；不能替代当前任务进展判断、纠偏与约束保留 |
+| HTTP传输 | 实际 CopilotKit runtime handler 的运行入口能返回包含回复和完成事件的SSE |
+
+取消实验使用故意不响应 AbortSignal 的工具，模拟已派发且不能被HTTP断开直接终止的后台工作；不是声称所有支持协作取消的工具都会继续。崩溃实验使用独立子进程和独立临时SQLite文件，不触及项目业务数据。以上缺口仅针对所验证的开源包版本，不外推为托管 Intelligence、所有未来版本或其他运行器的表现。
+
+### 业务链路与其他页面
+
+完整探针执行退出码为0：12组观察中，7组能力验证通过，5组复现预期缺口。探针执行成功不等于替换验收通过。
+
+- 标量指标：7次模拟模型调用、6次实际业务工具调用，完成目录查询、推导、错误公式修正、有效草稿校验、可用性检查和真实试算。
+- 滚动时序指标：5次模拟模型调用、4次实际业务工具调用，使用原 `metrics.rolling_draft` 从已保存指标的精确版本派生5日滚动草稿，再检查可用性并试算。
+- 两类指标均通过完整成果读取、确认前拒绝写入、人工提交、同请求重放去重和事件重连。断言标量实际数值有限、时序通道有多个点、结果状态为ok、保存目录只新增一条；完整时序数组未进入模拟模型请求。
+- 产品详情：独立会话中的 `products.eval` 经相同BuiltInAgent接通原服务。产品研究页的 `page.read` 保留原证据投影，客户端数值哨兵被排除；服务端仍以409 `AGENT_TOOL_NOT_ALLOWED` 拒绝不属于当前工作域的工具。
+
+原项目 `backend/tests/test_agent_research_pages.py` 的34项离线契约回归通过，覆盖产品筛选、产品比较、持仓诊断的冻结请求、证据投影及原服务适配。这只能证明已有页面契约可继续作为迁移验收依据，不能证明这些页面已经完成 CopilotKit 接入。未来页面仍须各自明确工具白名单、页面实例与冻结条件、成果加载和人工写入门禁；中央意图交接不能直接沿用现有运行器专属回执而省略迁移设计。
+
+### 当前选型判断
+
+正常业务主链路可接通，但暂不把“CopilotKit自带运行器＋业务接口”认定为现有智能体的完整替代。已结束会话的历史持久化与运行中检查点恢复必须分别验收；工具调用能力与投研业务授权也必须分别验收。后续如采用CopilotKit，需要明确承接物理工具栅栏、精确取消、恢复、模型数据准入、上下文版本及无进展控制的唯一执行权威，不能让两个运行器同时拥有同一任务。该方案还需要Node运行环境与Python业务通信适配，并非仅替换前端组件。
+
+本实验没有修改正式前后端依赖、页面或业务行为，未验证真实模型意图质量、浏览器交互、多用户权限、正式行情/PIT资格、上线成本或生产部署。不能据此宣称必须引入LangGraph，亦不能假设添加LangGraph就自动满足上述业务契约。
+
+可复验命令（本地诊断产物，不纳入默认业务回归）：
+
+```bash
+cd .run/copilotkit-validation
+# 首次准备：npm ci --ignore-scripts；原生SQLite依赖另执行 npm rebuild better-sqlite3
+COPILOTKIT_TELEMETRY_DISABLED=true node probe.mjs
+COPILOTKIT_TELEMETRY_DISABLED=true node probe.mjs --runtime-only
+```
+
+实验源文件、依赖锁、日志和 `results.json` 均为本地诊断产物；`.run` 不由Git分发。本文保留版本、方法及观察结果，不将未提交的诊断入口登记为稳定项目能力。正式迁移前需要把验收用例纳入对应实现的受管测试。
+
+参考官方说明：[BuiltInAgent与自定义模型](https://docs.copilotkit.ai/agent-spec/backend/custom-agent)、[运行器与持久化](https://docs.copilotkit.ai/agent-spec/backend/agent-runner)。实际判断以本次发布包源码和实验结果为准。
+
+## 10. CopilotKit 接入与运行可靠性（2026-09-24）
+
+实现采用官方自定义Agent/AgentRunner接口：`CopilotKit → copilotkit/ResearchRunner → AG-UI HTTP → Python RunController → 现有业务工具`。Node适配层只传输事件；Python继续作为会话、任务检查点、工具回执和人工决定的唯一执行权威。没有修补或启用上节有缺口的Builtin/SQLite运行器，没有引入LangGraph，也不把业务工具交给浏览器执行。此方案保留现有Python执行核心，是本项目接入方案，不等于已经抽取独立通用产品。
+
+### 接入接口
+
+- `copilotkit/runtime.mjs` 导出 `createResearchHandler`，使用正式 `@copilotkit/runtime/v2` 和 `@ag-ui/client`。`server.mjs` 是可启动的本地Node入口，默认监听 `127.0.0.1:4000`；`RESEARCH_BACKEND_URL` 默认 `http://127.0.0.1:8000`，端口可通过 `COPILOTKIT_PORT` 设置。先 `npm ci --prefix copilotkit --ignore-scripts`，再 `COPILOTKIT_TELEMETRY_DISABLED=true npm start --prefix copilotkit`。集成部署应由既有应用网关把 `/api/copilotkit` 指向此进程；当前Python镜像不会自动启动Node，也未执行部署。
+- 浏览器CopilotKit Provider使用 `runtimeUrl="/api/copilotkit"`、`useSingleEndpoint={false}`；用 `copilotkit/client.mjs` 的 `registerResearchAgent` 注册本地聊天代理，聊天组件的 `agentId` 指向该注册名，`runtimeAgentId` 指向服务端 `default`。先调用原 `/api/agent/sessions` 创建页面会话，`threadId` 必须使用其真实 `session_id`。本次未替换现有浮窗，未采用需要另行许可的 `selfManagedAgents` 直连配置。
+- 每轮 `forwardedProps` 必须携带 `expected_session_revision`、`page_context`；可带 `page_snapshot`、`resume_from_run_id`、`edit_of_message_id`。结构沿用原会话API。`runId` 是本轮稳定幂等键，对应后端 `message_id`；响应丢失后必须沿用同一 `runId`、正文和冻结条件。后端另有不可变 `run_id`，供检查与明确恢复使用，两者不能混用。
+- FastAPI增加 `/api/agent/copilotkit/run`、`connect`、`stop` 以及 `GET /api/agent/copilotkit/threads/{session_id}`。Node运行、重连、忙碌状态与停止都委托这些入口；没有Node会话缓存或第二个SQLite库。
+- AG-UI输出 `RUN_STARTED`、`MESSAGES_SNAPSHOT`、`STATE_SNAPSHOT` 和终态。页面成果、版本、后端运行ID、执行屏障及历史消息游标放在 `state.research`；其中 `message_artifacts` 按回复ID保留原运行的草稿/试算/意图归属，不能用当前草稿覆盖历史成果。只同步已持久化公开内容；完整试算仍使用原结果句柄接口。历史分页继续使用原会话消息接口，当前快照保留最近200条。
+
+### 可靠性与规则
+
+1. **重启恢复**：Node重建后从Python读取会话；Python进程崩溃后，原owner锁及持久检查点把未完成运行转为interrupted，明确续跑需引用最新后端run。不会因一次重连重新派发已完成的工具。
+2. **取消隔离**：停止必须带原AG-UI `runId`，不能从线程猜测“当前运行”。公共浏览器接入在connect流的 `RUN_STARTED` 中记录该线程实际运行ID，刷新恢复后标准 `core.stopAgent` 仍发精确取消；自己的新run沿用SDK的原始请求ID。停止前冻结线程/运行二元组；新发送、另一轮观察和线程切换不能让迟到回执覆盖它，聊天组件克隆的代理单独绑定。即使观察断线，也保留已知ID供取消重试。接受前取消在同一业务SQLite库记录 `cancelled_messages`，与消息接受事务串行；迟到请求被409拒绝。已接受请求只停止其不可变运行，旧取消不影响新轮。停止回执仅确认请求已处理，后台工具真实退出前忙碌状态仍为真，拒绝新任务；流也不会提前发送成功终态。
+3. **断线语义**：断开SSE仅结束观察；显式stop才停止任务。离页取消应调用运行时stop并保留原runId，不能只使用 `HttpAgent.abortRun()` 断开HTTP。恢复通过connect读取原会话，不新建会话或自动重做。
+4. **模型准入与权限**：最后一条用户文本是唯一新增模型输入；浏览器历史和共享state不充当服务端历史、指令、草稿或授权。拒绝客户端tools、context及AG-UI审批resume注入；模型配置仍从现有服务端设置读取。工具白名单、工作域/计算域、PIT、数值投影、所有模型发送门控、容量整理及无进展控制继续走原链路。会话还需匹配页面和页面实例。
+5. **人工决定与版本**：指标保存继续使用原 `commit-preview → 独立人工确认 → commit`，校验冻结定义、草稿版本、上下文和请求幂等性。对话resume不构成业务保存授权。保存/记忆动作后重新获取会话，将新版本用于下一轮；旧版本不能写入。Node每次请求独立转发既有Authorization、Cookie、X-PIT-Off请求头，浏览器共享state不能指定身份；这里的权限验收是已有工作域和业务门禁，不新增多租户身份体系。
+
+在同一个Provider的core上、渲染聊天组件前注册（销毁视图时调用 `unregister`，按离页契约另行明确取消）：
+
+```js
+import {registerResearchAgent} from './copilotkit/client.mjs';
+const {agent, unregister} = registerResearchAgent(core, {
+  agentId: 'research-chat', runtimeAgentId: 'default',
+});
+agent.threadId = sessionId;
+// <CopilotChat agentId="research-chat" threadId={sessionId} />
+```
+
+必须使用上述注册入口，不能仅使用Provider默认发现的代理：CopilotKit 1.73.3的默认代理在connect后清除自身的activeRun，停止按钮会发不带runId的请求，被当前服务端安全拒绝。接入助手只修复客户端绑定，不放宽服务端拒绝无ID取消的规则；不修改node_modules，也不维护第二套运行器。
+
+### 验收与范围
+
+新增 `backend/tests/test_agent_copilotkit.py` 覆盖：受理前取消、实际线程未退出的阻塞、旧取消不误停、独立子进程终止后的恢复与续跑、服务器历史、原始数据拦截、页面实例/工具越权、过期会话与保存确认、人工提交去重。
+
+`copilotkit/runtime.test.mjs` 使用真实CopilotKit Runtime和官方HttpAgent，经本地IPC调用FastAPI TestClient，覆盖传输丢失后重试、Node运行时重建、AG-UI事件校验、重连、取消、原人工提交接口及请求头隔离。模型是固定夹具，无外部模型或网络调用；不是浏览器、真实模型质量或生产部署验收。
+
+```bash
+PYTHONPATH=.:backend python3 -m pytest backend/tests/test_agent_copilotkit.py -q
+PYTHON=python3 npm test --prefix copilotkit
+```
+
+本轮完整智能体后端回归472项通过，包含当时新增的12项接入用例；随后增加断线观察用例并补充成果归属断言，最终定向13项通过。真实CopilotKit包的2项联调通过。文档与路由覆盖检查通过，路由结构在包含当前工作区候选的临时Git索引中验证，未改变真实暂存区。本次新增的是可调用的协议接入和可靠性保护，现有页面仍使用原公共对话组件。没有改动投研计算、保存授权或现有页面交互；未提交、推送或部署。
+
+自审核P2修复补充：回归使用实际 `CopilotKitCore.registerProxiedAgent → clone → connectAgent → core.stopAgent` 链路和真实FastAPI控制接口。未安装客户端绑定时断言 `stopped=true` 失败；安装后确认后端最终cancelled，并将重复旧取消延迟至新任务启动后送达，验证新任务未停止。另覆盖凭证、线程切换、克隆隔离、观察错误后取消和新发送回执前取消。最终13项后端专项及3项SDK联调通过。此为SDK/后端离线验收，尚未将CopilotKit浮窗接入正式页面，不宣称浏览器视觉或真实模型验收。
+
+
+## 11. 独立产品与 Langflow 验证（2026-09-28）
+
+### 目标与选择边界
+
+目标是独立仓库、独立部署、可嵌入不同网页的通用智能体。投研平台只作为一个接入者；指标、PIT、计算、保存与版本检查继续属于业务系统。独立产品应提供可替换图标、浮窗内模型/API设置、会话和运行控制，以及接入方配置的指令、工具参数、权限、确认和页面回调。模型密钥保存在服务端；浏览器接入凭证与模型供应商密钥分开。
+
+选择顺序为直接采用、通过公开扩展接口适配、确有核心缺口时Fork、最后才自研。第10节的CopilotKit接入仍依赖本项目Python运行器，不是上述独立产品。
+
+本次隔离安装并核验 `langflow-base==1.12.3`、`lfx==1.12.3` 发布包，官方源码标签 `v1.12.3` 对应 `fec71dca901949c09ed4d63315804337cd2eb13d`；嵌入组件 `v1.0.8` 对应 `2c412cd047afc25681c2c4fe4c3a1c80a479a953`。两个Python wheel的SHA256与PyPI发布元数据一致。未改上游源码、项目依赖或正式页面。
+
+### 嵌入与配置核对
+
+上游后台可以配置Agent指令、模型和工具；工具说明及JSON Schema供模型选择调用，审批通过工具的 `approval_actions` 声明。此为配置能力核对，真实模型的意图准确率未测。
+
+官方 `langflow-embedded-chat` 的实际入口注册一个Web Component，样式、标题、请求头和flow/session参数可配置，但当前存在以下产品差距：
+
+- `src/controllers/index.ts` 只执行 `POST /api/v1/run/{flowId}`，没有消费后台任务的审批、恢复、停止协议。
+- `src/chatWidget/chatTrigger/index.tsx` 固定使用MessageSquare/X图标，没有声明自定义图标入口；按钮样式配置不等于替换图标。
+- 对话组件没有浮窗内供应商/API设置、业务成果卡片或向宿主派发动作的公开回调；消息保存在组件内存中，不能据此宣称刷新恢复已经接通。
+- 因此不能把后台支持HITL/检查点，直接当作这个嵌入组件支持相同流程。上述结论来自固定版本源码核对，未做浏览器交互验收。
+
+### 运行可靠性实测
+
+`reliability.py` 使用真实 `BackgroundExecutionService.stop_job`、`JobService`、`JobRunner`、`InProcessExecutor` 和临时SQLite。仅替换数据库连接装配与输入帧来源；停止、持久状态、线程池调度和孤儿任务处理使用发布包实现。测试禁止外部网络。
+
+| 验证项 | 实测结果及边界 |
+| --- | --- |
+| 精确取消 | 停止旧job后启动新job，再次停止旧job不影响新job |
+| 不响应取消的外部工作 | 用真实线程模拟已派发工作：旧job已CANCELLED，线程尚未退出；即使执行池并发为1，新job也已开始。项目所需的物理执行隔离不能直接继承此终态 |
+| 非正常进程退出 | 在独立子进程进入执行后强制终止；重建JobService和数据库连接，执行孤儿扫描，将任务转为FAILED、错误为worker_lost，未自动续跑 |
+
+孤儿扫描使用零租约等待来确定性触发恢复检查，不代表生产默认超时为零。失败终态是上游的明确恢复策略，不等于数据库丢失；但它不满足本项目从安全检查点继续未完成工作的完整要求。测试只针对当前默认进程内执行路径，不外推到Redis部署，也未验证完整HTTP工作流入口。外部工具是否可中断、是否幂等，仍需接入方提供真实契约。
+
+### 审批检查点对照实验
+
+`checkpoint_probe.py` 走 `AgentComponent.create_agent_runnable → astream_events(version=v2) → _pending_interrupt_getter`，与上游组件读取审批请求的方式一致。锁定依赖为 `langchain==1.3.18`、`langchain-core==1.6.5`、`langgraph==1.2.12`、`langgraph-checkpoint==4.2.0`、`langgraph-prebuilt==1.1.0`，完整依赖另存本地锁文件。
+
+| 配置 | 待审批记录 | 确认前业务写入 |
+| --- | --- | --- |
+| 默认执行方式＋官方JobCheckpointSaver/SQLite | 没有读到；StateSnapshot.interrupts为空，组件pending getter返回None | 0 |
+| 显式durability=sync＋同一官方持久化实现 | 可读取，存在1个interrupt | 0 |
+| 默认执行方式＋上游InMemorySaver对照 | 可读取，存在1个interrupt | 0 |
+
+这不是仅凭文档推测。普通ainvoke和实际astream_events路径都复现默认配置下中断回执缺失；检查点读取者无法可靠构建/恢复审批卡片。本地写入顺序记录显示，先保存了包含 `__interrupt__` 的writes，随后新的检查点写入将writes重置为空；同步持久化对照避免了这一交错。同步持久化参数的对照恢复了中断记录，但标准 `AgentComponent.run_agent` 当前没有传入该参数。因此，下面的双业务实验显式使用同步持久化，不能表述为原样Langflow网页流程已经通过审批恢复。此处未修改第三方包或强行执行未经批准的保存。
+
+### 两种业务的组件接入实验
+
+实验 `probe.py` 使用实际 `AgentComponent.create_agent_runnable`、LangChain脚本模型与上游SQLite检查点。工具通过JSON Schema配置，经本地进程通信调用FastAPI TestClient上的宿主接口。投研宿主仅导入现有 `CustomIndicatorService` 和固定数据夹具；不导入本项目 `agent` 包，不使用 `RunController`、`AgentSessionStore` 或 `/api/agent`。
+
+显式使用 `durability="sync"` 后，两种业务的组件级探针通过：
+
+- 指标：依次实际执行catalog、validate、availability、preview、save；1M试算得到有限值0.1643835616438356，无Python计算回退、无请求期编译缓存未命中。试算请求携带原校验返回的compile_token，没有关闭编译门禁。审批前自定义指标数为0；模拟独立批准后为1。
+- 审批持久化：独立新进程从SQLite读到中断记录；随后当前测试进程重建AgentComponent和checkpointer，读取待审批状态并批准保存。这里验证了跨进程读取及组件重建续跑，没有把它描述为整个Langflow服务重启后的HTTP恢复验收。
+- 工单：仅更换工具schema和脚本模型任务，实际执行查询和创建；审批前工单数为0，批准后为1，使用相同的AgentComponent与检查点实现。
+- 隔离：业务宿主在执行前后检查导入模块，均无 `agent` / `backend.agent`；通用运行器没有调用本项目智能体服务。额外确认无审批工具的Agent默认不创建agent级checkpointer，不能把普通聊天也默认为具有同样的持久恢复保障。
+
+这些是三份离线探针的完成结果：`probe.py` 验证两种配置后的组件工具链；`reliability.py` 记录精确取消通过及物理执行/崩溃续跑缺口；`checkpoint_probe.py` 记录默认失败与同步持久化对照。探针正常退出只代表观察与断言完成，不代表完整替换验收通过。
+
+仍未验证：真实模型意图质量、MCP网络接入、两套真实网页、浮窗内API设置、权限体系、全模型数据准入、冻结保存预览/版本冲突、保存响应丢失的幂等回放、时序指标、正式数据/PIT资格及生产部署。实验中的save直接调用原业务服务，前置的是上游通用工具审批；不能冒充原 `commit-preview → commit` 的完整业务保存门禁。
+
+### 本轮判断与后续门槛
+
+**不采用“Langflow加官方浮窗即可完整替换”的方案。** 后台具备可复用基础，但独立产品还需要嵌入端和宿主协议，并解决取消时真实工具退出、异常中断续跑、模型数据准入和业务保存门禁。
+
+先以固定版本依赖和公开扩展接口验证这些缺口；目前证据不足以支持立即Fork整个Langflow仓库，也不据此转向重写全部运行器。若只有嵌入端需要改造，可独立实现/扩展该组件；必须改后台核心时，再按具体缺口决定Fork范围。
+
+下一阶段的验收目标是同一个独立网页智能体，在指标页面和非投研演示系统中仅通过配置更换工具、图标与指令。指标验收还必须覆盖标量和时序、冻结条件、数据准入、权限、版本冲突、独立人工保存及丢响应重试；通用验收覆盖重连、崩溃、取消竞态和宿主动作回传。通过这些门槛后，才执行正式迁移及删除被替代实现。本节不表示已创建远端仓库、已Fork、已完成迁移或已有可交付的独立网页产品。
+
+本轮只扩展本权威文档；现有P12已覆盖精确取消、物理工具退出、恢复与业务门禁，未把上游实验能力登记为本项目已实现事实。模块和文档归属未改变，因此无需新增路由或重复坑点。
+
+本地复验材料放在 `.run/langflow-validation/`，包括发布元数据、源码版本、依赖锁、探针、日志与JSON结果；该目录不随Git分发，不登记为稳定项目模块。运行命令为该目录虚拟环境Python执行 `probe.py`、`reliability.py` 与 `checkpoint_probe.py`。如进入正式开发，应把被选中实现的验收迁入独立仓库的受管测试。
+
+来源：[Langflow 1.12.3](https://github.com/langflow-ai/langflow/releases/tag/v1.12.3)、[工具配置](https://docs.langflow.org/agents-tools)、[HITL](https://docs.langflow.org/human-in-the-loop)、[Workflow API](https://docs.langflow.org/workflow-api)、[嵌入组件v1.0.8](https://github.com/langflow-ai/langflow-embedded-chat/tree/v1.0.8)。运行结论以固定发布包的上述实测为准，文档不能代替验证。
+
+
+## 12. 独立模块原型实施（2026-09-28）
+
+依据第11节的实测结果，本轮采用Langflow所用的LangChain/LangGraph公共运行库和官方SQLite检查点，而不依赖Langflow服务。交付位于 `standalone-agent/`，详细设计的唯一当前来源为[独立框架仓库](https://github.com/KevinCJM/portable-web-agent)，安装、嵌入、工具协议、验收与限制见[独立框架仓库](https://github.com/KevinCJM/portable-web-agent)。
+
+目录包含服务端、原生Web Component、独立访问页、研究/工单两个宿主示例、HTTP适配示例、依赖锁、容器入口和测试。通用代码不导入本项目agent、业务计算或前端组件。原投研业务继续通过原实现运行；本轮不属于正式页面迁移，也不能据此删除原Agent或第10节既有接入。专业数据准入、版本和保存资格仍须由业务服务完成。

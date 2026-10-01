@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import tempfile
 import threading
@@ -165,7 +166,25 @@ class IndicatorRepository:
             raise NotFoundError("INDICATOR_VERSION_NOT_FOUND", "未找到指定的指标版本。")
         raise NotFoundError("INDICATOR_NOT_FOUND", "未找到指定指标。")
 
-    def create(self, fields: dict[str, Any]) -> dict[str, Any]:
+    def _catalog_revision(self, payload):
+        value = {"custom": payload, "built_in": self.built_ins}
+        return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def catalog_revision(self):
+        with self.store.locked():
+            return self._catalog_revision(self.store.read_unlocked())
+
+    def find_creation(self, operation_id: str) -> dict[str, Any] | None:
+        with self.store.locked():
+            for entry in self.store.read_unlocked()['items']:
+                # History retains creation identity even after a later human revision.
+                for item in [*entry.get('history', []), entry['current']]:
+                    if item.get('creation_operation_id') == operation_id and item.get('revision') == 1:
+                        return dict(item)
+        return None
+
+    def create(self, fields: dict[str, Any], *, expected_catalog_revision: str | None = None,
+               operation_id: str | None = None) -> dict[str, Any]:
         now = utc_now()
         current = {
             **fields,
@@ -176,8 +195,20 @@ class IndicatorRepository:
             "created_at": now,
             "updated_at": now,
         }
+        request_hash = hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if operation_id:
+            current.update(creation_operation_id=operation_id, creation_request_hash=request_hash)
         with self.store.locked():
             payload = self.store.read_unlocked()
+            if operation_id:
+                for entry in payload['items']:
+                    for item in [*entry.get('history', []), entry['current']]:
+                        if item.get('creation_operation_id') == operation_id and item.get('revision') == 1:
+                            if item.get('creation_request_hash') != request_hash:
+                                raise ConflictError('REQUEST_CONFLICT', '创建操作标识不能用于不同定义。')
+                            return dict(item)
+            if expected_catalog_revision is not None and self._catalog_revision(payload) != expected_catalog_revision:
+                raise ConflictError("CATALOG_REVISION_CONFLICT", "指标目录已改变，请重新预览保存影响。")
             payload["items"].append({"current": current, "history": []})
             self.store.write_unlocked(payload)
         return dict(current)

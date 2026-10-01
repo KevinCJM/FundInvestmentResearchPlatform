@@ -789,7 +789,7 @@ def test_current_size_moves_with_the_research_day(monkeypatch, tmp_path: Path) -
 
 
 def test_http_and_agent_share_product_operations_without_query_defaults(monkeypatch, tmp_path):
-    from agent.research_pages import runtime_callbacks
+    from research_access.research_pages import runtime_callbacks
     _write_info_files(tmp_path)
     client = _product_filter_client(monkeypatch, tmp_path)
     callbacks = runtime_callbacks(instruments=instrument_service)

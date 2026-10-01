@@ -1,3 +1,4 @@
+import { PortableAgentNavigation } from './integrations/portable-agent/PortableAgentMount'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { ActualPortfolioProvider } from './app/ActualPortfolioContext'
 import { ResearchContextProvider } from './app/ResearchContext'
@@ -27,6 +28,7 @@ import HoldingDiagnosis from './pages/HoldingDiagnosis'
 import HistoricalRegimeWorkbench from './pages/HistoricalRegimeWorkbench'
 import DataQuality from './pages/IndexData'
 import IndicatorStudio from './pages/IndicatorStudio'
+import PlatformAgent from './pages/PlatformAgent'
 import FactorResearchCenter from './pages/FactorResearchCenter'
 import RiskModelCenter from './pages/RiskModelCenter'
 import RiskApplicationWorkspace from './pages/RiskApplicationWorkspace'
@@ -63,7 +65,7 @@ const prototypePage = (pageKey: string) => <PrototypeWorkspace key={pageKey} pag
 
 export default function App() {
   return (
-    <LocalizationProvider><BrowserRouter>
+    <LocalizationProvider><BrowserRouter><PortableAgentNavigation />
       <ActualPortfolioProvider>
         <ResearchContextProvider>
         <div className="min-h-screen bg-slate-100">
@@ -200,6 +202,7 @@ export default function App() {
               <Route path="risk-scales/versions/:versionId" element={<RiskScaleVersionView />} />
               <Route path="indicators-models" element={<IndicatorStudio />} />
               <Route path="position-metrics" element={prototypePage('position-metrics')} />
+              <Route path="ai-agent" element={<PlatformAgent />} />
               <Route path="llm-api" element={<LlmSettings />} />
               <Route path="factor-research" element={<FactorResearchCenter />} />
               <Route path="risk-models" element={<RiskModelCenter />} />

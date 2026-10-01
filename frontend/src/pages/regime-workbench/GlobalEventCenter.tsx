@@ -1,9 +1,10 @@
+import ScenarioAssistant from '../../integrations/portable-agent/ScenarioAssistant'
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import HistoricalRegimeWorkbench from '../HistoricalRegimeWorkbench'
 import GlobalEventLibrary from './GlobalEventLibrary'
 
-export default function GlobalEventCenter() {
+export default function GlobalEventCenter({ active = true }: { active?: boolean }) {
   const [params, setParams] = useSearchParams()
   const manual = params.get('event_view') === 'manual'
   const [visited, setVisited] = useState({ library: !manual, manual })
@@ -20,10 +21,11 @@ export default function GlobalEventCenter() {
     })
   }
   return <div className="min-w-0 space-y-4">
+    <ScenarioAssistant page="global-events" workspace="events" purpose="event_library" active={active && !manual} />
     <nav aria-label="全球历史事件库工作区" className="flex flex-wrap gap-2">
       {([[false, '事件库'], [true, '人工历史事件']] as const).map(([value, label]) => <button key={label} type="button" aria-pressed={manual === value} onClick={() => choose(value)} className={`min-h-10 rounded-lg px-4 text-sm font-semibold ${manual === value ? 'bg-accent-600 text-white' : 'border border-slate-200 bg-white text-slate-700'}`}>{label}</button>)}
     </nav>
     <section hidden={manual} aria-label="事件库管理">{(visited.library || !manual) && <GlobalEventLibrary />}</section>
-    <section hidden={!manual} aria-label="人工历史事件工作区">{(visited.manual || manual) && <HistoricalRegimeWorkbench workspace="events" />}</section>
+    <section hidden={!manual} aria-label="人工历史事件工作区">{(visited.manual || manual) && <HistoricalRegimeWorkbench workspace="events" active={active && manual} />}</section>
   </div>
 }
