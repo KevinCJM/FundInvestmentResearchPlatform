@@ -51,18 +51,23 @@ export default function PortableAgentMount(props: Props) {
   const [statusSlot, setStatusSlot] = useState<HTMLElement | null>(null)
   const [infoSlot, setInfoSlot] = useState<HTMLElement | null>(null)
   const scope = `${props.pageContext.page}:${props.pageContext.page_instance_id}`
+  const active = props.active !== false
   const contextRevision = JSON.stringify(props.pageContext)
   const capture = (): ContextCapture => ({ page_context: structuredClone(latest.current.pageContext), page_snapshot: latest.current.capturePageSnapshot?.() })
   const initialCapture = useRef<{ scope: string; value: ContextCapture }>()
   if (!initialCapture.current || initialCapture.current.scope !== scope) initialCapture.current = { scope, value: capture() }
 
   useEffect(() => {
+    if (!active) return
     let disposed = false
     const mounts = new Set<string>()
+    setError('')
     const start = async () => {
       try {
         const initial = await registerContext(capture())
+        if (disposed) return
         const config = await bootstrap(initial)
+        if (disposed) return
         await loadModule(config.module_url)
         if (disposed || !host.current) return
         const agent = document.createElement('portable-agent') as PortableAgentElement
@@ -110,12 +115,13 @@ export default function PortableAgentMount(props: Props) {
       setInfoSlot(null)
       setSlots(previous => Object.fromEntries(Object.entries(previous).filter(([key]) => !mounts.has(key))))
     }
-  }, [scope, retry, props.displayMode])
+  }, [scope, retry, props.displayMode, active])
 
   useEffect(() => {
     element.current?.updateBinding({ active: props.active !== false, busy: props.busy, contextRevision, locale })
   }, [props.active, props.busy, contextRevision, locale])
 
+  if (!active) return null
   return <>
     <div ref={host} />
     {statusSlot && createPortal(props.renderStatus?.(), statusSlot)}
