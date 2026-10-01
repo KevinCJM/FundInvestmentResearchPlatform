@@ -231,6 +231,7 @@ class HostIntegration:
                      self.store.authoring(principal, 'page-'+record['scope_key'], scope=record['scope'], context_hash=record['hash']))
         authoring['context_hash'] = record['hash']
         expected = authoring['revision']
+        before = copy.deepcopy(authoring)
         with self.business_context(record) as page:
             version = self.versions(page)
             tool = tools.get_tool(operation['name'])
@@ -250,7 +251,8 @@ class HostIntegration:
             if tool.progress == 'draft' and authoring.get('draft'):
                 authoring['draft']['source_run_id'] = payload['run_id']
             after = self.versions(page)
-        return authoring, expected, result, after, tool.uses_current_data(page, payload['arguments'])
+        changed = before != {k: v for k, v in authoring.items() if not k.startswith('_')}
+        return authoring, expected, result, after, tool.uses_current_data(page, payload['arguments']), changed
 
     async def execute(self, operation, record, principal):
         oid = operation['operation_id']
@@ -259,7 +261,7 @@ class HostIntegration:
             if operation is None:
                 return
             try:
-                authoring, expected, result, versions, current_data = await run_in_threadpool(self.calculate, operation, record, principal)
+                authoring, expected, result, versions, current_data, changed = await run_in_threadpool(self.calculate, operation, record, principal)
                 with self.store.db() as db:
                     live = self.store.operation(oid, db=db)
                     stale = versions['catalog_version'] != record['catalog_version'] or (current_data and versions['data_generation'] != record['data_generation'])
@@ -271,7 +273,7 @@ class HostIntegration:
                         full = authoring.pop('_preview_payload', None)
                         if full:
                             full.update(context_hash=record['hash'], run_id=operation['payload']['run_id'], data_generation=record['data_generation'], catalog_version=record['catalog_version'])
-                        saved = self.store.save_authoring(authoring, expected, preview=full, db=db)
+                        saved = self.store.save_authoring(authoring, expected, preview=full, db=db) if changed or full else authoring
                         # The domain handler's _progress_payload can contain full market arrays. It never crosses the host boundary.
                         projection = {k: v for k, v in result.items() if not k.startswith('_')}
                         artifact = {'type': 'research.indicator', 'group': 'indicator:'+saved['id'], 'title': '查看指标草稿与试算', 'authoring_id': saved['id'],

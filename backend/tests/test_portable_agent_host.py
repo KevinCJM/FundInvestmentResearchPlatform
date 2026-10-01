@@ -120,6 +120,13 @@ def test_draft_confirmation_save_replay_and_no_service_identity_write(host):
     before = len(service.indicators.list())
     body = confirmation(client, ctx, aid, draft)
     assert len(service.indicators.list()) == before  # Previewing is not approval.
+    with bridge.store.db() as db:
+        revisions = db.execute('SELECT COUNT(*) FROM authoring_revisions WHERE authoring_id=?', (aid,)).fetchone()[0]
+    for name, args in [('metrics_lookup', {'query': 'std'}), ('metrics_infer', {'expression': 'std(returns, 1)'}), ('metrics_draft_read', {})]:
+        assert tool(client, ctx, name, args)[0]['status'] == 'succeeded'
+    assert client.get('/api/custom-indicators/authorings/'+aid).json()['revision'] == draft['revision']
+    with bridge.store.db() as db:
+        assert db.execute('SELECT COUNT(*) FROM authoring_revisions WHERE authoring_id=?', (aid,)).fetchone()[0] == revisions
     url = f'/api/custom-indicators/authorings/{aid}/commits'
     assert client.post(url, json=body, headers={'Authorization': 'Bearer '+SERVICE_TOKEN}).status_code == 401
     saved = client.post(url, json=body)
@@ -411,7 +418,7 @@ def test_operation_completion_and_artifacts_are_one_transaction(tmp_path, monkey
             assert store.cancel_operation('finish-race')['status'] == 'stop_requested'
         return ({**authoring, 'draft': {'valid': True, 'source_run_id': 'turn'},
                  '_preview_payload': {'definition_hash': 'hash'}}, 0,
-                {'ok': True, '_scenario_payload': {'valid': True}}, record, False)
+                {'ok': True, '_scenario_payload': {'valid': True}}, record, False, True)
     monkeypatch.setattr(bridge, 'calculate', calculate)
     cancellation = []
     workers = []

@@ -2204,7 +2204,8 @@
         "Manual-event workbench contexts must use page global-events with workspace events; hidden event-library assistants remain inactive.",
         "Known ResearchError failures for progress=read are terminal failed and release the stable page scope; unknown remains reserved for unconfirmed dispatched work.",
         "Claim accepted operations and honor pre-dispatch cancellation in one BEGIN IMMEDIATE transaction. A cancelled operation must never transition back to running.",
-        "Finalize cancellation checks, authoring/preview/scenario persistence and the terminal operation state in one SQLite transaction. A committed cancellation prevents artifacts; completion-first cancellation observes the completed result. Roll back partial artifacts on failure."
+        "Finalize cancellation checks, authoring/preview/scenario persistence and the terminal operation state in one SQLite transaction. A committed cancellation prevents artifacts; completion-first cancellation observes the completed result. Roll back partial artifacts on failure.",
+        "Unchanged read-only handlers must not advance authoring revision or invalidate an existing save confirmation. Persist actual domain-state changes or new previews; progress labels alone are not a mutation test because product search records candidates."
       ],
       "safe_observation_methods": [
         "env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_portable_agent_host.py backend/tests/test_portable_scenarios.py -q"
