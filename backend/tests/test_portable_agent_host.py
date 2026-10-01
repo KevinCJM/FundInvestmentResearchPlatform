@@ -644,6 +644,51 @@ def test_partial_revocation_blocks_old_context_and_model_evidence(host):
     validated(client, fresh)  # Retained draft permission works after explicit re-registration.
 
 
+def test_re_registered_context_cannot_admit_revoked_history_or_late_model_output(host):
+    client, bridge, _, permissions = host
+    permissions[:] = ['assistant:use', 'research:read', 'indicator:draft']
+    source = context(client)
+    result, request = tool(client, source, 'metrics_lookup', {'query': 'std'})
+    permissions.remove('research:read')
+    fresh = context(client)
+    assert source['ref'] != fresh['ref']
+    assert 'metrics.lookup' not in bridge.store.context(fresh['ref'])['tool_names']
+    messages = [{'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'old-read', 'type': 'function',
+        'function': {'name': 'metrics_lookup', 'arguments': json.dumps(request['arguments'])}}]},
+        {'role': 'tool', 'tool_call_id': 'old-read', 'content': json.dumps(result['model'])}]
+    wire = {'model': 'offline', 'messages': messages, 'tools': []}
+    headers = {'Authorization': 'Bearer '+SERVICE_TOKEN}
+    body = {'application': 'fund-research', 'subject': 'alice', 'context': fresh,
+            'messages': messages, 'wire': wire, 'payload_hash': stable_hash(wire)}
+    # A new draft-only context can use older evidence while the source grant is still authorized.
+    permissions.append('research:read')
+    receipts = {}
+    for purpose in ('primary', 'summary'):
+        response = client.post('/internal/portable-agent/admission', headers=headers,
+            json={**body, 'purpose': purpose, 'phase': 'before'})
+        assert response.status_code == 200, response.text
+        receipts[purpose] = response.json()['receipt_id']
+    permissions.remove('research:read')
+    assert client.post('/internal/portable-agent/authorize', headers=headers, json={
+        'application': 'fund-research', 'subject': 'alice', 'context': fresh, 'action': 'model'}).status_code == 200
+    for purpose in ('primary', 'summary'):
+        for phase in ('input', 'prepare', 'before', 'after'):
+            response = client.post('/internal/portable-agent/admission', headers=headers,
+                json={**body, 'purpose': purpose, 'phase': phase, 'receipt_id': receipts[purpose]})
+            assert response.status_code == 403, (phase, purpose, response.text)
+    validated(client, fresh)  # New work using retained permissions remains available.
+    permissions.append('research:read')
+    assert client.post('/internal/portable-agent/admission', headers=headers,
+        json={**body, 'phase': 'after', 'receipt_id': receipts['primary']}).status_code == 200
+    # Receipts created before source grants were tracked cannot authorize a late response.
+    with bridge.store.db() as db:
+        receipt = json.loads(db.execute('SELECT body FROM admissions WHERE id=?', (receipts['primary'],)).fetchone()[0])
+        receipt.pop('source_contexts', None)
+        db.execute('UPDATE admissions SET body=? WHERE id=?', (json.dumps(receipt), receipts['primary']))
+    assert client.post('/internal/portable-agent/admission', headers=headers,
+        json={**body, 'phase': 'after', 'receipt_id': receipts['primary']}).status_code == 409
+
+
 def test_operation_claim_and_cancellation_share_one_transaction(tmp_path):
     store = ResearchStore(tmp_path)
     principal = {'sub': 'alice', 'workspace': 'lab'}
