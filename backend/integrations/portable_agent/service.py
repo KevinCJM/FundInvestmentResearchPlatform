@@ -109,27 +109,33 @@ class HostIntegration:
         catalog_version = build_catalog(self.indicators)['version']
         if page.context_kind == 'scenario':
             from historical_regimes.v2_registry import REGISTRY_VERSION
-            from market_data import read_active_manifest
+            from market_data import MarketDataManifestError, read_active_manifest
+            from custom_indicators.errors import IndicatorDomainError
+            from backend.custom_indicators.errors import IndicatorDomainError as BackendDomainError
+            from backend.data_storage import StorageError
             catalogs = {}
             # ponytail: hash current repository metadata; add durable generations if catalog size makes this costly.
-            if graph := self.pages.get('graph'):
-                catalogs['definitions'] = graph.list_definitions()
-                catalogs['events'] = graph.event_library._entries()
-            if stress := self.pages.get('stress'):
-                catalogs['stress'] = stress.list_definitions()
-            if published := self.pages.get('published'):
-                from backend.custom_indicators.errors import IndicatorDomainError
-                try:
-                    as_of = date.fromisoformat(page.calculation.as_of) if page.calculation.as_of else None
-                except ValueError:
-                    raise ResearchError('VALIDATION_ERROR', '研究日期格式无效，应为 YYYY-MM-DD。', status_code=422) from None
-                try:
+            try:
+                if graph := self.pages.get('graph'):
+                    catalogs['definitions'] = graph.list_definitions()
+                    catalogs['events'] = graph.event_library._entries()
+                if stress := self.pages.get('stress'):
+                    catalogs['stress'] = stress.list_definitions()
+                if published := self.pages.get('published'):
+                    try:
+                        as_of = date.fromisoformat(page.calculation.as_of) if page.calculation.as_of else None
+                    except ValueError:
+                        raise ResearchError('VALIDATION_ERROR', '研究日期格式无效，应为 YYYY-MM-DD。', status_code=422) from None
                     catalogs['releases'] = published.releases(as_of)
-                except IndicatorDomainError as exc:
+                if sources := self.pages.get('sources'):
+                    catalogs['sources'] = {'snapshot': read_active_manifest(sources.data_dir),
+                                           'indicators': sources._indicator_versions()}
+            except (IndicatorDomainError, BackendDomainError) as exc:
+                if exc.status_code < 500:
                     raise ResearchError(exc.code, exc.message, status_code=exc.status_code) from exc
-            if sources := self.pages.get('sources'):
-                catalogs['sources'] = {'snapshot': read_active_manifest(sources.data_dir),
-                                       'indicators': sources._indicator_versions()}
+                raise ResearchError('RESEARCH_SERVICE_UNAVAILABLE', '情景目录暂不可读取，请检查业务数据后重试。', status_code=503) from exc
+            except (MarketDataManifestError, StorageError, OSError) as exc:
+                raise ResearchError('RESEARCH_SERVICE_UNAVAILABLE', '情景目录暂不可读取，请检查业务数据后重试。', status_code=503) from exc
             catalog_version = stable_hash([catalog_version, REGISTRY_VERSION, page.calculation.workspace, catalogs])
         return {'catalog_version': catalog_version,
                 'data_generation': market_data_generation(self.indicators.market_data_dir)}

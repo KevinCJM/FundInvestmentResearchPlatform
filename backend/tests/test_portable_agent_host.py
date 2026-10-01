@@ -258,6 +258,46 @@ def test_scenario_catalog_dates_return_controlled_validation(host, tmp_path, as_
         assert requests.post('/api/integrations/portable-agent/contexts', json={'page_context': page}).status_code == 200
 
 
+@pytest.mark.parametrize('fault', ['manifest_json', 'manifest_target', 'manifest_unreadable', 'source_indicators', 'graph_store', 'release_index'])
+def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tmp_path, monkeypatch, fault):
+    from pathlib import Path
+    from historical_regimes.v2_service import RegimeGraphV2Service
+    from scenario_stress.published import PublishedScenarioService
+    from test_research_series_routes import _write_fixture
+    client, bridge, _, _ = host
+    graph, published, sources = RegimeGraphV2Service(tmp_path, tmp_path), PublishedScenarioService(tmp_path), _write_fixture(tmp_path/'sources')
+    bridge.pages.update(graph=graph, published=published, sources=sources)
+    body = {'page_context': {'page': 'historical-regimes', 'page_instance_id': 'unhealthy-catalog',
+        'view_state': 'unknown', 'calculation': {'context_kind': 'scenario', 'workspace': 'graph'}}}
+    ctx = client.post('/api/integrations/portable-agent/contexts', json=body).json()
+    incoming = {'application': 'fund-research', 'subject': 'alice', 'context': ctx,
+                'phase': 'input', 'messages': [{'role': 'user', 'content': '继续研究'}]}
+    headers = {'Authorization': 'Bearer '+SERVICE_TOKEN}
+    path = {'source_indicators': sources.workspace_data_dir/'custom_indicators.json',
+            'graph_store': graph.definitions.store.path, 'release_index': published.artifacts.index.path}.get(fault, sources.data_dir/'tushare_active.json')
+    original = path.read_text() if path.exists() else None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with monkeypatch.context() as patch:
+        if fault == 'manifest_unreadable':
+            read_text = Path.read_text
+            def unreadable(target, *args, **kwargs):
+                if target == path:
+                    raise PermissionError('fixture: manifest unreadable')
+                return read_text(target, *args, **kwargs)
+            patch.setattr(Path, 'read_text', unreadable)
+        else:
+            path.write_text(json.dumps({**json.loads(original), 'snapshot_dir': 'missing-snapshot'}) if fault == 'manifest_target' else '{broken')
+        with TestClient(client.app, raise_server_exceptions=False) as requests:
+            requests.headers.update(client.headers)
+            for response in (requests.post('/api/integrations/portable-agent/contexts', json=body),
+                             requests.post('/internal/portable-agent/admission', headers=headers, json=incoming)):
+                assert response.status_code == 503, response.text
+                assert response.json()['error']['code'] == 'RESEARCH_SERVICE_UNAVAILABLE'
+    path.write_text(original) if original is not None else path.unlink(missing_ok=True)
+    assert client.post('/api/integrations/portable-agent/contexts', json=body).status_code == 200
+    assert client.post('/internal/portable-agent/admission', headers=headers, json=incoming).status_code == 200
+
+
 def test_saved_object_recovers_after_receipt_gap_without_a_second_create(host, monkeypatch):
     client, _, service, _ = host
     ctx = context(client)
