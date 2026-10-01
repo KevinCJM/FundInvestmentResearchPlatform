@@ -128,7 +128,12 @@ class HostIntegration:
                     for key, repository in (('definitions', graph.definitions), ('events', graph.event_library)):
                         with repository.store.locked():
                             entries = repository.store.read_unlocked()['items']
-                        catalogs[key] = [item for entry in entries for item in [entry['current'], *entry.get('history', [])]]
+                        catalogs[key] = []
+                        for entry in entries:
+                            versions = [entry['current'], *entry.get('history', [])]
+                            if any(item['id'] != entry['current']['id'] for item in versions):
+                                raise ValueError('Catalog history changed identity')
+                            catalogs[key].extend(versions)
                         for item in catalogs[key]:
                             if not isinstance(item['id'], str) or not item['id'] or type(item['revision']) is not int or item['revision'] < 1:
                                 raise ValueError('Invalid catalog identity')

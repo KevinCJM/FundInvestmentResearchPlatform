@@ -110,6 +110,15 @@ def test_business_archive_dry_run_replay_and_corruption(tmp_path, monkeypatch, i
         versions = module.HostIntegration.versions
         monkeypatch.setattr(module.HostIntegration, 'versions', lambda self, page: {
             **versions(self, page), 'catalog_version': 'catalog-after-interruption', 'data_generation': 'data-after-interruption'})
+    if interrupted == 2:
+        for revoked in ('research:read', 'scenario:research'):
+            principal['scopes'] = [scope for scope in scopes if scope != revoked]
+            with pytest.raises(ResearchError) as denied:
+                run(True)
+            assert denied.value.status_code == 403 and not output.exists()
+            with ResearchStore(business).db() as db:
+                assert db.execute('SELECT result FROM migration_imports').fetchone()[0] == ''
+            principal['scopes'] = scopes
     first = run(True)
     assert first['sessions'] == 2 and first['quarantined'] == []
     prepared = json.loads(output.read_text())
@@ -134,6 +143,11 @@ def test_business_archive_dry_run_replay_and_corruption(tmp_path, monkeypatch, i
     asyncio.run(resume())
     before = output.read_bytes()
     output = tmp_path/'recovered/output.json'
+    principal['scopes'] = ['assistant:use']
+    with pytest.raises(ResearchError) as denied:
+        run(True)
+    assert denied.value.status_code == 403 and not output.exists()
+    principal['scopes'] = scopes
     assert run(True)['replayed'] and output.read_bytes() == before
     with store.db() as db:
         receipts = [json.loads(row[0]) for row in db.execute('SELECT body FROM commits')]

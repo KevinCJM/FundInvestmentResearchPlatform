@@ -55,13 +55,15 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
             if old:
                 if old['hash'] != archive['content_hash']:
                     raise ValueError('Dataset ID already refers to a different archive')
-                if old['result']:
-                    output.parent.mkdir(parents=True, exist_ok=True)
-                    output.write_text(old['result']); output.chmod(0o600)
-                    return {'applied': True, 'replayed': True}
             else:
                 # Bind interrupted work to this exact archive before writing any imported objects.
                 db.execute('INSERT INTO migration_imports VALUES(?,?,?)', (archive['dataset_id'], archive['content_hash'], ''))
+        if old and old['result']:
+            for imported_session in json.loads(old['result'])['sessions']:
+                await integration.authorize(identity.application_id(), principal['sub'], imported_session['context'], action='read')
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(old['result']); output.chmod(0o600)
+            return {'applied': True, 'replayed': True}
         for session in archive['sessions']:
             sid = session['source_id']
             aid = target_id(archive['dataset_id'], 'authoring', sid)
@@ -82,7 +84,11 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
                     page = {**page, 'page': 'historical-regimes', 'calculation': {
                         **page['calculation'], 'context_kind': 'scenario', 'workspace': 'graph'}}
                 body = ContextInput(page_context=page)
-                record = persisted_context or await integration.register(principal, body, pit_off=body.page_context.view_state == 'off')
+                if persisted_context:
+                    record, _ = await integration.authorize(identity.application_id(), principal['sub'],
+                        integration.public_context(persisted_context), action='read')
+                else:
+                    record = await integration.register(principal, body, pit_off=body.page_context.view_state == 'off')
             except (KeyError, TypeError, SchemaError, ResearchError) as exc:
                 if isinstance(exc, ResearchError) and (exc.status_code in {401, 403} or exc.status_code >= 500):
                     raise

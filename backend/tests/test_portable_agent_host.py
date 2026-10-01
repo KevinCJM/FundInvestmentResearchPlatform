@@ -301,7 +301,7 @@ def test_scenario_catalog_dates_return_controlled_validation(host, tmp_path, as_
 
 
 @pytest.mark.parametrize('fault', ['manifest_json', 'manifest_target', 'manifest_unreadable', 'source_indicators', 'graph_store', 'release_index',
-    'graph_record', 'graph_record_type', 'graph_current_type', 'graph_empty', 'graph_history', 'stress_empty', 'source_record_type', 'events_record', 'events_record_type', 'events_current_type', 'events_empty_windows', 'events_history',
+    'graph_record', 'graph_record_type', 'graph_current_type', 'graph_empty', 'graph_history', 'graph_history_identity', 'stress_empty', 'source_record_type', 'events_record', 'events_record_type', 'events_current_type', 'events_empty_windows', 'events_history', 'events_history_identity',
     'release_index_symlink', 'release_index_oversize', 'release_checksum'])
 def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tmp_path, monkeypatch, fault):
     from pathlib import Path
@@ -314,14 +314,14 @@ def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tm
     bridge.pages.update(graph=graph, published=published, sources=sources)
     stress = ScenarioStressService(tmp_path, tmp_path)
     bridge.pages['stress'] = stress
-    if fault == 'graph_history':
+    if fault in {'graph_history', 'graph_history_identity'}:
         from historical_regimes.v2_templates import TEMPLATES_V2
         saved = graph.definitions.create(TEMPLATES_V2[0]['definition'])
         graph.definitions.update(saved['id'], 1, {**TEMPLATES_V2[0]['definition'], 'name': '当前版本'})
-    if fault in {'events_empty_windows', 'events_history'}:
+    if fault in {'events_empty_windows', 'events_history', 'events_history_identity'}:
         saved = graph.event_library.create({'name': '正常事件', 'windows': [{'id': 'event-window', 'label': '窗口',
             'start_date': '2020-01-01', 'end_date': '2020-01-31', 'rationale': '固定测试窗口'}]})
-        if fault == 'events_history':
+        if fault in {'events_history', 'events_history_identity'}:
             graph.event_library.update(saved['id'], 1, {'name': '当前事件', 'windows': saved['windows']})
     if fault == 'release_checksum':
         release = published.artifacts.save('release', {'name': '正常发布', 'lineage': [],
@@ -348,10 +348,12 @@ def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tm
                     raise PermissionError('fixture: manifest unreadable')
                 return read_text(target, *args, **kwargs)
             patch.setattr(Path, 'read_text', unreadable)
-        elif fault in {'events_empty_windows', 'events_history', 'graph_history'}:
+        elif fault in {'events_empty_windows', 'events_history', 'events_history_identity', 'graph_history', 'graph_history_identity'}:
             stored = json.loads(original)
-            record = stored['items'][0]['history'][0] if fault.endswith('_history') else stored['items'][0]['current']
-            if fault == 'graph_history':
+            record = stored['items'][0]['history'][0] if '_history' in fault else stored['items'][0]['current']
+            if fault.endswith('_identity'):
+                record['id'] = 'other-owned-object'
+            elif fault == 'graph_history':
                 record.pop('graph')
             else:
                 record['windows'] = []
@@ -365,7 +367,7 @@ def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tm
             path.write_text(' ' * 16_000_001)
         elif fault == 'release_checksum':
             path.write_text(json.dumps({**json.loads(original), 'name': '篡改发布'}))
-        elif fault in {'graph_record', 'graph_record_type', 'graph_current_type', 'graph_empty', 'graph_history', 'stress_empty', 'source_record_type',
+        elif fault in {'graph_record', 'graph_record_type', 'graph_current_type', 'graph_empty', 'stress_empty', 'source_record_type',
                        'events_record', 'events_record_type', 'events_current_type'}:
             entry = ({'current': {}} if fault in {'graph_empty', 'stress_empty'} else {} if fault.endswith('_record') else
                      None if fault in {'graph_record_type', 'events_record_type'} else {'current': None})
