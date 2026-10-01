@@ -22794,5 +22794,153 @@
   "saaDetail.compoundTarget": {
     "zh-CN": "目标年化复利收益",
     "en-US": "Target annual compound return"
+  },
+  "agent.scenarioRegion": {
+    "zh-CN": "情景候选与试算",
+    "en-US": "Scenario draft and preview"
+  },
+  "agent.scenarioDraft": {
+    "zh-CN": "情景候选",
+    "en-US": "Scenario draft"
+  },
+  "agent.scenarioGraphValidated": {
+    "zh-CN": "计算图结构已核验。",
+    "en-US": "Graph structure validated."
+  },
+  "agent.scenarioParametersValidated": {
+    "zh-CN": "参数结构已核验。",
+    "en-US": "Parameters validated."
+  },
+  "agent.scenarioValidationFailed": {
+    "zh-CN": "校验未通过。",
+    "en-US": "Validation failed."
+  },
+  "agent.scenarioLoading": {
+    "zh-CN": "正在读取结果…",
+    "en-US": "Loading result…"
+  },
+  "agent.scenarioPublicationHelp": {
+    "zh-CN": "保存与发布仍在原工作区单独确认。",
+    "en-US": "Confirm saving or publishing separately in the workspace."
+  },
+  "agent.scenarioApply": {
+    "zh-CN": "填入工作区",
+    "en-US": "Apply to workspace"
+  },
+  "agent.platform.title": {
+    "zh-CN": "AI 智能体",
+    "en-US": "AI agent"
+  },
+  "agent.platform.description": {
+    "zh-CN": "描述你的目标，助手会理解需求并带你进入对应页面。也可以直接聊天。",
+    "en-US": "Describe your goal to find the right page and continue your task, or simply chat."
+  },
+  "agent.platform.welcome": {
+    "zh-CN": "目前支持交给指标中心编写、校验和试算指标。其他功能可咨询或打开页面；正式保存仍由你确认。",
+    "en-US": "The indicator center can author, validate and preview indicators. Ask about other features or open their pages. Saving requires your confirmation."
+  },
+  "agent.platform.createExample": {
+    "zh-CN": "帮我创建60日滚动夏普指标",
+    "en-US": "Create a 60-day rolling Sharpe indicator"
+  },
+  "agent.platform.explainExample": {
+    "zh-CN": "解释一下夏普比率",
+    "en-US": "Explain the Sharpe ratio"
+  },
+  "agent.platform.navigateExample": {
+    "zh-CN": "打开指标中心",
+    "en-US": "Open the indicator center"
+  },
+  "agent.platform.invalidDestination": {
+    "zh-CN": "任务入口不匹配，请重新描述需求。",
+    "en-US": "The task destination does not match. Please describe your request again."
+  },
+  "agent.platform.handoffFailed": {
+    "zh-CN": "任务交接失败，请重试。",
+    "en-US": "Task handoff failed. Please retry."
+  },
+  "agent.platform.task": {
+    "zh-CN": "本轮任务",
+    "en-US": "Current task"
+  },
+  "agent.platform.conversation": {
+    "zh-CN": "本轮仅讨论，不执行操作。",
+    "en-US": "Discussion only; no action will run."
+  },
+  "agent.platform.clarification_required": {
+    "zh-CN": "需要补充信息后才能继续。",
+    "en-US": "More information is needed before continuing."
+  },
+  "agent.platform.ready": {
+    "zh-CN": "已理解需求，准备进入对应页面。",
+    "en-US": "Request understood; ready to open the page."
+  },
+  "agent.platform.unsupported": {
+    "zh-CN": "该功能尚未接入中央助手执行，未进行操作。",
+    "en-US": "This feature is not connected for central execution. No action was taken."
+  },
+  "agent.platform.remaining": {
+    "zh-CN": "尚待处理：{{task}}",
+    "en-US": "Still pending: {{task}}"
+  },
+  "agent.platform.opening": {
+    "zh-CN": "正在进入…",
+    "en-US": "Opening…"
+  },
+  "agent.platform.openPage": {
+    "zh-CN": "打开页面",
+    "en-US": "Open page"
+  },
+  "agent.platform.continue": {
+    "zh-CN": "前往任务页面",
+    "en-US": "Go to task page"
+  },
+  "agent.platform.pageReplied": {
+    "zh-CN": "页面助手已回复；具体成果请在任务页面查看。",
+    "en-US": "The page assistant has replied. View the task page for its results."
+  },
+  "agent.platform.received": {
+    "zh-CN": "任务已由页面助手接收。",
+    "en-US": "The page assistant has received the task."
+  },
+  "agent.platform.retryHandoff": {
+    "zh-CN": "重试交接",
+    "en-US": "Retry handoff"
+  },
+  "agent.platform.receiving": {
+    "zh-CN": "正在接收你的任务…",
+    "en-US": "Receiving your task…"
+  },
+  "agent.platform.waitingPage": {
+    "zh-CN": "正在准备指标中心，任务尚未开始。",
+    "en-US": "Preparing the indicator center. The task has not started."
+  },
+  "agent.platform.back": {
+    "zh-CN": "返回 AI 智能体",
+    "en-US": "Back to AI agent"
+  },
+  "agent.tool.intent": {
+    "zh-CN": "理解用户意图",
+    "en-US": "Understand intent"
+  },
+  "agent.tool.capabilities": {
+    "zh-CN": "查询平台能力",
+    "en-US": "Read platform capabilities"
+  },
+  "agent.platform.cancelled": {
+    "zh-CN": "页面任务已停止；可进入任务页面查看或继续对话。",
+    "en-US": "The page task was stopped. Open it to review or continue the conversation."
+  },
+  "agent.platform.paused": {
+    "zh-CN": "页面任务已暂停，请进入页面补充条件。",
+    "en-US": "The page task is paused. Open it to provide the missing context."
+  },
+  "agent.platform.interrupted": {
+    "zh-CN": "页面任务已中断，可进入页面恢复。",
+    "en-US": "The page task was interrupted. Open it to resume."
+  },
+  "agent.platform.failed": {
+    "zh-CN": "页面任务处理失败，可进入页面查看原因并重试。",
+    "en-US": "The page task failed. Open it to review the error and retry."
   }
 }

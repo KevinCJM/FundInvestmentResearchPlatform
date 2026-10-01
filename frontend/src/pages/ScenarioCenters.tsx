@@ -83,8 +83,8 @@ export default function ScenarioCenters() {
       </section>
 
       <section role="tabpanel" hidden={activeCenter !== 'market-state'} id="scenario-center-panel-market-state" aria-labelledby="scenario-center-tab-market-state">{visited['market-state'] && <MarketStateResearchCenter active={activeCenter === 'market-state'} />}</section>
-      <section role="tabpanel" hidden={activeCenter !== 'events'} id="scenario-center-panel-events" aria-labelledby="scenario-center-tab-events">{visited.events && <GlobalEventCenter />}</section>
-      <section role="tabpanel" hidden={activeCenter !== 'simulation'} id="scenario-center-panel-simulation" aria-labelledby="scenario-center-tab-simulation">{visited.simulation && <PublishedScenarioCenter />}</section>
+      <section role="tabpanel" hidden={activeCenter !== 'events'} id="scenario-center-panel-events" aria-labelledby="scenario-center-tab-events">{visited.events && <GlobalEventCenter active={activeCenter === 'events'} />}</section>
+      <section role="tabpanel" hidden={activeCenter !== 'simulation'} id="scenario-center-panel-simulation" aria-labelledby="scenario-center-tab-simulation">{visited.simulation && <PublishedScenarioCenter active={activeCenter === 'simulation'} />}</section>
     </div>
   )
 }

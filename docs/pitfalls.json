@@ -1251,7 +1251,7 @@
         "frontend_indicator_studio",
         "frontend_etf_research_pages",
         "frontend_allocation_workflows",
-        "ai_research_agent"
+        "portable_agent_integration"
       ],
       "blast_radius": [
         "published indicator values",
@@ -1288,7 +1288,9 @@
         "A save button cannot pre-authorize an unseen commit-preview impact. Persist the server preview, show its frozen definition/context and same-name creation warning, then require a separate human confirmation before commit. Cancellation performs no business write; retries of an already confirmed uncertain request retain its confirmation and idempotency key. Test both cancellation and acceptance, localized/multi-channel previews and response-loss recovery. Commit-preview itself increments session_revision. Admit that authoritative receipt through the shared conversation input before asking for confirmation, even if the user cancels or a later commit fails. Advance only the matching session version, preserve run/context/memory ownership, reject stale or foreign receipts, and test cancellation followed by another message against a version-enforcing fixture. Apply the same version-only admission to successful commit receipts before refreshing the full snapshot; a failed follow-up read must not erase the acknowledged save version. Memory accept/reject/replace/revoke receipts, including idempotent replay, return the current session ID and version from their transaction and use the same frontend receipt admission. Keep decision/snapshot errors separate from list-read errors so a late successful list read cannot unlock unresolved memory actions. Audit all session-mutating HTTP paths when changing this protocol.",
         "Scenario AI drafts must use the regime_graph domain and registered scalar parameter contracts; inline observations, qualification receipts and business identity cannot enter authored DTOs. Applying revalidates the merged graph, fences late responses with editor context identity, preserves editor-owned references, and invalidates old qualifications. Hidden retained workbenches must not mount portal assistants. Verify test_agent_regimes.py and RegimeAgentPanel.test.tsx.",
         "Scenario library questions must search saved definitions separately from built-in templates. Read by explicit ID and revision through the mounted graph service, retain duplicate-name choices and pagination, and project only registered scalar settings and graph structure. An empty editor snapshot is not an empty saved library; definition access does not certify PIT availability or trigger calculation. Verify saved-library HTTP model-admission tests in test_agent_regimes.py.",
-        "Indicator write requests must reach metrics.validate and a saveable draft before the existing human-confirmed commit. task.read/task.plan are optional task records, not write prerequisites. Keep strict case-sensitive argument schemas; on validation failure or blocked repeated calls, return registry-owned field guidance without exception text, unknown keys or input values. Do not ask users for an existing write API or treat argument errors as missing permissions. Verify capitalized task.read recovery, draft delivery, confirmation and idempotent saves in test_agent_api.py."
+        "Indicator write requests must reach metrics.validate and a saveable draft before the existing human-confirmed commit. task.read/task.plan are optional task records, not write prerequisites. Keep strict case-sensitive argument schemas; on validation failure or blocked repeated calls, return registry-owned field guidance without exception text, unknown keys or input values. Do not ask users for an existing write API or treat argument errors as missing permissions. Verify capitalized task.read recovery, draft delivery, confirmation and idempotent saves in test_agent_api.py.",
+        "Central intent proposals are not business completion or write authorization. Ground routes in shared platform navigation and registered actions. Accept only a current completed source run; create the target session, first run and handoff receipt in one transaction, and schedule after commit. Replays restore the target session latest context, never the initial handoff conditions. Frontend cancellation ownership starts before dispatch and transfers only after session admission. Cancel an unresolved handoff by its known source session/run/intent, even when its POST response is lost. Serialize cancellation with acceptance in the existing source transaction: cancel the immutable accepted run or persist a fence rejecting later acceptance. Repeat cancellation must not affect a subsequent run. Use router navigation for application-owned return and LLM settings links so component cleanup runs. Receipt validation and failed-promise cleanup remain request-owned; readiness changes or StrictMode must not drop or reacquire cancellation ownership. Test both acceptance/cancellation orders, real HTTP terminal state, lost responses and the actual return link in a browser. Admit restoration snapshots by session/page identity and version even when the panel is closed or observation is disabled; stale snapshots must not overwrite a newer run, and newer snapshots must not be dropped solely because the observer stopped. Restore conditions from the actual selected session, including a locally stored replacement after clearing; never combine an old handoff context with a new session. Freeze the handoff request and context baseline before its first dispatch, and retain both across effect replays and response-loss retries. Preserve explicit empty references and edits throughout handoff and restoration waits; cover receipt/read/unmount orders, retry after edits and refresh after replacement. Generate cancellation request IDs only in the shared frontend service from the immutable run or handoff intent ID; do not concatenate session and run IDs beyond the backend 64-character bound. Use production-length IDs and verify the actual HTTP route reaches cancelled, not just that a mocked request was observed. Keep offline contract checks separate from explicit live-model intent evaluation.",
+        "CopilotKit is a transport adapter to the existing Python run authority, not a second executor. Do not dispatch tools or trust history, identity, approval, drafts or model settings from AG-UI messages/state. Reuse server page-instance/scope/domain/PIT/admission/version gates. Keep runId stable across transport retries and distinguish it from the backend run_id; exact cancellation must persist before acceptance and must not stop a newer request. Physical tool quarantine outlives transport cancellation; disconnect only detaches observation. Confirm crash recovery with a killed independent process and a durable checkpoint, not just restored chat history. Keep save and memory decisions on their original human-confirmed APIs. Reconnect after independent writes to update session revisions. Request-scoped Authorization/Cookie/PIT headers cannot be cached globally or selected by forwardedProps. Register browser proxies through copilotkit/client.mjs before rendering chat. The pinned CopilotKit client drops activeRun on connect; its default stop then omits runId. Bind cancellation to the observed RUN_STARTED thread/run pair, preserve that pair across disconnects, isolate clones and ignore obsolete observation callbacks. New sends keep the SDK-owned input runId, including before their first server receipt. Test actual CopilotKitCore.stopAgent after connect and delayed old stops reaching a newer backend run; direct ResearchRunner.stop tests alone miss this path."
       ],
       "safe_observation_methods": [
         "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_custom_indicator_variables.py tests/test_instrument_routes.py -q'",
@@ -2137,6 +2139,78 @@
       ],
       "safe_observation_methods": [
         "Run backend/tests/test_cma_upstream_group.py and the SaaCenter / LtcmaCenter vitest suites."
+      ]
+    },
+    {
+      "id": "P35",
+      "title": "standalone_agent_requires_host_owned_business_authority_and_durable_operation_identity",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "local_agent_dependency_disguised_as_portable",
+        "remote_work_outlives_http_cancel",
+        "provider_tool_id_reuse",
+        "approval_checkpoint_loss",
+        "browser_authority_injection",
+        "prototype_feature_limits_mistaken_for_full_migration"
+      ],
+      "symptoms": [
+        "A supposedly portable module imports parent research services or UI assets.",
+        "A cancelled HTTP wait is mistaken for completed remote work.",
+        "Provider call IDs reused in another assistant batch replay an unrelated receipt.",
+        "UI approvals or old responses target a different run/context."
+      ],
+      "trigger_actions": [
+        "change standalone agent runtime, authentication or HTTP tool contract",
+        "change widget recovery, cancellation or host callbacks",
+        "claim standalone migration complete"
+      ],
+      "related_paths": [
+        "backend/integrations/portable_agent/service.py",
+        "frontend/src/integrations/portable-agent/PortableAgentMount.tsx",
+        "backend/tests/test_portable_agent_host.py",
+        "frontend/e2e/portable-agent.spec.ts",
+        "backend/research_access/scenario_contracts.py",
+        "backend/tests/test_research_scenarios.py",
+        "scripts/check_portable_agent_boundary.py",
+        "backend/research_access/store.py",
+        "frontend/src/pages/HistoricalRegimeWorkbench.tsx",
+        "frontend/src/pages/HistoricalRegimeWorkbench.test.tsx"
+      ],
+      "affected_modules": [
+        "portable_agent_integration"
+      ],
+      "blast_radius": [
+        "Host writes and approvals",
+        "Cross-user data isolation",
+        "Crash recovery and cancellation"
+      ],
+      "check_before_edit": [
+        "Export/install the module outside the parent source import path; do not certify independence from directory layout alone.",
+        "Use official persistent graph checkpoints with synchronous durability; approval nonce, frozen arguments and one human decision must survive restart.",
+        "Scope tool receipt identity by run and assistant batch as well as provider call ID. Persist host receipts before returning results to the graph.",
+        "Stopping blocks new dispatch. Already dispatched work retains ownership until final acknowledgment; timeout/5xx/invalid response remain uncertain. Replay only the same host idempotency key.",
+        "Use separate application issuer keys; never give the master data-directory key to a host. Sign app/user/scopes server-side; recheck ownership on reads, streams, decisions and recovery. Model keys are write-only and encrypted, and endpoint changes require a newly supplied key.",
+        "Freeze API destination and request identity before asynchronous credential lookup; late browser responses cannot replace another context or newer state.",
+        "Only approved model projections enter the LLM; full artifacts are read separately by their owner. Host data policy checks messages including system/context and declared tools.",
+        "Offline SDK and demo browsers do not certify full investment/PIT/save-rule migration or real model quality.",
+        "The historical portable prototype had one model profile, plain text and finite session limits. The independent v2 candidate adds profiles, memory, compaction and handoff; verify each behavior from its own tests, not the old in-tree prototype.",
+        "Current host authority lives in research_access and integrations/portable_agent. Do not route business tools back through backend/agent. Check release metadata and component manifest on reconnect; an incompatible release disables the assistant while preserving the original request identity.",
+        "Preserve Dev saved-algorithm lookup/read and frozen page mode/date contracts. AI graph proposals cannot replace study identity or manufacture validation qualification; the editor merges authored fields and invalidates prior qualification.",
+        "Long offline endurance probes must renew expiring test credentials as the SDK does; an expired token is not a leaked execution task.",
+        "After Dev integration, preserve the research study identity and causal/realtime gate when filling a scenario candidate; saved-definition read must use the requested revision.",
+        "A business process killed after atomic creation can reconcile by operation_id; an absent write receipt stays fenced as COMMIT_UNCERTAIN instead of retrying a new write.",
+        "page.read contains projected JSON text: verify the entire signed receipt and ownership first, then exempt only result.content from the free-text heuristic. Never admit unsigned/tampered page content; test the actual model admission path, not only the tool output.",
+        "Manual-event workbench contexts must use page global-events with workspace events; hidden assistants must not register contexts, bootstrap or mount components. Guard each awaited startup boundary after deactivation, remove inactive components, and preserve retained business workbench drafts; reactivation restores the same scope via the SDK. Capability generation must enumerate shared stage tools as well as stages/nodes. Tool links without IDs use stable path-derived IDs and default to navigate-only; preserve explicit existing business-capability overrides and verify both the HTTP catalog and exported framework config.",
+        "Known ResearchError failures for read tools and deterministic pre-dispatch validation/missing-evidence errors are terminal failed and release the stable page scope, including preview-class tools. Unknown remains reserved for unconfirmed dispatched work; verify subsequent calls after recovery.",
+        "Claim accepted operations and honor pre-dispatch cancellation in one BEGIN IMMEDIATE transaction. A cancelled operation must never transition back to running.",
+        "Finalize cancellation checks, authoring/preview/scenario persistence and the terminal operation state in one SQLite transaction. A committed cancellation prevents artifacts; completion-first cancellation observes the completed result. Roll back partial artifacts on failure.",
+        "Unchanged read-only handlers must not advance authoring revision or invalidate an existing save confirmation. Persist actual domain-state changes or new previews; progress labels alone are not a mutation test because product search records candidates.",
+        "A partial permission revocation invalidates the whole frozen context, including signed history, model input/output checks and memory. A fresh lower-scope context cannot launder an old signed receipt: authorize each unique source context on input/prepare/before, persist only source IDs in the admission receipt, and reauthorize them after model completion for both primary and summary requests. Reject old receipts without tracked sources. Require every recorded tool permission; obtain a newly registered context for retained permissions. Archive imports must obtain assigned-owner scopes through the existing live authority; never synthesize wildcard grants from archive identity. Check assistant:use before binding the dataset; authorization/availability errors during sessions, including malformed authority responses, must abort for retry instead of finalizing quarantine. Quarantine schema-invalid archive input, not arbitrary ValueError from service execution. Reauthorize every persisted context on resume and completed-output replay; partial tool-scope revocation must deny before finalizing or exporting. Run authority checks outside migration SQLite write transactions because host context access may recover the same store.",
+        "Persist the source archive hash before importing records. Interrupted imports must reconcile deterministic initial/final authoring states and identical scenario artifacts; changed archives or object contents are conflicts, not overwrite permission. Reuse the owned context persisted with the first imported authoring, preserving frozen PIT/catalog/data when the environment changes before retry. Scenario catalog fingerprints must include mutable definition/event/release metadata and research-source active manifests/indicator versions, so stale signed results and in-flight model receipts are rejected. Convert invalid release-catalog dates and domain rejections to controlled ResearchError responses in the shared version entry point. Unreadable/corrupt manifests, missing snapshot targets and scenario catalog storage failures must return controlled 503 responses during both registration and admission, including nested JSON shape failures and artifact integrity errors originally reported as 422. Read complete graph/event current and history under the existing store locks, including archived events; validate persistent identity/revision, require historical IDs to match their current entry, and validate every record with the existing V2 graph/EventDraft contracts before hashing. Invalid event windows and corrupt historical records must fail closed; history-only changes must invalidate prior evidence. Use the existing definition normalizer for stress records. Require exact YYYY-MM-DD for scenario dates, including unknown-view contexts; ISO week/basic formats must not reach lexical PIT filters. An absent active manifest is versioned as absent, not catalog corruption: local graph/events stay usable, source-domain errors become terminal failed, and later activation changes the context hash. Preserve only request-date validation; never replace unverifiable catalogs with empty or cached evidence. Test interruption after multiple session writes and rebuild completed output files in a new directory."
+      ],
+      "safe_observation_methods": [
+        "env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_portable_agent_host.py backend/tests/test_portable_scenarios.py -q"
       ]
     }
   ]

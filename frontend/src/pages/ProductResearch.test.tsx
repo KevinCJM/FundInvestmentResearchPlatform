@@ -1,3 +1,5 @@
+import { portablePageProbe } from '../test/portablePageProbe'
+vi.mock('../integrations/portable-agent/PortableAgentMount', async () => ({ default: (await import('../test/portablePageProbe')).PortablePageProbe }))
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
@@ -300,73 +302,44 @@ describe('ProductResearch', () => {
 })
 
 describe('ProductResearch AI 助手接入', () => {
-  interface AgentCapture { sessions: Array<Record<string, any>>; messages: Array<Record<string, any>> }
+  interface AgentCapture { bindings: Array<Record<string, any>>; snapshots: Array<Record<string, any>> }
 
   /** One router for the page's own business calls and the shared agent endpoints. */
-  function researchFetch(payload: unknown, capture: AgentCapture, gate?: Promise<void>) {
-    let sessionCount = 0
-    let lastRun: Record<string, any> | null = null
+  function researchFetch(payload: unknown, capture: AgentCapture) {
+    portablePageProbe.target = capture
     return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = new URL(String(input), 'http://localhost').pathname
       if (path === '/api/instruments/products') return { ok: true, json: async () => payload }
-      if (path === '/api/agent/meta') return { ok: true, json: async () => ({ configured: true, model: 'fixture-model' }) }
-      if (path === '/api/agent/sessions' && init?.method === 'POST') {
-        sessionCount += 1
-        const body = JSON.parse(String(init?.body)); capture.sessions.push(body)
-        return { ok: true, json: async () => ({ session_id: `session-${sessionCount}`, session_revision: 0, page_context: body.page_context }) }
-      }
-      if (path.endsWith('/messages')) {
-        const body = JSON.parse(String(init?.body)); capture.messages.push(body)
-        if (gate && capture.messages.length === 1) await gate
-        lastRun = { run_id: `run-${capture.messages.length}`, session_id: `session-${sessionCount}`, message_id: body.message_id, session_revision: 1, run_revision: 1, status: 'completed', phase: 'thinking',
-          response: { session_id: `session-${sessionCount}`, session_revision: 1, reply: { text: `第 ${capture.messages.length} 次回复` } } }
-        return { ok: true, status: 202, json: async () => lastRun }
-      }
-      if (path.endsWith('/events')) return { ok: true, json: async () => ({ items: [], has_more: false, last_seq: 0, next_event_seq: 1 }) }
-      if (path.includes('/runs/')) return { ok: true, json: async () => lastRun }
-      return { ok: true, json: async () => ({ session_id: `session-${sessionCount}`, session_revision: 1, next_event_seq: 1, events: [], messages: [], active_run: lastRun }) }
+      return { ok: false, status: 503, json: async () => ({ detail: 'offline fixture' }) }
     })
   }
 
-  async function openPanel() {
-    fireEvent.click(screen.getByRole('button', { name: '打开 AI 助手' }))
-    await waitFor(() => expect(screen.getByRole('textbox', { name: '发送消息' })).toBeEnabled())
-    return screen.getByRole('textbox', { name: '发送消息' })
-  }
-
-  /** Sync change+click: the panel can re-render while the model metadata resolves. */
-  async function sendMessage(text: string) {
-    fireEvent.change(screen.getByRole('textbox', { name: '发送消息' }), { target: { value: text } })
-    await waitFor(() => expect(screen.getByRole('textbox', { name: '发送消息' })).toHaveValue(text))
-    fireEvent.click(screen.getByRole('button', { name: '发送' }))
-  }
+  async function capturePage() { portablePageProbe.capture() }
 
   beforeEach(() => {
     vi.clearAllMocks()
     sessionStorage.clear()
-    vi.stubGlobal('EventSource', undefined)
     vi.mocked(listCustomIndicators).mockResolvedValue({ items: [], total: 0 })
   })
 
   it('发送时冻结当前页面请求：当前分析批次、PIT 研究日与目录显示引用，且不含原始数值或数组', async () => {
-    const capture: AgentCapture = { sessions: [], messages: [] }
+    const capture: AgentCapture = { bindings: [], snapshots: [] }
     vi.stubGlobal('fetch', researchFetch(minimalPayload({
       pit: { as_of: '2026-08-31', snapshot_is_hindsight: true, warnings: ['快照按全部已下载数据计算'] },
     }), capture))
     render(<MemoryRouter initialEntries={['/research']}><ProductResearch /></MemoryRouter>)
     await screen.findByText('沪深300ETF')
-    expect(screen.getAllByRole('button', { name: '打开 AI 助手' })).toHaveLength(1)
-    // 面板关闭时不得发起任何助手请求。
+    expect(screen.getAllByTestId('portable-page-binding')).toHaveLength(1)
+    // 页面单测只验证宿主绑定；实际SDK运输由双服务浏览器测试覆盖。
     expect(vi.mocked(fetch).mock.calls.some((call) => String(call[0]).includes('/api/agent'))).toBe(false)
 
-    await openPanel()
-    await sendMessage('这个列表的口径是什么？')
-    await waitFor(() => expect(capture.messages).toHaveLength(1))
-    expect(capture.sessions).toEqual([{ page_context: {
+    await capturePage()
+    await waitFor(() => expect(capture.snapshots).toHaveLength(1))
+    expect(capture.bindings).toEqual([{ page_context: {
       page: 'product-research', page_instance_id: 'product-research:etf', context_revision: 1, view_state: 'inherit',
       calculation: { context_kind: 'single_product', targets: [{ kind: 'etf', product_id: '510300.SH' }], period: '1Y', as_of: null },
     } }])
-    expect(capture.messages[0].page_snapshot).toMatchObject({
+    expect(capture.snapshots[0].page_snapshot).toMatchObject({
       version: 1,
       snapshot_id: expect.stringMatching(/^snap-[0-9a-f]{32}$/),
       captured_at: expect.any(String),
@@ -388,15 +361,15 @@ describe('ProductResearch AI 助手接入', () => {
       },
     })
     // 页面结果引用只登记来源与计数：没有原始快照值，也没有完整数组。
-    const snapshotText = JSON.stringify(capture.messages[0])
+    const snapshotText = JSON.stringify(capture.snapshots[0])
     expect(snapshotText).not.toContain('987654')
     expect(snapshotText).not.toContain('snapshot_values')
-    expect(capture.messages[0].page_snapshot.sections.request).not.toHaveProperty('snapshot_values')
-    expect(capture.messages[0].page_snapshot.sections.results.refs).not.toHaveProperty('values')
+    expect(capture.snapshots[0].page_snapshot.sections.request).not.toHaveProperty('snapshot_values')
+    expect(capture.snapshots[0].page_snapshot.sections.results.refs).not.toHaveProperty('values')
   })
 
   it('区分当前页、已选与全选声明，并冻结筛选、条件、分页和选择修订', async () => {
-    const capture: AgentCapture = { sessions: [], messages: [] }
+    const capture: AgentCapture = { bindings: [], snapshots: [] }
     const items = Array.from({ length: 12 }, (_, index) => ({
       ts_code: `51000${index}.SH`, name: `产品${index + 1}`, list_date: '2020-01-01',
     }))
@@ -412,10 +385,9 @@ describe('ProductResearch AI 助手接入', () => {
     )
     await screen.findByText('产品1')
 
-    await openPanel()
-    await sendMessage('先解释一下当前页')
-    await waitFor(() => expect(capture.messages).toHaveLength(1))
-    const first = capture.messages[0].page_snapshot.sections.request
+    await capturePage()
+    await waitFor(() => expect(capture.snapshots).toHaveLength(1))
+    const first = capture.snapshots[0].page_snapshot.sections.request
     // 当前分页 12 项，助手只冻结前 10 项这个明确批次；选择数量不冒充已计算。
     expect(first.targets).toHaveLength(10)
     expect(first.visible_count).toBe(12)
@@ -427,28 +399,28 @@ describe('ProductResearch AI 助手接入', () => {
     const user = userEvent.setup()
     await user.click(screen.getByRole('checkbox', { name: '选择 产品1' }))
     await user.click(screen.getByRole('checkbox', { name: '选择 产品2' }))
-    await sendMessage('再看已选的两只')
-    await waitFor(() => expect(capture.messages).toHaveLength(2))
-    expect(capture.messages[1].page_snapshot.sections.request.selection_mode).toBe('selected')
-    expect(capture.messages[1].page_snapshot.sections.request.selected_count).toBe(2)
-    expect(capture.messages[1].page_snapshot.sections.request.excluded_ids).toEqual([])
+    await capturePage()
+    await waitFor(() => expect(capture.snapshots).toHaveLength(2))
+    expect(capture.snapshots[1].page_snapshot.sections.request.selection_mode).toBe('selected')
+    expect(capture.snapshots[1].page_snapshot.sections.request.selected_count).toBe(2)
+    expect(capture.snapshots[1].page_snapshot.sections.request.excluded_ids).toEqual([])
 
     await user.click(screen.getByRole('button', { name: '全选 42 条' }))
     await user.click(screen.getByRole('checkbox', { name: '选择 产品1' }))
-    await sendMessage('全选后排除一只')
-    await waitFor(() => expect(capture.messages).toHaveLength(3))
-    const allMatching = capture.messages[2].page_snapshot.sections.request
+    await capturePage()
+    await waitFor(() => expect(capture.snapshots).toHaveLength(3))
+    const allMatching = capture.snapshots[2].page_snapshot.sections.request
     expect(allMatching.selection_mode).toBe('all_matching')
     expect(allMatching.selected_count).toBe(41)
     expect(allMatching.excluded_ids).toEqual(['510000.SH'])
     expect(allMatching.targets).toHaveLength(10)
     // 选择变化递增上下文修订，页面对象本身不换实例。
-    expect(capture.messages[2].page_context.context_revision).toBeGreaterThan(capture.messages[1].page_context.context_revision)
-    expect(capture.messages[2].page_context.page_instance_id).toBe('product-research:etf')
+    expect(capture.snapshots[2].page_context.context_revision).toBeGreaterThan(capture.snapshots[1].page_context.context_revision)
+    expect(capture.snapshots[2].page_context.page_instance_id).toBe('product-research:etf')
   })
 
   it('指标视图冻结所选指标及其锁定版本和各自周期，不发原始快照值', async () => {
-    const capture: AgentCapture = { sessions: [], messages: [] }
+    const capture: AgentCapture = { bindings: [], snapshots: [] }
     const indicator: IndicatorDefinition = {
       id: 'page-return', revision: 3, source: 'custom', read_only: false, name: '当前页收益',
       description: '当前分页真实净值收益', expression: 'product(returns + 1) - 1', periods: ['1Y'],
@@ -465,45 +437,36 @@ describe('ProductResearch AI 助手接入', () => {
     await user.click(screen.getByRole('button', { name: '指标分析' }))
     await waitFor(() => expect(evaluateCustomIndicators).toHaveBeenCalled())
 
-    await openPanel()
-    await sendMessage('用当前指标解释一下这一列')
-    await waitFor(() => expect(capture.messages).toHaveLength(1))
-    const request = capture.messages[0].page_snapshot.sections.request
+    await capturePage()
+    await waitFor(() => expect(capture.snapshots).toHaveLength(1))
+    const request = capture.snapshots[0].page_snapshot.sections.request
     expect(request.view_mode).toBe('metrics')
     expect(request.indicators).toEqual([{ indicator_id: 'page-return', indicator_revision: 3, period: '1Y' }])
-    expect(JSON.stringify(capture.messages[0])).not.toContain('0.0183')
+    expect(JSON.stringify(capture.snapshots[0])).not.toContain('0.0183')
   })
 
-  it('切换产品类型后进入独立对话实例，旧实例的迟到回复不能进入新实例', async () => {
-    const capture: AgentCapture = { sessions: [], messages: [] }
-    let release: (() => void) | undefined
-    const gate = new Promise<void>(resolve => { release = resolve })
-    vi.stubGlobal('fetch', researchFetch(minimalPayload(), capture, gate))
+  it('切换产品类型后提供独立页面实例与当前基金条件', async () => {
+    const capture: AgentCapture = { bindings: [], snapshots: [] }
+    vi.stubGlobal('fetch', researchFetch(minimalPayload(), capture))
     render(<MemoryRouter initialEntries={['/research']}><ProductResearch /></MemoryRouter>)
     await screen.findByText('沪深300ETF')
 
-    await openPanel()
-    await sendMessage('ETF 的问题')
-    await waitFor(() => expect(capture.messages).toHaveLength(1))
+    await capturePage()
+    await waitFor(() => expect(capture.snapshots).toHaveLength(1))
 
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: '场外公募基金' }))
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some((call) => String(call[0]).includes('kind=fund'))).toBe(true))
-    expect(screen.queryByText('ETF 的问题')).not.toBeInTheDocument()
 
-    await act(async () => { release?.() })
-    expect(screen.queryByText('第 1 次回复')).not.toBeInTheDocument()
 
-    await openPanel()
-    expect(screen.queryByText('ETF 的问题')).not.toBeInTheDocument()
-    await sendMessage('基金的问题')
-    await waitFor(() => expect(capture.messages).toHaveLength(2))
-    expect(capture.messages[1].page_context.page_instance_id).toBe('product-research:fund')
-    expect(capture.messages[1].page_snapshot.sections.request.kind).toBe('fund')
+    await capturePage()
+    await waitFor(() => expect(capture.snapshots).toHaveLength(2))
+    expect(capture.snapshots[1].page_context.page_instance_id).toBe('product-research:fund')
+    expect(capture.snapshots[1].page_snapshot.sections.request.kind).toBe('fund')
   })
 
   it('新产品类型加载中禁用发送，已取消列表的迟到JSON不能把旧产品混入新批次', async () => {
-    const capture: AgentCapture = { sessions: [], messages: [] }
+    const capture: AgentCapture = { bindings: [], snapshots: [] }
     const fallback = researchFetch(minimalPayload(), capture)
     let oldList!: (value: any) => void, newList!: (value: any) => void
     const oldResponse = new Promise(resolve => { oldList = resolve })
@@ -515,15 +478,13 @@ describe('ProductResearch AI 助手接入', () => {
     }))
     render(<MemoryRouter initialEntries={['/research']}><ProductResearch /></MemoryRouter>)
     fireEvent.click(screen.getByRole('button', { name: '场外公募基金' }))
-    await openPanel()
-    fireEvent.change(screen.getByRole('textbox', { name: '发送消息' }), { target: { value: '新产品' } })
-    expect(screen.getByRole('button', { name: '发送' })).toBeDisabled()
+    expect(portablePageProbe.props?.busy).toBe(true)
     await act(async () => newList(minimalPayload({ items: [{ ts_code: '000001.OF', name: '新基金' }] })))
     await screen.findByText('新基金')
     await act(async () => oldList(minimalPayload()))
     expect(screen.queryByText('沪深300ETF')).not.toBeInTheDocument()
-    await sendMessage('只研究当前基金')
-    await waitFor(() => expect(capture.messages).toHaveLength(1))
-    expect(capture.messages[0].page_snapshot.sections.request.targets).toEqual([{ kind: 'fund', product_id: '000001.OF' }])
+    await capturePage()
+    await waitFor(() => expect(capture.snapshots).toHaveLength(1))
+    expect(capture.snapshots[0].page_snapshot.sections.request.targets).toEqual([{ kind: 'fund', product_id: '000001.OF' }])
   })
 })

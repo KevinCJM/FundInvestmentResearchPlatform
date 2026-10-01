@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import RegimeAgentPanel from '../components/agent/RegimeAgentPanel'
+import ScenarioAssistant from '../integrations/portable-agent/ScenarioAssistant'
+import { mergeRegimeAgentDraft } from '../services/regimeAgent'
 import HistoricalRegimeWorkbench from './HistoricalRegimeWorkbench'
 import RegimeStudyList from './regime-workbench/RegimeStudyList'
 import { actionClass } from '../components/ui'
@@ -134,11 +135,13 @@ export default function MarketStateResearchCenter({ active = true }: { active?: 
         />
       </div>}
     </section>
-    {active && !editing && <RegimeAgentPanel mode={stage === 'historical' ? 'retrospective' : 'realtime'}
-      onApply={definition => {
+    <ScenarioAssistant page="historical-regimes" workspace="graph" purpose={stage === 'historical' ? 'historical_reference' : 'realtime_recognition'}
+      active={active && !editing} mode={stage === 'historical' ? 'retrospective' : 'realtime'}
+      onApply={proposal => {
+        const definition = mergeRegimeAgentDraft(undefined, proposal)
         const side = stage === 'historical' ? 'historical' : 'realtime'
         setAgentSeeds(previous => ({ ...previous, [side]: { definition, serial: (previous[side]?.serial || 0) + 1 } }))
         activate(stage, 'new')
-      }} />}
+      }} />
   </section>
 }

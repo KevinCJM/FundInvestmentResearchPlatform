@@ -211,6 +211,8 @@ result_kind 仅 scalar/time_series。标量结果新增/确认 value_type（numb
 - `GET/PUT/DELETE /api/evaluation-plans/{id}`
 - `POST /api/evaluation-plans/{id}/run`
 
+“设置 → AI 智能体”可在理解并澄清用户意图后，将编写、校验或试算任务交给指标中心。接收过程使用独立会话及幂等回执，保留原话和最新研究条件；草稿、试算及正式保存继续复用原流程，保存仍需独立人工确认。详见[平台意图与交接设计](../research/ai-functions-design.md#11-平台意图识别与跨页交接详细设计2026-09-23)。
+
 产品研究通过 `kind` 和 `ids` 深链到行情指标中心；产品详情、产品对比和评价方案只列出 `context_kind=single_product` 的指标。组合指标只运行在不可变组合快照上，不与产品混合排名。
 
 行情指标中心的 Excel 导出使用与预览完全相同的产品、周期、`as_of`、数据窗口和固定签名 NJIT 计划。时间序列直接入参按“日期 + 实际传入值”写入产品 Sheet，Typed DAG 中的算子逐节点转换为 Excel 函数；工作簿同时保留 Excel 结果、NJIT 正式结果及一致性检查。详细契约见 `docs/indicators/excel-export.md`。
@@ -218,7 +220,7 @@ result_kind 仅 scalar/time_series。标量结果新增/确认 value_type（numb
 ## 持久化、并发与规模
 
 - `data/custom_indicators.json` 保存工作区指标当前版本和历史版本；`data/evaluation_plans.json` 保存评价方案及锁定的指标 revision。
-- 写入使用锁文件、临时文件、`fsync` 和原子替换。更新和删除携带 revision，版本冲突返回 HTTP 409。
+- 写入使用锁文件、临时文件、`fsync` 和原子替换。更新和删除携带 revision，版本冲突返回 HTTP 409。 助手确认创建还在同一存储锁内核对目录版本；业务创建记录保留操作标识，回执丢失或后续人工修订后仍能查回原创建版本，禁止重复创建。
 - 内置指标只读；仍被评价方案引用的工作区指标拒绝删除。
 - 计算缓存键包含定义/算子/变量/数据契约版本、产品或组合快照、运行周期或快照窗口、有效截止日和源数据指纹。
 - 公式、DAG 深度、观察数、产品数和中间数组预算仍按后端契约限制；指标请求容量见下节。

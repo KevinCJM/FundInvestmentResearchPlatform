@@ -27,11 +27,11 @@ import {
   type ProductCompareAnalysisResponse,
   type ProductCompareMetrics,
 } from '../services/productCompare';
-import AgentPanel from '../components/agent/AgentPanel';
-import usePageContextRevision from '../components/agent/usePageContextRevision';
-import useResearchAgentView from '../components/agent/useResearchAgentView';
-import { buildProductCompareEvidence, frozenIndicatorRefs, shortStableId, pageResultReference, type PageResultRecord } from '../services/agentPageEvidence';
-import type { AgentPageContext } from '../services/agent';
+import PortableAgentMount from '../integrations/portable-agent/PortableAgentMount';
+import { usePageContextRevision } from '../app/useResearchBinding';
+import { useResearchView } from '../app/useResearchBinding';
+import { buildProductCompareEvidence, frozenIndicatorRefs, shortStableId, pageResultReference, type PageResultRecord } from '../services/researchPageEvidence';
+import type { ResearchPageContext } from '../services/researchContracts';
 import { systemText as s } from '../i18n/runtime';
 
 interface TimeSeriesPoint {
@@ -868,7 +868,7 @@ export default function ProductCompare() {
   const [customIndicatorLoading, setCustomIndicatorLoading] = useState(false);
   const [customIndicatorError, setCustomIndicatorError] = useState<string | null>(null);
   const [customIndicatorAsOf, setCustomIndicatorAsOf] = useState('');
-  const agentView = useResearchAgentView();
+  const agentView = useResearchView();
   const [loadedProductKey, setLoadedProductKey] = useState('');
   const [metricRecord, setMetricRecord] = useState<PageResultRecord | null>(null);
   const [comparisonRecord, setComparisonRecord] = useState<PageResultRecord | null>(null);
@@ -1543,7 +1543,7 @@ export default function ProductCompare() {
     previewMode, targetsFromQuery, performanceRange, riskRange, efficiencyRange, rollingWindowDays, customIndicatorAsOf,
     metricPreference.indicatorIds, metricPreference.periodsByIndicator, agentView.identity,
   ]));
-  const agentPageContext: AgentPageContext = {
+  const agentPageContext: ResearchPageContext = {
     page: 'product-compare',
     // 页面对象由 URL 决定：产品详情还在加载时也不能换实例，否则已打开的对话会被重挂。
     page_instance_id: `product-compare:${shortStableId(previewMode ? 'demo' : targetsFromQuery.map(target => `${target.kind}:${target.id}`).join(','))}`,
@@ -2495,10 +2495,10 @@ export default function ProductCompare() {
           </section>
         </div>
       )}
-      <AgentPanel
+      <PortableAgentMount
         pageContext={agentPageContext}
         busy={loading || !!error || loadedProductKey !== productRequestKey || agentView.viewState === 'unknown'}
-        conversationOptions={{ capturePageSnapshot: captureAgentSnapshot, enabled: !loading && !error && loadedProductKey === productRequestKey && agentView.viewState !== 'unknown', cancelOnUnmount: true }}
+        capturePageSnapshot={captureAgentSnapshot}
         renderStatus={() => previewMode ? <p role="status" className="text-sm text-slate-600">{s('agent.researchPage.demoData')}</p> : null}
       />
     </div>

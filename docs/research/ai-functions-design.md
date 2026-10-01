@@ -1,10 +1,14 @@
 # AI 功能设计
 
-日期：2026-09-21。状态：四阶段工程实现及离线验收已完成；真实模型效果与费用对照仍未验证，见第8.4和第9节。
+整体迁出本项目、由独立仓库承担通用智能体的目标方案见[平台接入 Portable Web Agent](portable-agent-platform-integration.md)。该方案正在实施，当前候选页面已挂载独立框架；本文保留迁移前行为及历史验收，作为等价验证基线，不再代表当前挂载链路。
+
+日期：2026-09-21。状态：四阶段工程实现及离线验收已完成；完整研究任务的真实模型效果与费用对照仍未验证，见第8.4和第9节；平台意图专项验收见第11.5节。
 
 本文统一维护本次讨论的 AI 功能设计：智能体 Harness、业务工具、数据门控、上下文与记忆、人工确认、观测评测和后续验收，不再拆分成 Harness 与门控两份设计。方案写入文档不代表功能已经实现，历史回归也不代表后续修改已验收。
 
 当前共用边界与2026-09-23优化设计见 [共用架构第8节](ai-agent-reusable-architecture-design-2026-09-21.md#8-共用边界优化设计2026-09-23)。应用显式装配既有业务服务；产品 HTTP 与 AI 共用唯一业务实现，指标试算加载和采纳策略由前端指标适配层负责。下文历史验收的模块装配方式以该节当前实现为准。
+
+CopilotKit协议接入与可靠性保护见[共用架构第10节](ai-agent-reusable-architecture-design-2026-09-21.md#10-copilotkit-接入与运行可靠性2026-09-24)。Node适配只传输AG-UI事件，现有Python Harness继续统一持有任务、恢复、取消与业务门禁；未更换现有页面对话组件。不要将此接入描述为启用了CopilotKit自带模型/SQLite执行核心。
 
 ## 1. 功能目标与边界
 
@@ -196,7 +200,7 @@ flowchart LR
 
 工具参数错误保留严格 schema 校验，不默默改名或丢弃字段。给模型的错误回执列明注册表中的合法顶层字段及必填字段，提醒字段名区分大小写；重复错误即使触发无进展保护，也保留该纠正提示。提示只从服务端工具契约生成，不回显异常原文、未知字段或输入值。指标生成可在任务读取失败后独立继续；无进展检测、原始数据隔离和确认保存权限不因此放宽。
 
-2026-09-23 验证：复现 `task.read` 使用 `Section/Offset/Limit` 后参数错误及重复拦截，通过离线 HTTP 对话验证纠正提示、有效草稿交付、人工确认和幂等保存；另以真实 `CustomIndicatorService` 在临时目录中验证校验、写入、重开读取及无重复记录。相关后端 343 项、既有指标助手前端 38 项通过。测试见 [指标 AI API 回归](../../backend/tests/test_agent_api.py)；真实外部模型是否按提示生成特定金融指标不由固定回复夹具证明。 本地后端已重载，8001 直连与 5175 前端代理均通过健康检查，主进程及 worker 完整预热。
+2026-09-23 验证：复现 `task.read` 使用 `Section/Offset/Limit` 后参数错误及重复拦截，通过离线 HTTP 对话验证纠正提示、有效草稿交付、人工确认和幂等保存；另以真实 `CustomIndicatorService` 在临时目录中验证校验、写入、重开读取及无重复记录。相关后端 343 项、既有指标助手前端 38 项通过。测试见 [指标 AI API 回归](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_api.py)；真实外部模型是否按提示生成特定金融指标不由固定回复夹具证明。 本地后端已重载，8001 直连与 5175 前端代理均通过健康检查，主进程及 worker 完整预热。
 
 确认预览须同时匹配服务端当前草稿的修订和完整定义，并从该草稿冻结定义及其哈希，不能只匹配修订却保存客户端混入的另一份合法定义。完整定义比较只兼容浏览器将0.0传回0等相等JSON数值表示，字段、列表顺序、布尔值和字符串仍严格区分，不补齐或省略客户端字段。实际保存再次核对当前草稿身份，旧版产生的错配确认也应拒绝；已成功提交请求的回执重放仍先于新写入校验。
 
@@ -234,7 +238,7 @@ flowchart LR
 
 **验收**：以固定模型回复、真实图校验器和离线页面夹具验证注册表隔离、数据门控、HTTP 多轮草稿/恢复、时点限制、人工应用及编辑竞态；浏览器覆盖 320/768/1440 视口。真实外部模型的生成效果和费用另行验证，不用夹具通过替代。
 
-2026-09-23 本地验证：相关后端 151 项、前端 147 项回归通过；补充研究模式/日期一致性和跨步骤草稿保留后，情景后端 16 项、前端专项 13 项复验通过。三视口浏览器 3 项通过，核对桌面与手机截图；类型、构建及语言检查通过。测试分别见 [后端工具与 HTTP](../../backend/tests/test_agent_regimes.py)、[草稿应用](../../frontend/src/components/agent/RegimeAgentPanel.test.tsx)、[步骤切换](../../frontend/src/pages/ScenarioCenters.test.tsx) 和 [浏览器流程](../../frontend/e2e/regime-agent.spec.ts)。仓库整体文档检查仍有本任务外的未登记版本文档；设计检查仍将 LTCMA 的 `scope="rowgroup"` 计为缺少列/行 scope。Hermes 已覆盖本次路径，Git 可复现性检查仍提示本次及已有未跟踪文件；本轮没有提交或更改这些检查规则。
+2026-09-23 本地验证：相关后端 151 项、前端 147 项回归通过；补充研究模式/日期一致性和跨步骤草稿保留后，情景后端 16 项、前端专项 13 项复验通过。三视口浏览器 3 项通过，核对桌面与手机截图；类型、构建及语言检查通过。测试分别见 [后端工具与 HTTP](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_regimes.py)、[草稿应用](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/RegimeAgentPanel.test.tsx)、[步骤切换](../../frontend/src/pages/ScenarioCenters.test.tsx) 和 [浏览器流程](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/e2e/regime-agent.spec.ts)。仓库整体文档检查仍有本任务外的未登记版本文档；设计检查仍将 LTCMA 的 `scope="rowgroup"` 计为缺少列/行 scope。Hermes 已覆盖本次路径，Git 可复现性检查仍提示本次及已有未跟踪文件；本轮没有提交或更改这些检查规则。
 
 同日重载本地后端后，8001 端口及 5175 前端代理的健康检查均确认主进程和 worker 完整预热；OpenAPI 已包含 `RegimeContext.editor_token`，AI 元数据已公布情景工具域。该检查证明接口装配与服务就绪，不代表真实外部模型生成效果已经验收。
 
@@ -333,14 +337,14 @@ flowchart LR
 
 ### 6.2 改造前的实现与缺口
 
-2026-09-21 核对的 [context.py](../../backend/agent/context.py) 使用“规则裁剪 + 可选 LLM 摘要 + 近期原文保留”：
+2026-09-21 核对的 [context.py](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/context.py) 使用“规则裁剪 + 可选 LLM 摘要 + 近期原文保留”：
 
 - 按序列化请求的 UTF-8 字节数估算 token，用供应商返回的实际输入用量校正；输入预算先为输出留出空间，达到输入预算的 85% 时尝试压缩。
 - 按预算保留近期完整工具交互，另外保留被移出近期窗口的最近 4 条用户原文；更早用户消息与上次摘要进入本次整理源。
 - 旧工具结果超过 1,800 字符时取前 1,200 字符及引用，并去掉旧 `reasoning_content`；整理源超过 6,000 字符且摘要请求能放入窗口时，调用同一模型，提示最多 1,500 字，代码接受上限为 6,000 字符。
-- 摘要调用失败或不可用时，候选回退为结构化整理源；只有比原请求更小且能放入窗口才替换。硬容量仍足够时可暂时继续原上下文，否则报容量错误。模型报告超长后，[Harness](../../backend/agent/harness.py) 允许一次强制压缩重试。
+- 摘要调用失败或不可用时，候选回退为结构化整理源；只有比原请求更小且能放入窗口才替换。硬容量仍足够时可暂时继续原上下文，否则报容量错误。模型报告超长后，[Harness](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/harness.py) 允许一次强制压缩重试。
 
-这套机制已有容量与工具配对保护，但没有完整的结构化约束保真校验、按目标检索或分层摘要。按字符取前缀可能遗漏末尾口径、否定条件和诊断，且不能阻止行情片段进入摘要请求。当前 [模型适配器](../../backend/agent/llm.py) 使用 Chat Completions 协议，尚未接入下表的厂商原生压缩。
+这套机制已有容量与工具配对保护，但没有完整的结构化约束保真校验、按目标检索或分层摘要。按字符取前缀可能遗漏末尾口径、否定条件和诊断，且不能阻止行情片段进入摘要请求。当前 [模型适配器](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/llm.py) 使用 Chat Completions 协议，尚未接入下表的厂商原生压缩。
 
 ### 6.3 前沿方法比较
 
@@ -450,7 +454,7 @@ flowchart LR
 
 历史验证：后端 7 个智能体测试文件共 **131 passed**；前端 6 个相关测试文件共 **47 passed**。额外复现全部使用合成数据和 FixtureLLMClient，未向真实模型发送行情。同期文档检查发现 5 份既有 AI 设计文档未登记。此次统一文档不把这些问题标记为已修复，也不把旧测试当成新门控的验收。
 
-代码核对入口：[运行控制](../../backend/agent/harness.py)、[工具注册与输出](../../backend/agent/tools.py)、[会话与证据](../../backend/agent/sessions.py)、[上下文压缩](../../backend/agent/context.py)、[进展检测](../../backend/agent/progress.py)、[长期记忆](../../backend/agent/memory.py)、[页面与提示词上下文](../../backend/agent/research_runtime.py)、[变量字段与口径注册表](../../backend/custom_indicators/variable_registry.py)。
+代码核对入口：[运行控制](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/harness.py)、[工具注册与输出](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/tools.py)、[会话与证据](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/sessions.py)、[上下文压缩](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/context.py)、[进展检测](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/progress.py)、[长期记忆](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/memory.py)、[页面与提示词上下文](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/research_runtime.py)、[变量字段与口径注册表](../../backend/custom_indicators/variable_registry.py)。
 
 变量注册表已有 source_field、source_bindings、dtype、frequency、semantic_role、price_basis 等信息，门控复用这些可信描述；当前按字符长度裁剪的 `_bounded` 不等于语义门控。
 
@@ -465,7 +469,7 @@ flowchart LR
 - 派生序列的计数、均值、样本标准差及范围使用固定 readonly float64 NJIT 内核，导入时预热并禁止新增签名；空样本、NaN/Inf 和不足两个有限点的摘要不伪造统计量。原始序列仅提供覆盖计数。
 - 完整指标目录参与检索、total 和 revision 指纹；请求契约迁出路由单例。固定模型任务包含零值、缺失、401 项目录尾部和原始粘贴，每项重复两次，检查实际工具证据与全部捕获请求，不按回复自称完成评分。
 
-回归入口：[门控反例](../../backend/tests/test_agent_native_admission.py)、[准入与冻结重算](../../backend/tests/test_agent_admission.py)、[完整目录及导入隔离](../../backend/tests/test_agent_catalog.py)、[固定任务评分](../../backend/tests/test_agent_eval.py)。当前是离线工程证据，最终冻结复核、真实浏览器图表验收及真实模型任务效果分别记录，不能互相替代。
+回归入口：[门控反例](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_native_admission.py)、[准入与冻结重算](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_admission.py)、[完整目录及导入隔离](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_catalog.py)、[固定任务评分](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_eval.py)。当前是离线工程证据，最终冻结复核、真实浏览器图表验收及真实模型任务效果分别记录，不能互相替代。
 
 ### 8.2 阶段二实现：任务状态、工作集与确认记忆
 
@@ -481,7 +485,7 @@ flowchart LR
 
 默认日期重算：页面原请求as_of=null时通过现有PIT resolver解析本轮有效默认日期，比较后按该有效日计算，并同时保留requested/effective日期；显式不一致或未来日期仍拒绝。不会改用会话草稿/新参数。
 
-验证入口：[状态/记忆/多次压缩](../../backend/tests/test_agent_task_state.py)、[重复多轮评测](../../backend/tests/test_agent_multiturn_eval.py)、[记忆面板](../../frontend/src/components/agent/AgentMemory.test.tsx)。固定模型任务与多轮场景各重复三次，检查实际状态、引用、结果与未授权业务写入；token缺失时记录null，不宣称真实模型质量或费用提升。阶段二候选等待根最终冻结复核，真实浏览器验收与后续页面接入整合执行。
+验证入口：[状态/记忆/多次压缩](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_task_state.py)、[重复多轮评测](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_multiturn_eval.py)、[记忆面板](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/AgentMemory.test.tsx)。固定模型任务与多轮场景各重复三次，检查实际状态、引用、结果与未授权业务写入；token缺失时记录null，不宣称真实模型质量或费用提升。阶段二候选等待根最终冻结复核，真实浏览器验收与后续页面接入整合执行。
 
 ### 8.3 阶段四页面接入：三个研究页面
 
@@ -503,7 +507,7 @@ flowchart LR
 
 使用当前行情的工具在执行前后核对数据 generation，包含 portfolio 域的情景重算；版本变化立即暂停，并丢弃该次迟到结果，不把它发给模型或登记为当前有效进度。读取不可变组合 run 的诊断与指标计算不因外部行情更新而取消，其数据来源仍是原快照。
 
-page.analyze显式返回target/indicator分页，默认各3项、上限各10项，继续调用只读同一冻结批次；未计算部分不能宣称完成。完整UI数据不经模型投影修改。协议/参数/0与null/旧证据/原服务parity回归在 [三个页面后端回归](../../backend/tests/test_agent_research_pages.py)。前端候选已复用共享助手：冻结实际指标版本请求，分别记录当前条件和最后结果的请求引用；加载失败或切换对象不能借用旧产品，离开对象取消运行，关闭浮窗不取消。浏览器覆盖入口、完整图表、三种视口、独立日期及记忆人工确认的回归位于 [研究页面浏览器测试](../../frontend/e2e/agent-research-pages.spec.ts)；最终状态仍等待根代理冻结验收，不以源码存在替代验证。
+page.analyze显式返回target/indicator分页，默认各3项、上限各10项，继续调用只读同一冻结批次；未计算部分不能宣称完成。完整UI数据不经模型投影修改。协议/参数/0与null/旧证据/原服务parity回归在 [三个页面后端回归](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_research_pages.py)。前端候选已复用共享助手：冻结实际指标版本请求，分别记录当前条件和最后结果的请求引用；加载失败或切换对象不能借用旧产品，离开对象取消运行，关闭浮窗不取消。浏览器覆盖入口、完整图表、三种视口、独立日期及记忆人工确认的回归位于 [研究页面浏览器测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/e2e/agent-research-pages.spec.ts)；最终状态仍等待根代理冻结验收，不以源码存在替代验证。
 
 ### 8.4 四阶段最终工程验收（2026-09-21）
 
@@ -530,35 +534,35 @@ page.analyze显式返回target/indicator分页，默认各3项、上限各10项�
 
 当前工作树修复比较页费率准入、保存响应丢失后的重复创建，以及页面旧结果来源丢失三个问题。新增反例覆盖当前与历史费率、六种结果状态、旧签名回读与摘要、已确认偏好兼容，以及保存重试、浮窗关闭重开和过期确认。
 
-本地验证：Agent/LLM 后端 252 passed；相关前端 13 文件、157 passed；浏览器 24 passed，包含 320/768/1440 下的保存失败与重试、普通人工保存、三个研究页、独立日期和记忆操作。TypeScript、构建、设计、语言及文档结构检查通过。证据位于 `.run/agent-review-fixes-20260922-102110/`，可执行反例归入 [页面协议回归](../../backend/tests/test_agent_research_pages.py)、[历史准入回归](../../backend/tests/test_agent_native_admission.py)、[保存组件回归](../../frontend/src/components/agent/IndicatorAgentPanel.test.tsx) 和 [保存浏览器回归](../../frontend/e2e/agent-panel.spec.ts)。这些是离线工程验收，未调用真实模型。
+本地验证：Agent/LLM 后端 252 passed；相关前端 13 文件、157 passed；浏览器 24 passed，包含 320/768/1440 下的保存失败与重试、普通人工保存、三个研究页、独立日期和记忆操作。TypeScript、构建、设计、语言及文档结构检查通过。证据位于 `.run/agent-review-fixes-20260922-102110/`，可执行反例归入 [页面协议回归](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_research_pages.py)、[历史准入回归](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_native_admission.py)、[保存组件回归](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/IndicatorAgentPanel.test.tsx) 和 [保存浏览器回归](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/e2e/agent-panel.spec.ts)。这些是离线工程验收，未调用真实模型。
 
 原有未提交状态保留：Hermes 仍报告统一设计文档未跟踪及 AI 模块路径归属缺项；本次不暂存文件或放宽规则以消除提示，未提交或推送。
 
 同日第二轮修复了页面条件变化后的证据有效性误判及持仓情景错误状态遗漏。继续自审核又复现并修复了草稿变化后旧试算仍被选中、旧任务状态/历史回读被重新选作当前证据两条同类路径。三个研究页面共用回执依赖核验；语义内容相同而快照 ID/时间不同仍可复用，失效证据继续保留历史回读。
 
-第二轮本地回归：Agent/LLM 后端 **256 passed**；相关前端 **159 passed**；研究页面浏览器 **21 passed**，包含 320/768/1440 下首次情景失败、已有结果后的失败及成功重试。TypeScript、构建、设计与语言检查通过。本轮范围内自审核未遗留可复现代码缺陷；证据在 `.run/agent-review-fixes-20260922-105924/`，反例归入 [任务证据回归](../../backend/tests/test_agent_task_state.py)、[持仓页面回归](../../frontend/src/pages/HoldingDiagnosis.test.tsx) 和 [研究页面浏览器回归](../../frontend/e2e/agent-research-pages.spec.ts)。验证使用隔离数据和离线模型，不代表真实模型或投资结果验收。
+第二轮本地回归：Agent/LLM 后端 **256 passed**；相关前端 **159 passed**；研究页面浏览器 **21 passed**，包含 320/768/1440 下首次情景失败、已有结果后的失败及成功重试。TypeScript、构建、设计与语言检查通过。本轮范围内自审核未遗留可复现代码缺陷；证据在 `.run/agent-review-fixes-20260922-105924/`，反例归入 [任务证据回归](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_task_state.py)、[持仓页面回归](../../frontend/src/pages/HoldingDiagnosis.test.tsx) 和 [研究页面浏览器回归](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/e2e/agent-research-pages.spec.ts)。验证使用隔离数据和离线模型，不代表真实模型或投资结果验收。
 
 再次审核补齐页面重挂后的保存恢复与持仓情景的数据版本门禁。保存回执按会话内完整定义复用，旧成功回执兼容读取；刷新恢复已保存状态，新确认/新请求标识也不能重复写入或绕过不确定记录。情景计算前后发生行情版本变化时暂停并丢弃结果，不影响不可变快照诊断与指标读取。
 
-本轮复验：后端 264 passed，相关前端 13 文件、161 passed；浏览器 9 passed，覆盖 320/768/1440 下的保存回执丢失后刷新恢复、关闭重开重试和普通人工保存，并检查操作可达性及文字对比度。类型、构建、设计和语言检查通过。证据在 `.run/agent-review-fixes-20260922-120329/`；回归见 [运行与保存测试](../../backend/tests/test_agent_runs.py)、[保存组件测试](../../frontend/src/components/agent/IndicatorAgentPanel.test.tsx) 和 [保存浏览器测试](../../frontend/e2e/agent-panel.spec.ts)。测试使用离线模型、临时 SQLite/Parquet 和浏览器接口夹具；不代表真实模型、行情算法或部署验证。
+本轮复验：后端 264 passed，相关前端 13 文件、161 passed；浏览器 9 passed，覆盖 320/768/1440 下的保存回执丢失后刷新恢复、关闭重开重试和普通人工保存，并检查操作可达性及文字对比度。类型、构建、设计和语言检查通过。证据在 `.run/agent-review-fixes-20260922-120329/`；回归见 [运行与保存测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_runs.py)、[保存组件测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/IndicatorAgentPanel.test.tsx) 和 [保存浏览器测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/e2e/agent-panel.spec.ts)。测试使用离线模型、临时 SQLite/Parquet 和浏览器接口夹具；不代表真实模型、行情算法或部署验证。
 
 会话恢复与消息重试的本次复验修复三个问题：恢复未完成时误建新会话、版本冲突重试仍带旧版本，以及续接重试改变原父运行。自审核另复现并修复已接受编辑在恢复后无法结束重试的问题；运行中的已接受请求可重放，不被重试动作取消。无父运行、配置已停用、恢复读取失败与明确 404 也有对应检查。
 
-完整前端回归 171 文件、1449 passed；最后调整重试按钮门禁后，共用助手相关 8 文件、85 passed。后端既有会话/编辑契约 7 passed，类型、构建、设计和语言检查通过。助手浏览器全套首次 81 passed、3 failed，失败均为剪贴板测试写死旧端口；夹具改为当前页面 origin 后，三视口下该用例与恢复加载态共 6 passed，覆盖其余 3 个失败项并核对加载文字对比度。新增恢复/冲突/续接流程此前 9 passed，手机及桌面加载截图已检查。证据在 `.run/agent-review-fixes-20260922-124904/`，回归见 [会话组件测试](../../frontend/src/components/agent/AgentPanel.test.tsx)、[共享会话测试](../../frontend/src/components/agent/useAgentConversation.test.tsx) 和 [浏览器测试](../../frontend/e2e/agent-panel.spec.ts)。本轮修复范围自审核通过；测试均为离线接口/临时存储，不代表真实模型或部署验收。既有 Hermes 未跟踪引用及路径归属缺口保留。
+完整前端回归 171 文件、1449 passed；最后调整重试按钮门禁后，共用助手相关 8 文件、85 passed。后端既有会话/编辑契约 7 passed，类型、构建、设计和语言检查通过。助手浏览器全套首次 81 passed、3 failed，失败均为剪贴板测试写死旧端口；夹具改为当前页面 origin 后，三视口下该用例与恢复加载态共 6 passed，覆盖其余 3 个失败项并核对加载文字对比度。新增恢复/冲突/续接流程此前 9 passed，手机及桌面加载截图已检查。证据在 `.run/agent-review-fixes-20260922-124904/`，回归见 [会话组件测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/AgentPanel.test.tsx)、[共享会话测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/useAgentConversation.test.tsx) 和 [浏览器测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/e2e/agent-panel.spec.ts)。本轮修复范围自审核通过；测试均为离线接口/临时存储，不代表真实模型或部署验收。既有 Hermes 未跟踪引用及路径归属缺口保留。
 
 本次修复工具执行途中目录变化仍接纳结果、持久保存回执恢复后未刷新宿主目录两项问题。自审核另复现并修复等待模型回复期间目录变化仍发布旧内容、恢复“已保存”后仍残留保存失败提示两条相关路径。目录失效检查覆盖共用模型返回入口，丢弃内容但保留已提交进度和真实用量；保存通知按会话及完整定义去重，后续填入失败仍正常提示。
 
-本次相关后端 267 passed，最终目录竞态与用量检查另有 3 passed；最终前端全量 171 文件、1451 passed。三视口保存浏览器 12 passed，覆盖关闭重开、整页刷新、人工重试与正常保存，实际核对指标库更新、通知去重、成功反馈、操作可达性和文字对比度；手机与桌面截图已复核。类型、构建、设计和语言检查通过。证据在 `.run/agent-review-fixes-20260922-132752/`，回归见 [运行测试](../../backend/tests/test_agent_runs.py)、[保存组件测试](../../frontend/src/components/agent/IndicatorAgentPanel.test.tsx) 与 [浏览器测试](../../frontend/e2e/agent-panel.spec.ts)。本轮修复范围自审核通过，仍为离线工程证据；既有 Hermes 未跟踪引用及路径登记缺口保留。
+本次相关后端 267 passed，最终目录竞态与用量检查另有 3 passed；最终前端全量 171 文件、1451 passed。三视口保存浏览器 12 passed，覆盖关闭重开、整页刷新、人工重试与正常保存，实际核对指标库更新、通知去重、成功反馈、操作可达性和文字对比度；手机与桌面截图已复核。类型、构建、设计和语言检查通过。证据在 `.run/agent-review-fixes-20260922-132752/`，回归见 [运行测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_runs.py)、[保存组件测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/IndicatorAgentPanel.test.tsx) 与 [浏览器测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/e2e/agent-panel.spec.ts)。本轮修复范围自审核通过，仍为离线工程证据；既有 Hermes 未跟踪引用及路径登记缺口保留。
 
 
 记忆确认链路复验修复：运行结束后未读取新提案，导致用户必须重开对话才能确认。自审核另修复成功重连后仍显示断线，以及首次完整会话与创建回执版本相同时未加载已引用记忆。实时事件和轮询共用终态恢复，重复通知不重复读取，旧运行的迟到快照不覆盖新运行；未发送输入及独立人工决定保留。
 
-最终前端 171 文件、1456 passed；后端任务/记忆链路 16 passed。三视口新增记忆流程 6 passed，覆盖即时确认、读取失败重连、首次引用展示、键盘操作与对比度；保存、停止、续接和清空等相关浏览器回归另有 30 passed。手机、桌面截图已复核，类型、构建、设计与语言检查通过。证据在 `.run/agent-review-fixes-20260922-152616/`；回归见 [共享会话测试](../../frontend/src/components/agent/useAgentConversation.test.tsx)、[记忆组件测试](../../frontend/src/components/agent/AgentMemory.test.tsx) 和 [浏览器测试](../../frontend/e2e/agent-panel.spec.ts)。本轮修复范围自审核通过；均为离线工程验证，原有 Hermes 未跟踪引用及文件登记缺口保留。
+最终前端 171 文件、1456 passed；后端任务/记忆链路 16 passed。三视口新增记忆流程 6 passed，覆盖即时确认、读取失败重连、首次引用展示、键盘操作与对比度；保存、停止、续接和清空等相关浏览器回归另有 30 passed。手机、桌面截图已复核，类型、构建、设计与语言检查通过。证据在 `.run/agent-review-fixes-20260922-152616/`；回归见 [共享会话测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/useAgentConversation.test.tsx)、[记忆组件测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/AgentMemory.test.tsx) 和 [浏览器测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/e2e/agent-panel.spec.ts)。本轮修复范围自审核通过；均为离线工程验证，原有 Hermes 未跟踪引用及文件登记缺口保留。
 
 
 记忆操作恢复复验：修复接受成功但响应丢失后，“重新读取”只更新列表、旧提案被误发为替换的问题；自审核同时覆盖正常成功后会话读取失败或两个读取先后到达的同类路径。接受、拒绝、撤销及错误恢复共用先读取提案状态、再刷新记忆列表的顺序；读取中或失败时禁用决定，重新读取不重发写操作，恢复成功清除旧错误。
 
-本轮前端全量 **1462 passed / 171 文件**，后端任务/记忆 **16 passed**，三视口记忆浏览器 **15 passed**，另有两项独立延迟竞态复核通过。实际覆盖三类决定响应丢失、读取再次失败、正常确认、恢复、输入保留及无重复业务写入；手机错误态和桌面恢复态截图已检查。类型、构建、设计与语言检查通过，证据在 `.run/agent-review-fixes-20260922-161710/`；长期回归保留在 [记忆组件测试](../../frontend/src/components/agent/AgentMemory.test.tsx) 和 [浏览器测试](../../frontend/e2e/agent-panel.spec.ts)。本轮修复范围自审核通过；这些是离线工程验证，既有 Hermes 未跟踪引用及文件登记缺口保留。
+本轮前端全量 **1462 passed / 171 文件**，后端任务/记忆 **16 passed**，三视口记忆浏览器 **15 passed**，另有两项独立延迟竞态复核通过。实际覆盖三类决定响应丢失、读取再次失败、正常确认、恢复、输入保留及无重复业务写入；手机错误态和桌面恢复态截图已检查。类型、构建、设计与语言检查通过，证据在 `.run/agent-review-fixes-20260922-161710/`；长期回归保留在 [记忆组件测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/AgentMemory.test.tsx) 和 [浏览器测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/e2e/agent-panel.spec.ts)。本轮修复范围自审核通过；这些是离线工程验证，既有 Hermes 未跟踪引用及文件登记缺口保留。
 
 指标记忆与排队发送复验：自动定义记忆统一提案、存储和替换身份，已确认记录可回读、替换及撤销；兼容旧签名记录与两种既有作用域，保持普通产品偏好的对象限制。排队消息在恢复读取至提交接管期间保持发送锁，取消或卸载后忽略迟到读取，失败保留重试；关闭浮窗仍继续原流程。前端 **1468 passed / 171 文件**、Agent/LLM 后端 **272 passed**、三视口浏览器 **24 passed**；新增回归覆盖新旧记忆、签名边界、插队、取消和失败恢复。手机及桌面截图、类型、构建、设计、语言与文档检查通过，证据在 `.run/agent-review-fixes-20260922-165751/`。本轮修复范围自审核通过；均为离线工程验证，既有 Hermes 未跟踪引用及文件登记缺口保留。
 
@@ -568,21 +572,21 @@ page.analyze显式返回target/indicator分页，默认各3项、上限各10项�
 
 前端共用控制器补齐停止/口径变更回包的归属检查；同轮已结束、新轮已完成或卸载后不再显示旧失败。发送与编辑已被恢复快照证实接收时，迟到 POST 不能倒退运行或回滚文本。关闭浮窗后仍属于当前运行的真实成功/失败继续处理，尚未证实接受的请求继续保留重试。
 
-新增 **31 项确定性回归**（后端19、前端12）及两个三视口浏览器场景。最终前端 **1480 passed / 171 文件**；测试索引访问改为当前 TypeScript 目标支持的写法后，共享 hook **35 passed**、类型检查通过。Agent/LLM 后端最终 **291 passed**。浏览器全套首次 **111 passed / 3 failed**，仅新增用例在浮窗淡入期间采样对比度；等待已有180ms动画结束后，两项新增场景 **6 passed**，覆盖全部114项用例且未降低阈值。手机和桌面截图已核对；构建、设计、语言及文档检查通过。证据在 `.run/agent-state-fixes-20260922-175927/`，永久回归复用既有 [任务/记忆测试](../../backend/tests/test_agent_task_state.py)、[上下文测试](../../backend/tests/test_agent_context.py)、[共享会话测试](../../frontend/src/components/agent/useAgentConversation.test.tsx) 和 [浏览器测试](../../frontend/e2e/agent-panel.spec.ts)。
+新增 **31 项确定性回归**（后端19、前端12）及两个三视口浏览器场景。最终前端 **1480 passed / 171 文件**；测试索引访问改为当前 TypeScript 目标支持的写法后，共享 hook **35 passed**、类型检查通过。Agent/LLM 后端最终 **291 passed**。浏览器全套首次 **111 passed / 3 failed**，仅新增用例在浮窗淡入期间采样对比度；等待已有180ms动画结束后，两项新增场景 **6 passed**，覆盖全部114项用例且未降低阈值。手机和桌面截图已核对；构建、设计、语言及文档检查通过。证据在 `.run/agent-state-fixes-20260922-175927/`，永久回归复用既有 [任务/记忆测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_task_state.py)、[上下文测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_context.py)、[共享会话测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/useAgentConversation.test.tsx) 和 [浏览器测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/e2e/agent-panel.spec.ts)。
 
 修复经独立交叉审核通过，未再发现本轮范围内可复现的待修问题。没有新增状态框架、依赖、API 或数据库结构；真实模型与投资验证仍未执行。既有 Hermes 未跟踪引用及文件登记缺口保留，未暂存、提交或推送。
 
 后续恢复边界复验补齐第3.1节的两处共享完成入口：采纳新运行时一起绑定其消息口径，避免发送期间恢复的旧快照误停新运行；后台操作已结束但解除隔离遇短暂存储失败时，沿现有协调入口补偿，不再要求重启服务。真正口径变化仍停止运行，活线程及其他进程的操作仍受保护，原失败原因、回复和已完成草稿保留。
 
-本次新增 **11 项确定性回归**：前端四类发送入口与两种返回顺序共8项，每项另检查真实口径变化；后端超时、取消、关闭三类真实 SQLite 锁失败回归。前端 **1488 passed / 171 文件**，Agent/LLM 后端 **294 passed**，独立交叉审核通过。浏览器全套首次 **116 passed / 1 failed**，失败为新增测试误用窄屏页签名；按既有桌面/窄屏入口修正测试后，该场景三视口 **3 passed**，117项均已覆盖通过，未改生产布局或降低断言。手机、平板和桌面截图及输入保留、真实停止、对比度已核对；类型、构建、设计和语言检查通过。证据在 `.run/agent-recovery-fixes-20260922-190234/`，回归保存在 [运行恢复测试](../../backend/tests/test_agent_runs.py)、[共享会话测试](../../frontend/src/components/agent/useAgentConversation.test.tsx) 和 [浏览器测试](../../frontend/e2e/agent-panel.spec.ts)。此结论限定离线工程验证；既有 Hermes 未跟踪引用及文件登记缺口仍保留。
+本次新增 **11 项确定性回归**：前端四类发送入口与两种返回顺序共8项，每项另检查真实口径变化；后端超时、取消、关闭三类真实 SQLite 锁失败回归。前端 **1488 passed / 171 文件**，Agent/LLM 后端 **294 passed**，独立交叉审核通过。浏览器全套首次 **116 passed / 1 failed**，失败为新增测试误用窄屏页签名；按既有桌面/窄屏入口修正测试后，该场景三视口 **3 passed**，117项均已覆盖通过，未改生产布局或降低断言。手机、平板和桌面截图及输入保留、真实停止、对比度已核对；类型、构建、设计和语言检查通过。证据在 `.run/agent-recovery-fixes-20260922-190234/`，回归保存在 [运行恢复测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_runs.py)、[共享会话测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/useAgentConversation.test.tsx) 和 [浏览器测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/e2e/agent-panel.spec.ts)。此结论限定离线工程验证；既有 Hermes 未跟踪引用及文件登记缺口仍保留。
 
 产物与执行归属复验进一步修复两类共享入口：旧试算引用不得为新运行建立口径豁免；试算读取与消息接受不得跨线程竞争控制器恢复。全部7个控制器 HTTP 入口统一在事件循环执行，阻塞的试算文件读取保留在线程池。新增 **7 项回归**覆盖发送、编辑、排队、重试的旧试算交错，本轮合法采纳，以及真实 ASGI 下接受登记窗口和慢读取期间控制接口的响应；反例先失败，修复后通过。没有新增状态框架、锁或依赖。
 
-最终前端 **1493 passed / 171 文件**、Agent/LLM 后端 **296 passed**、三视口助手浏览器全套 **120 passed**；新增场景核对真实控件从1Y改3Y发送、等待期间改回1Y后的停止，以及历史试算、输入保留、操作可达性和对比度。首次全量前端有一项既有图表测试超过5秒，单文件22项复验通过，随后按既有双worker命令完整重跑通过；新增测试的类型断言已补齐，最终类型、构建、设计与语言检查通过。主代理独立复验原前端反例转绿，并与独立审核核对所有控制器入口，未遗留新的可复现问题。证据在 `.run/agent-ownership-fixes-20260922-194216/`，永久回归复用 [API 并发测试](../../backend/tests/test_agent_api.py)、[共享会话测试](../../frontend/src/components/agent/useAgentConversation.test.tsx) 和 [浏览器测试](../../frontend/e2e/agent-panel.spec.ts)。验证仍限定离线工程行为；既有 Hermes 未跟踪引用及5项文件登记缺口保留，未暂存、提交或推送。
+最终前端 **1493 passed / 171 文件**、Agent/LLM 后端 **296 passed**、三视口助手浏览器全套 **120 passed**；新增场景核对真实控件从1Y改3Y发送、等待期间改回1Y后的停止，以及历史试算、输入保留、操作可达性和对比度。首次全量前端有一项既有图表测试超过5秒，单文件22项复验通过，随后按既有双worker命令完整重跑通过；新增测试的类型断言已补齐，最终类型、构建、设计与语言检查通过。主代理独立复验原前端反例转绿，并与独立审核核对所有控制器入口，未遗留新的可复现问题。证据在 `.run/agent-ownership-fixes-20260922-194216/`，永久回归复用 [API 并发测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_api.py)、[共享会话测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/useAgentConversation.test.tsx) 和 [浏览器测试](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/e2e/agent-panel.spec.ts)。验证仍限定离线工程行为；既有 Hermes 未跟踪引用及5项文件登记缺口保留，未暂存、提交或推送。
 
 第3.2节的共性约束进一步落到共享入口：前端统一会话/运行接纳并隔离资源404；控制器在存储访问前机械核对线程与事件循环；数据库封闭过期 checkpoint 与恢复写入，解除隔离推进运行版本。自审实际复现并补齐恢复旧扫描清掉新轮隔离、旧完整快照恢复执行屏障、附属资源404误清会话，以及另一存储实例取消后仍派发新模型/工具的问题。共享启动入口现在必须消费持久接纳结果，拒绝后不派发，已在途操作保持原有等待与隔离流程。
 
-新增 **51 项确定性回归**（后端47、前端4），按终态与迟到写入、观察版本变化、控制入口与线程/循环、关闭时机和快照来源组织组合。收紧终态保护时独立审核发现工具超时原先提前写失败、随后才写错误答复；已调整为唯一收尾入口一起提交回执与终态，并以真实工具线程及API502/错误正文反例复验。最终前端 **1497 passed / 171 文件**，隔离数据目录下 Agent/LLM 后端 **343 passed**。浏览器首次 **120 passed / 3 failed**，新增404用例硬编码了错误的存储键；改用既有会话键函数并保留原会话ID的严格断言后，三视口 **3 passed**，合计123项均已覆盖通过。手机、平板、桌面的会话/输入保留、重连、操作可达性与对比度均已检查。类型、构建、设计、语言及严格文档检查通过，最终源码与独立审核哈希一致；证据在 `.run/agent-state-contracts-20260922-195921/`，长期回归保留在 [运行控制](../../backend/tests/test_agent_runs.py)、[API](../../backend/tests/test_agent_api.py)、[持久状态](../../backend/tests/test_agent_task_state.py)、[共享会话](../../frontend/src/components/agent/useAgentConversation.test.tsx) 和 [浏览器](../../frontend/e2e/agent-panel.spec.ts) 测试中。既有 Hermes 未跟踪引用及本轮涉及的9项文件登记缺口保留。数据盘挂载变化不作为代码验证依据；未隔离后端重跑曾在掉盘期间失败并中止，最终回归使用项目内独立临时目录，不代表真实模型或部署验收。
+新增 **51 项确定性回归**（后端47、前端4），按终态与迟到写入、观察版本变化、控制入口与线程/循环、关闭时机和快照来源组织组合。收紧终态保护时独立审核发现工具超时原先提前写失败、随后才写错误答复；已调整为唯一收尾入口一起提交回执与终态，并以真实工具线程及API502/错误正文反例复验。最终前端 **1497 passed / 171 文件**，隔离数据目录下 Agent/LLM 后端 **343 passed**。浏览器首次 **120 passed / 3 failed**，新增404用例硬编码了错误的存储键；改用既有会话键函数并保留原会话ID的严格断言后，三视口 **3 passed**，合计123项均已覆盖通过。手机、平板、桌面的会话/输入保留、重连、操作可达性与对比度均已检查。类型、构建、设计、语言及严格文档检查通过，最终源码与独立审核哈希一致；证据在 `.run/agent-state-contracts-20260922-195921/`，长期回归保留在 [运行控制](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_runs.py)、[API](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_api.py)、[持久状态](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/tests/test_agent_task_state.py)、[共享会话](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/useAgentConversation.test.tsx) 和 [浏览器](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/e2e/agent-panel.spec.ts) 测试中。既有 Hermes 未跟踪引用及本轮涉及的9项文件登记缺口保留。数据盘挂载变化不作为代码验证依据；未隔离后端重跑曾在掉盘期间失败并中止，最终回归使用项目内独立临时目录，不代表真实模型或部署验收。
 
 
 后续返回与收尾边界复验确认：仅阻止新操作仍不足以隔离在途结果。共用模型返回入口现对成功和异常结果执行持久准入；取消与异常收尾恢复最后提交的检查点、检测状态和工具轨迹，实际用量独立保留；最终回执与终态在同一既有 SQLite 事务内完成。复核中同时修复了工具完成写入失败后候选结果进入下一轮，以及取消恰好发生在收尾读取和写入之间时遗留 stopping 的问题，没有新增框架、依赖、数据库表或业务入口。
@@ -650,3 +654,86 @@ PR #53 后续审核（2026-09-23）复现并修复两项提交边界缺口：同
 - 评价模型与 Harness 的实际任务结果：[Anthropic — Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)。
 
 数据禁止/允许范围及单文件维护要求来自本次用户明确指示；这些项目约束优先于通用架构建议。
+
+
+## 11. 平台意图识别与跨页交接详细设计（2026-09-23）
+
+本节为本轮新增需求的设计与验收入口。中央入口位于“设置 → AI 智能体”，首期接收执行任务的页面为指标中心；其他现有页面助手继续保留。工程验收与真实模型识别质量分别记录，不以离线夹具代替模型准确率。
+
+### 11.1 能力目录与识别契约
+
+前后端共读平台导航数据，原有阶段、节点、路径、功能状态保持一致。后端在菜单事实之上声明智能体动作与接收页面；菜单存在、业务实现程度和中央智能体可执行性是三个不同事实。未登记执行适配的功能可介绍、可按明确要求导航，不能宣称已执行。平台定位遵守领域语言；静态原型描述不构成业务能力。
+
+每轮中央对话产生一份 `intent.resolve` 结构化提案：来源消息、交互类型（聊天/澄清/导航/执行）、任务关系（新建/继续/修订/暂停/取消）、能力 ID、有序动作、目标、参数及其原话引用、约束原话、待澄清问题、尚未覆盖的子任务。服务器校验来源为本轮有效用户消息，引用真实存在，能力/动作在目录中；模型不能提供 URL、工具名、执行状态或任意参数对象作为授权。
+
+聊天和概念解释不导航；“打开指标中心”仅导航；创建/校验指标不要求产品；试算要求真实产品与口径，产品名称由指标页既有检索工具解析并核对可用性。含歧义、否定、假设、未解决指代或跨能力依赖时先澄清；多个指标动作保留顺序。首期跨多个执行页面的任务保持未决并询问先做哪一项（公开mode统一为clarify，原始模型提案留在工具审计），不静默丢弃剩余任务。较新用户修订覆盖冲突字段，原始消息仍保留；闲聊不自动恢复暂停任务。
+
+### 11.2 Harness 与后端
+
+新增 `platform` 工作域及无计算对象的上下文，仍使用现有 `RunController → RunModel → TOOL_REGISTRY → checkpoint/finish`。中央工作域只开放能力目录、任务回读和意图提案；不开放指标计算或业务保存。常规对话不依赖市场数据、PIT 或指标服务就绪。真实业务页面继续使用原来的服务绑定及数据门禁。
+
+中央回复前必须取得本轮已提交的结构化意图。缺失意图允许一次提示纠正，仍缺失时失败；无效提案、未知能力、错误引用、服务故障都不能产生自动动作。工具回执和意图成果随同一 checkpoint 原子提交；取消后的迟到提案不生效。意图是模型解释，不因来源引用通过或自报置信度高就成为语义准确的证明。
+
+交接只接受最新、正常完成的来源运行和已提交的 ready 提案。服务端从目录决定目标页面；客户端携带来源会话/运行身份，不能重写任务正文。目标页面就绪后提交其真实上下文；交接首轮不携带目标页面原有草稿/结果快照，避免混入另一任务。服务器在同一事务中建立独立目标会话、复制经入模门控的原始对话来源、登记首轮运行并保存交接回执。源会话保留，目标会话不混入指标页已有对话。重复接收返回同一目标运行；来源已修改/取消/出现新消息时拒绝未接收交接。
+
+任务原话及澄清保留在目标会话；结构化意图作为可核对提案提供给指标助手，不能覆盖原话。显式研究周期按现有周期目录校验，研究日期按ISO日期校验，再回填目标页；目标页先前选择的产品不继承，产品身份仍由既有检索工具解析。重复接收恢复目标会话最新条件，不回放初始条件。目标继续由现有工具完成查目录、生成、校验与真实试算；正式保存仍使用冻结影响预览与独立人工确认。已接收、运行完成、草稿已校验、已试算、已保存分别由对应回执证明。
+
+后端沿用原会话 API，并补充以下协议：
+
+| 接口/入口 | 输入与成功结果 | 拒绝与恢复 |
+| --- | --- | --- |
+| `GET /api/agent/meta?page=platform-agent` | 模型配置、平台目录版本、工作域 | 不要求指标服务挂载；普通页面的服务检查不变 |
+| `POST /api/agent/sessions` | `page=platform-agent`、`context_kind=platform` 创建中央会话 | 平台与单产品/组合上下文混用返回422 |
+| `intent.resolve` 工具 | 本轮消息ID、mode/relation/capability、顺序动作、带来源的参数/约束 | 伪造来源/能力拒绝；未接入或平台外执行请求可无动作并返回unsupported，不反复要求模型补一个虚构动作；试算缺少产品或指标时产生澄清状态 |
+| `GET /api/agent/sessions/{id}/runs/{run}/handoff?intent_id=...` | 检查可导航意图，或返回已接收任务的真实运行/保存状态 | 尚未接收的旧运行返回409；不创建目标会话 |
+| 同路径 `POST` | `intent_id` 与目标真实 `page_context`，返回目标会话/运行/当前条件 | 模型配置、服务或容量不足不提交半成品；重复请求不依赖模型/业务服务重新就绪 |
+
+执行链为：中央用户消息 → 来源账本 → 模型提案 → 工具契约校验 → 提案checkpoint → 正常终态 → 前端验证导航 → 目标页面就绪 → SQLite事务接收 → 既有指标Harness。没有额外的模型客户端、任务队列或业务计算实现。平台工具表与指标工具表分别按scope/domain过滤；能力动作引用已有工具名，启动时核对实际注册与工作域。
+
+交接以完整有效对话为来源，最多40,000字符；超出时拒绝并要求在新对话中整理，不能截断后自动执行。该上限是首期传递边界，现有页面会话的压缩/分页契约继续有效。模型API错误、结构化意图缺失、页面初始化失败、接收响应丢失、恢复读取失败分别保留原请求或任务引用并给出重试；不把失败自动改成普通聊天或新任务。
+
+### 11.3 前端与交互
+
+中央页面复用 `AgentPanel`，增加内嵌展示方式，不复制会话 hook、输入、取消、恢复与消息渲染。工作区显示简短能力说明、建议输入和同轮任务成果。正常新请求完成识别后按已校验目标导航；恢复旧的完成会话时不突然跳转，提供继续入口。普通导航只改变路由，不发送目标执行消息。
+
+指标中心从 URL 中读取交接引用，等待目录/页面初始化完成后接收。接收期间显示状态并阻止重复操作；失败保留任务引用并提供重试/返回中央对话。成功后复用指标面板恢复服务端已登记的目标会话，不在浏览器重新拼接用户要求。交接页实例与普通指标会话隔离；离开页面时停止未完成目标运行，晚到回执不能操作新页面。刷新读取原回执，不再发起新的执行。
+
+交接组件从首次请求发出前到公共会话接纳首份快照之间持有取消责任；公共会话接管后按当前运行取消。取消以发起前已知的来源会话、来源运行和意图为身份，不依赖目标回执是否送达。新增 `POST /api/agent/sessions/{session_id}/runs/{run_id}/handoff/cancel?intent_id=...`，复用 AgentCancelRequest 校验。服务端在与受理共用的源会话事务中判断：已有回执则按其不可变目标运行调用现有 RunController.cancel；尚未受理则验证有效执行意图并持久化 cancelled_handoffs，后续受理及查询拒绝为 AGENT_HANDOFF_CANCELLED。重复请求幂等，不能取消另一个来源或目标会话后续新运行。该边界保证已送达取消与受理的两种顺序都能收敛，不把网络失败当作服务端尚未受理。站内返回及公共助手的 LLM 配置入口使用路由 Link；刷新仍读取原回执。交接请求的唯一 Promise 只负责回执校验与失败清理，effect 的活跃标志只控制界面呈现。ready=false 或回执丢失均不能释放取消责任；重新就绪仍呈现已有回执，不重新受理。请求失败时无论界面是否观察都清除失败的 Promise，以便恢复就绪后继续同一冻结请求。公共会话恢复也先按身份、页面和版本校验接纳快照，再决定是否继续事件读取；关闭浮窗或暂停观察不能丢失首次快照或更新版本的运行责任，旧版本仍由统一接纳入口拒绝。实际会话选择与条件恢复共用一次恢复结果，本地清空后新建的会话优先于原交接会话，空引用保持已清空。交接请求及条件基线在首次发送前一起冻结，effect 重启与响应丢失后的重试复用同一份请求，不在回执到达时重新取当前条件。条件只在首次恢复时回填，且不覆盖交接或读取等待期间的人工修改；离页后返回的有效会话快照仍取消其未完成运行。
+
+取消标识由公共 `cancelAgentRun` 统一生成，调用方只传会话与运行 ID；同一运行使用相同标识，各运行相互隔离。当前服务端运行 ID 为 `run-` 加32位十六进制，`cancel-` 前缀后共43字符，符合后端1至64字符约束。交接取消使用 `cancel-` 加意图 ID，共46字符。禁止由页面再次拼接会话 ID；不放宽服务端验证，也不截断标识。回归使用真实长度 ID，覆盖请求/回执/读取/卸载交错及重试，并经实际 FastAPI 路由与持久化运行验证取消终态；仅观察模拟接口收到请求不算取消成功。
+
+内嵌聊天保持单一消息滚动区、可见状态、键盘操作、窄屏布局与现有中英文词条。导航前不覆盖指标编辑器草稿；AI 产物通过既有草稿/试算卡片交付。
+
+### 11.4 验证与开放边界
+
+离线回归覆盖目录一致性、引用/动作校验、缺少决策、闲聊、澄清、多轮修订、未接入能力、取消竞争、陈旧交接、事务回滚、响应丢失/刷新幂等、实例隔离、原始行情门控及独立保存确认。浏览器验证中央入口、自动/仅导航、目标接收、重试、三档视口及文字对比度。
+
+另提供独立真实模型评测入口：固定语料、模型/提示词/目录指纹、重复次数、能力/动作与澄清准确率、误执行数、耗时与 token。工程自动测试禁止联网；真实评测需明确运行独立命令。候选质量门槛为清晰请求能力和动作准确率不低于95%，否定/不支持/未确认保存等关键样本不误执行，并单独报告过度澄清。未取得真实评测报告前不声称达到该门槛。
+
+| ID | 状态 | 工作项 | 完成判据 | 证据/剩余事项 |
+| --- | --- | --- | --- | --- |
+| AI-07 | verified | 平台能力、结构化意图、中央入口与指标交接 | 离线后端/前端/浏览器及文档检查通过 | [本轮验收](#115-本轮验收2026-09-23)；首期仅指标中心接收执行 |
+| AI-08 | verified | 平台意图真实模型效果评测 | 固定语料重复评测及关键误执行门槛通过 | [限定语料验收](#115-本轮验收2026-09-23)；不代表完整研究任务效果或其他模型通过 |
+
+
+### 11.5 本轮验收（2026-09-23）
+
+在 `ISSUE2609/AiFunctions` 的本轮工作区完成，基线为 `e13c2bf7107ef23f6f4124831794cb57b580dbda`。未提交、推送或部署；下述结果仅对应本轮实现与所列范围。
+
+- 后端 `test_agent_*.py` 与 `test_llm_settings_routes.py` 共456项通过；其中新增意图/交接22项覆盖实际目标工具调用、HTTP回执、事务失败回滚、取消、旧来源、产品缺失、条件恢复及服务缺失时的幂等重放。随后补充评分器须真正ready及拒绝误导航的回归，最终专项23项复验通过。
+- 前端173个文件、1516项通过；TypeScript、Vite构建、语言与设计检查通过。浏览器 `platform-agent.spec.ts` 与 `agent-panel.spec.ts` 在320/768/1440三档共147项通过，含导航与接收、刷新幂等、常规聊天、未配置状态、旧助手交互与文字对比度。早期一轮草稿展示超时和测试服务器提前关闭均不计为通过；固定本轮Vite生命周期后的完整复跑通过。
+- 真实模型使用当前已配置模型名 `gpt-5.6-terra`，仅发送合成语料。固定24个场景各重复3次，共72次，初次完整评测69次通过（95.8%），关键误跳转/误执行为0。开发样本16项、预留样本8项；预留样本后来用于问题定位，不能再把后续复验当作独立泛化证明。
+- 三类偏差分别是：跨能力任务仍标execute但被澄清门禁阻止；不支持请求被空动作契约拒绝后反复重试；英文创作请求把查来源等内部步骤写入剩余任务导致过度澄清。已统一公开澄清类型、允许unsupported提案无执行动作，并在工具schema中区分用户动作与内部步骤。修改后对不支持/复合任务及中英文创作共12次真实复验全部通过；未将此12次结果替换为全量72次复跑。
+- 模型报告位于本地 `.run/intent-eval-final.json`、`.run/intent-eval-corrections.json`、`.run/intent-eval-authoring.json`。评分同时检查mode、能力、动作、真正ready状态、修订与误执行；usage按最后一轮标注。本轮报告保存模型名及目录/提示词/语料指纹；脚本现已补充工具schema/实现指纹、每轮usage及失败工具轨迹，供后续运行。独立联网入口、固定语料与重复次数继续保留。提示词、工具契约或模型变动后应复评。
+
+复现：离线使用上述测试文件与前端脚本；真实模型使用 `PYTHONPATH=.:backend python scripts/eval_agent_intent.py --live --repeat 3 --output .run/intent-eval.json`。可用 `--case` 指定场景复验。自动化测试继续禁止网络，真实评测使用隔离临时会话，不读取正式行情、不写指标目录。
+
+文档结构、索引、变更影响核对及Hermes覆盖/路由检查通过；新文件的可复现性通过临时候选index检查，真实暂存区保持不变。完整金融研究任务的实际效果、费用对照、正式数据资格与容器部署仍不在上述通过结论内。首期交接40,000字符边界与跨多个执行页面需要澄清的限制继续保留。
+
+2026-09-24交接恢复P2复验：修复“回执已到而恢复未返回时离页漏停”及“清空重建后刷新混用旧条件与新会话”。相关前端9个文件187项通过，含6项新增时序/条件回归；`platform-agent.spec.ts` 在320/768/1440三档共18项通过，含两条缺陷操作链。类型、构建、语言与设计检查通过。首轮浏览器新增用例遗漏预览页签切换且周期夹具格式错误，修正夹具后全18项重跑通过；此处不沿用上一轮后端或真实模型评测作为本次新证据。
+
+同日追加复审发现，上述模拟验收未覆盖取消标识长度及交接回执到达前的条件修改，不能据此认定这两项已解决。本次收敛取消标识的生成入口，并冻结完整交接尝试及重试条件。前端相关10个文件191项、后端API与意图61项、三档浏览器21项通过；实际接口确认旧81字符标识返回422，新的前端请求体被接收且运行最终为cancelled。另覆盖响应丢失后重试与effect重启，类型及构建通过。仅属于离线工程复验，未重跑真实模型或部署。
+
+同日再次复审补齐任务归属与界面观察的边界：上一轮未覆盖ready持续为false时收到回执，以及关闭浮窗期间收到恢复快照。本次将交接回执登记与失败清理移至唯一请求Promise；共享恢复快照按原身份/版本入口接纳，不依赖观察者活跃状态。8项新增单测覆盖就绪切换、StrictMode、迟到回执、失败重试、关闭/暂停观察及新旧版本快照，相关10个文件199项通过；三档浏览器24项通过，包含校验失败后离页及清空重建后关闭浮窗再离页。类型、构建通过。首轮桌面浏览器用例在发送前超时，未计为通过；最终固定源码完整复跑通过。本次没有修改后端接口或重跑真实模型，不把上一轮接口测试计为新增验收。
+
+同日交接取消边界复验：此前连续P2的共因是以界面观察状态和回执送达作为后台任务责任的起点，缺少受理前后共用的取消协议。新增以来源身份取消交接的服务端入口：受理前持久化取消记录，受理后复用不可变运行取消；前端从派发前持责到会话接管，并将返回及LLM配置入口统一为站内路由。此前两条浏览器反例在320/768/1440均未发出取消请求，本次均通过；另补模型停用后前往配置的退出链路。后端460项、前端相关10个文件201项、三档浏览器33项通过；真实HTTP校验覆盖取消先于/后于受理、生产长度标识、取消终态、错误身份、幂等及不误停下一轮。前端新增2项无回执责任检查。配置链接改为路由后，4项旧单测因缺少Router包装失败；补齐与应用一致的测试宿主后相关201项完整复跑通过，未把首轮失败计为通过。类型、构建、设计和语言检查通过。本次仅验证离线工程与正常站内退出；取消请求必须送达服务端，浏览器强制退出或持续断网不在该保证内，刷新仍按原恢复契约处理。未重跑真实模型或执行部署。

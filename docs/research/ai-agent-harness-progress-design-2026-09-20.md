@@ -1,5 +1,7 @@
 # AI 投研助手 Harness：无默认次数上限与无进展检测详细设计
 
+迁移状态（2026-09-30）：本文保留迁移前的行为契约与历史实现证据。当前候选已通过外部框架挂载；最新调用链、已验证范围和剩余门槛见[整体迁移设计](portable-agent-platform-integration.md)，不能将下文旧运行器路径当作当前装配入口。
+
 > 日期：2026-09-20。状态：核心运行链已实施；当前验证证据与边界见第 18 节。
 > 需求：默认不限制单次用户请求内的工具调用数与模型往返数；持续有进展就继续，发现无进展时纠偏、暂停并保留成果。
 > 本文是 harness 执行、检测、恢复、事件与上下文协议的唯一详细设计来源；替代旧方案的 12 次调用、6 轮往返和固定修复/预览次数配额。指标计算、PIT、人工保存与页面范围仍遵循原有设计。
@@ -38,15 +40,15 @@
 
 | 当前入口/符号 | 实际行为 | 目标变化 |
 | --- | --- | --- |
-| [harness.py](../../backend/agent/harness.py) `run_turn` | `MAX_TOOL_CALLS=12`、`MAX_TOOL_ROUNDS=6`；整轮位于 `store.locked()`；正常/到限结束才写状态 | 无默认总次数上限；短事务认领和逐步 checkpoint；网络与计算期间不持锁 |
-| [harness.py](../../backend/agent/harness.py) `_history` | 仅装配最近 8 条人类/助手文本；循环内工具消息累积在内存 | 完整持久化转录，按上下文容量装配与压缩 |
-| [sessions.py](../../backend/agent/sessions.py) `append_event` | `seq=len(events)+1`，超过 200 条裁头；继续追加会重复序号 | 持久化递增 `next_event_seq`；展示分页与序号分离 |
-| [sessions.py](../../backend/agent/sessions.py) `store_draft` | invalid 草稿反复校验仍可能递增 revision；定义 hash 含展示字段 | revision 不作为进展；精确定义 hash 与计算语义 hash 分开 |
-| [tools.py](../../backend/agent/tools.py) `execute_tool` | 白名单、Pydantic 参数与作用域校验；handler 改当前会话草稿；结果有界 | 在同一入口增加调用前检测、调用后语义投影和 checkpoint，不绕过现有守卫 |
-| [llm.py](../../backend/agent/llm.py) `HttpLLMClient.complete` | 同步 urllib，整包响应，已有错误分类和工具名协议适配；未返回完整 usage | 使用已安装 httpx 实现可取消请求；保留公司网关的 Chat Completions 与别名契约 |
-| [routes.py](../../backend/agent/routes.py) `post_agent_message` | 单个同步请求包住整轮；无运行查询、取消与事件订阅 API | 同一 runner 支持整轮兼容响应和异步运行句柄 |
-| [AgentPanel.tsx](../../frontend/src/components/agent/AgentPanel.tsx) | 已有即时用户气泡、“思考中…”和失败重试；状态仍主要在组件内存 | 根据持久化消息和运行事件恢复；增加停止、进展状态、暂停后继续 |
-| [commit.py](../../backend/agent/commit.py) `commit` | 人类 API 独立于工具；业务写入后保存回执；异常期间没有跨存储原子事务 | 保存入口继续人类专属；在写前记 intent，写入不确定时禁止自动重放 |
+| [harness.py](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/harness.py) `run_turn` | `MAX_TOOL_CALLS=12`、`MAX_TOOL_ROUNDS=6`；整轮位于 `store.locked()`；正常/到限结束才写状态 | 无默认总次数上限；短事务认领和逐步 checkpoint；网络与计算期间不持锁 |
+| [harness.py](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/harness.py) `_history` | 仅装配最近 8 条人类/助手文本；循环内工具消息累积在内存 | 完整持久化转录，按上下文容量装配与压缩 |
+| [sessions.py](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/sessions.py) `append_event` | `seq=len(events)+1`，超过 200 条裁头；继续追加会重复序号 | 持久化递增 `next_event_seq`；展示分页与序号分离 |
+| [sessions.py](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/sessions.py) `store_draft` | invalid 草稿反复校验仍可能递增 revision；定义 hash 含展示字段 | revision 不作为进展；精确定义 hash 与计算语义 hash 分开 |
+| [tools.py](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/tools.py) `execute_tool` | 白名单、Pydantic 参数与作用域校验；handler 改当前会话草稿；结果有界 | 在同一入口增加调用前检测、调用后语义投影和 checkpoint，不绕过现有守卫 |
+| [llm.py](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/llm.py) `HttpLLMClient.complete` | 同步 urllib，整包响应，已有错误分类和工具名协议适配；未返回完整 usage | 使用已安装 httpx 实现可取消请求；保留公司网关的 Chat Completions 与别名契约 |
+| [routes.py](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/routes.py) `post_agent_message` | 单个同步请求包住整轮；无运行查询、取消与事件订阅 API | 同一 runner 支持整轮兼容响应和异步运行句柄 |
+| [AgentPanel.tsx](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/frontend/src/components/agent/AgentPanel.tsx) | 已有即时用户气泡、“思考中…”和失败重试；状态仍主要在组件内存 | 根据持久化消息和运行事件恢复；增加停止、进展状态、暂停后继续 |
+| [commit.py](https://github.com/KevinCJM/AiFunctions/blob/77ab60ee4bfe540250ece5cfa8fe5283e7bac136/backend/agent/commit.py) `commit` | 人类 API 独立于工具；业务写入后保存回执；异常期间没有跨存储原子事务 | 保存入口继续人类专属；在写前记 intent，写入不确定时禁止自动重放 |
 
 事件裁剪、长锁和中断丢进度是此次改造处理的依赖；实现结果与测试证据统一见第 18 节。
 

@@ -1,3 +1,4 @@
+vi.mock('../integrations/portable-agent/PortableAgentMount', async () => ({ default: (await import('../test/portablePageProbe')).PortablePageProbe }))
 import type { ReactNode } from 'react'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'

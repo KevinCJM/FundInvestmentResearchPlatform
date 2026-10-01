@@ -9,3 +9,5 @@ scipy>=1.10
 numba>=0.57
 httpx>=0.24
 tushare>=1.4
+
+PyJWT==2.15.0

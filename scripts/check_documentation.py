@@ -127,7 +127,8 @@ class Candidate:
 
 
 def managed(path: str) -> bool:
-    return path.endswith('.md') and ('/' not in path or path.startswith('docs/') or path == 'deploy/README.md')
+    return path.endswith('.md') and ('/' not in path or path.startswith('docs/') or path == 'deploy/README.md'
+                                    or path == 'standalone-agent/README.md' or path.startswith('standalone-agent/docs/'))
 
 
 def run_candidate_checker(candidate: Candidate, source: bytes, digest: str,

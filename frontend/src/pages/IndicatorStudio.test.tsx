@@ -1,3 +1,5 @@
+import { portablePageProbe } from '../test/portablePageProbe'
+vi.mock('../integrations/portable-agent/PortableAgentMount', async () => ({ default: (await import('../test/portablePageProbe')).PortablePageProbe }))
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
@@ -443,7 +445,6 @@ describe('IndicatorStudio', () => {
   let validateAsSeries = false
   let snapshotConfig: SnapshotIndicatorConfig
   let previewValue: number | null = 0.1234
-  let agentMessages: Array<Record<string, any>> = []
 
   beforeEach(() => {
     catalog = [builtIn, reusableBuiltIn, rollingSharpeSource, portfolioBuiltIn]
@@ -451,7 +452,6 @@ describe('IndicatorStudio', () => {
     composeFailure = false
     validateAsSeries = false
     previewValue = 0.1234
-    agentMessages = []
     snapshotConfig = {
       schema_version: 1,
       revision: 1,
@@ -757,20 +757,7 @@ describe('IndicatorStudio', () => {
         })
       }
       if (url === '/api/custom-indicators/evaluate-portfolio') return json({ results: [{ indicator_id: null, indicator_revision: null, indicator_name: '组合波动率', target: { kind: 'portfolio', product_id: 'run-001', name: '稳健组合' }, period: 'snapshot', value: 0.087, status: 'ok', warnings: [], window: { requested_as_of: null, effective_as_of: '2026-08-28', start_date: '2024-01-02', end_date: '2026-08-28', observation_count: 640, data_latest_date: '2026-08-28' } }], summary: { total: 1, ok: 1, warning: 0, error: 0 }, cache: { hits: 0, misses: 1 }, execution: fixedExecution })
-      if (url.startsWith('/api/agent/')) {
-        const run = (revision: number) => ({ run_id: `agent-run-${revision}`, session_id: 'agent-studio', session_revision: revision, run_revision: 1, status: 'completed', phase: 'thinking',
-          response: { session_id: 'agent-studio', session_revision: revision, reply: { text: '页面显示为 0。' }, artifacts: {} } })
-        if (url === '/api/agent/meta') return json({ configured: true, model: 'fixture' })
-        if (url === '/api/agent/sessions') return json({ session_id: 'agent-studio', session_revision: 0 })
-        if (url.includes('/messages')) {
-          const body = JSON.parse(String(init?.body || '{}'))
-          agentMessages.push(body)
-          return json({ ...run(agentMessages.length), message_id: body.message_id })
-        }
-        if (url.includes('/events')) return json({ items: [], has_more: false, next_event_seq: 1 })
-        if (url.includes('/runs/')) return json(run(agentMessages.length))
-        return json({ session_id: 'agent-studio', session_revision: agentMessages.length, messages: [], next_event_seq: 1, active_run: null })
-      }
+
       return json({})
     }))
   })
@@ -1808,13 +1795,8 @@ describe('IndicatorStudio', () => {
     expect(await screen.findByText('预览完成：1 个成功，0 个需关注。')).toBeInTheDocument()
     expect(screen.getAllByText('0.00%').length).toBeGreaterThan(0)
 
-    fireEvent.click(screen.getByRole('button', { name: '打开 AI 助手' }))
-    const input = await screen.findByRole('textbox', { name: '发送消息' })
-    fireEvent.change(input, { target: { value: '这个指标为什么是 0？' } })
-    fireEvent.click(screen.getByRole('button', { name: '发送' }))
-    await waitFor(() => expect(agentMessages).toHaveLength(1))
-
-    const snapshot = agentMessages[0].page_snapshot
+    const binding = portablePageProbe.props!
+    const snapshot = binding.capturePageSnapshot!()! as { snapshot_id: string; sections: Record<string, any> }
     expect(snapshot).toMatchObject({ version: 1, page: 'indicator-studio' })
     expect(snapshot.snapshot_id).toMatch(/^snap-[0-9a-f]{32}$/)
     expect(snapshot.sections.results.displayed_source).toBe('manual_preview')
@@ -1835,6 +1817,6 @@ describe('IndicatorStudio', () => {
     expect(snapshot.sections.editing.runtime_inputs).toMatchObject({ period: '1Y', as_of: null, runtime_parameters: {} })
     expect(snapshot.sections.editing.runtime_inputs.targets[0]).toMatchObject({ kind: 'etf', product_id: '510300.SH' })
     expect(snapshot.sections.editing.state).toMatchObject({ canvas_pending: false, parameter_pending: false })
-    expect(agentMessages[0].page_context.calculation).toMatchObject({ context_kind: 'single_product' })
+    expect(binding.pageContext.calculation).toMatchObject({ context_kind: 'single_product' })
   })
 })
