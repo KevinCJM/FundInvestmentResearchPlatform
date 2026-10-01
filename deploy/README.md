@@ -57,6 +57,9 @@ route to it. `/assistant/widget/` and `/assistant/v2/apps/` go to the agent;
 SSE buffering is disabled. `/internal/` and other assistant paths are denied.
 The two services keep distinct persistent volumes. The agent receives only
 its own data, declarative configuration and the host-tool credential.
+Regenerate the agent configuration with `scripts/export_portable_agent_config.py`
+when the shared navigation/capability catalog changes, so the agent loads the
+same stage, node and tool links exposed by the host capability API.
 
 Before starting, supply these environment variables from deployment secrets:
 

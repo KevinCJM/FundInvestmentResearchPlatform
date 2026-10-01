@@ -30,8 +30,9 @@ def capabilities():
     navigation = json.loads((Path(__file__).resolve().parents[3]/'shared/platform-navigation.json').read_text())
     entries = {}
     for stage in navigation:
-        for item in [stage, *stage.get('nodes', [])]:
-            entries[item['path']] = {'id': stage['id']+'.'+item['id'], 'title': item['label'], 'description': item['description'],
+        for item in [stage, *stage.get('nodes', []), *stage.get('tools', [])]:
+            capability_id = stage['id']+'.'+item['id'] if 'id' in item else item['path'].strip('/').replace('/', '.')
+            entries[item['path']] = {'id': capability_id, 'title': item['label'], 'description': item['description'],
                 'path': item['path'], 'status': item.get('status', 'available'), 'actions': ['navigate'], 'handoff': False,
                 'parameters': {'type': 'object', 'additionalProperties': False}}
     for page in ('indicator-studio', 'product-research', 'product-compare', 'holding-diagnosis'):
