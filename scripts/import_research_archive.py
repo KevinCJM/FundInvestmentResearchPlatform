@@ -49,8 +49,13 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
             if old:
                 if old['hash'] != archive['content_hash']:
                     raise ValueError('Dataset ID already refers to a different archive')
-                output.write_text(old['result']); output.chmod(0o600)
-                return {'applied': True, 'replayed': True}
+                if old['result']:
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    output.write_text(old['result']); output.chmod(0o600)
+                    return {'applied': True, 'replayed': True}
+            else:
+                # Bind interrupted work to this exact archive before writing any imported objects.
+                db.execute('INSERT INTO migration_imports VALUES(?,?,?)', (archive['dataset_id'], archive['content_hash'], ''))
         for session in archive['sessions']:
             sid = session['source_id']
             try:
@@ -70,9 +75,11 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
                          'stale': True, 'valid': False}  # Historical validation is not current execution authority.
             value = {'id': aid, 'revision': 1, 'subject': principal['sub'], 'workspace': principal['workspace'],
                      'scope': record['scope'], 'context_hash': record['hash'], 'draft': draft}
+            final_revision = 2 + sum(isinstance(item.get('draft'), dict) and bool(item['draft'].get('definition'))
+                                     for item in session.get('draft_history', []))
             with store.db() as db:
                 existing = db.execute('SELECT body FROM authorings WHERE id=?', (aid,)).fetchone()
-                if existing and json.loads(existing[0]) != value:
+                if existing and json.loads(existing[0]) not in (value, {**value, 'revision': final_revision}):
                     raise ValueError('Imported authoring collides with a different object')
                 db.execute('INSERT OR IGNORE INTO authorings VALUES(?,?,?,?,?,?)', (aid, principal['sub'], principal['workspace'],
                     'import:'+archive['dataset_id']+':'+sid, 1, stable_json(value)))
@@ -113,9 +120,14 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
                 if turn:
                     oid = target_id(archive['dataset_id'], 'artifact', str(historical['seq'])+sid)
                     if body.page_context.context_kind == 'scenario':
-                        store.save_scenario_artifact(oid, principal, {'definition': past['definition'], 'valid': False,
+                        artifact = {'definition': past['definition'], 'valid': False,
                             'validation_scope': 'historical', 'workspace': body.page_context.calculation.workspace,
-                            'context_ref': record['id'], 'source_run_id': turn['id']})
+                            'context_ref': record['id'], 'source_run_id': turn['id']}
+                        with store.db() as db:
+                            existing = db.execute('SELECT subject,workspace,body FROM scenario_artifacts WHERE id=?', (oid,)).fetchone()
+                            if existing and (existing['subject'], existing['workspace'], json.loads(existing['body'])) != (principal['sub'], principal['workspace'], artifact):
+                                raise ValueError('Imported scenario artifact collides with a different object')
+                            db.execute('INSERT OR IGNORE INTO scenario_artifacts VALUES(?,?,?,?)', (oid, principal['sub'], principal['workspace'], stable_json(artifact)))
                         reference = {'type': 'research.scenario', 'group': 'scenario:'+record['scope_key'],
                                      'title': '历史情景草稿', 'artifact_id': oid, 'historical': True}
                     else:
@@ -204,7 +216,7 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
         result['content_hash'] = stable_hash(result)
         serialized = json.dumps(result, ensure_ascii=False, indent=2)
         with store.db() as db:
-            db.execute('INSERT INTO migration_imports VALUES(?,?,?)',(archive['dataset_id'],archive['content_hash'],serialized))
+            db.execute('UPDATE migration_imports SET result=? WHERE dataset=? AND hash=?', (serialized, archive['dataset_id'], archive['content_hash']))
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(serialized); output.chmod(0o600)
         return {'applied':True,'sessions':len(result['sessions']),'memories':len(result['memories']),'quarantined':result['quarantined']}

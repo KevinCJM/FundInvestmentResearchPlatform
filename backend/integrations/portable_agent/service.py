@@ -171,7 +171,8 @@ class HostIntegration:
         identity.permit(current, 'assistant:use')
         if action not in {'read', 'cancel'} and (record['revoked'] or record['expires'] <= time.time()):
             raise ResearchError('CONTEXT_EXPIRED', '页面授权已失效，请重新登记。', status_code=403)
-        if record['scope'] != 'platform' and not any('*' in current['scopes'] or permission(n) in current['scopes'] for n in record['tool_names']):
+        # A frozen context also authorizes its signed history. Partial revocation invalidates the whole grant.
+        if record['scope'] != 'platform' and not all('*' in current['scopes'] or permission(n) in current['scopes'] for n in record['tool_names']):
             raise ResearchError('FORBIDDEN', '当前权限已撤销。', status_code=403)
         if action == 'adopt':
             operation = self.store.operation(operation_id)
@@ -293,7 +294,15 @@ class HostIntegration:
                 terminal = tools.get_tool(operation['name']).progress in {None, 'read'} or exc.code in {'AGENT_DRAFT_REQUIRED', 'AGENT_PREVIEW_TARGET_REQUIRED', 'AGENT_TOOL_DOMAIN_MISMATCH',
                     'AGENT_CONTEXT_CHANGED', 'CONTEXT_CHANGED', 'REVISION_CONFLICT', 'VALIDATION_ERROR',
                     'SCENARIO_PURPOSE_MISMATCH', 'SCENARIO_DEFINITION_REQUIRED', 'SCENARIO_AUTHORING_INVALID',
-                    'RAW_DATA_FORBIDDEN', 'TOOL_DOMAIN_MISMATCH'}
+                    'RAW_DATA_FORBIDDEN', 'TOOL_DOMAIN_MISMATCH', 'RESEARCH_SERVICE_UNAVAILABLE',
+                    'AGENT_PAGE_EVIDENCE_REQUIRED', 'AGENT_PAGE_SECTION_UNAVAILABLE',
+                    'AGENT_PAGE_DEFINITION_UNAVAILABLE', 'AGENT_PAGE_TARGET_UNAVAILABLE',
+                    'AGENT_PAGE_REQUEST_UNAVAILABLE', 'AGENT_PAGE_REQUEST_INVALID',
+                    'AGENT_PAGE_PARAMETERS_INVALID', 'AGENT_PAGE_DEFINITION_INVALID',
+                    'AGENT_PAGE_FEES_CHANGED', 'AGENT_PAGE_SERVICE_UNAVAILABLE',
+                    'AGENT_PAGE_OPERATION_NOT_ALLOWED', 'AGENT_PORTFOLIO_RUN_INVALID', 'AGENT_SCENARIO_REQUEST_REQUIRED',
+                    'AGENT_PRODUCT_UNAVAILABLE', 'AGENT_INDICATOR_VERSION_CHANGED',
+                    'AGENT_DEMO_NOT_EVIDENCE', 'AGENT_ROLLING_WINDOW_AMBIGUOUS'}
                 fields = {'status': 'failed' if terminal else 'unknown', 'error': exc.detail()}
                 if terminal:
                     fields['result'] = {'model': data_policy.seal({'ok': False, 'code': exc.code, 'message': exc.message,
