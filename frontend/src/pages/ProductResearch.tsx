@@ -28,11 +28,11 @@ import {
   type NativeNumericalExecutionAudit,
 } from '../utils/fixedNjitExecution';
 import { Badge, Button, Card, EmptyState } from '../components/ui';
-import AgentPanel from '../components/agent/AgentPanel';
-import usePageContextRevision from '../components/agent/usePageContextRevision';
-import useResearchAgentView from '../components/agent/useResearchAgentView';
-import { buildProductResearchEvidence, frozenIndicatorRefs, pageResultReference, type PageResultRecord } from '../services/agentPageEvidence';
-import type { AgentPageContext } from '../services/agent';
+import PortableAgentMount from '../integrations/portable-agent/PortableAgentMount';
+import { usePageContextRevision } from '../app/useResearchBinding';
+import { useResearchView } from '../app/useResearchBinding';
+import { buildProductResearchEvidence, frozenIndicatorRefs, pageResultReference, type PageResultRecord } from '../services/researchPageEvidence';
+import type { ResearchPageContext } from '../services/researchContracts';
 import { systemText as s, useI18n } from '../i18n/runtime';
 
 interface ProductItem {
@@ -299,7 +299,7 @@ export default function ProductResearch() {
   const [responseKey, setResponseKey] = useState('');
   const [listRecord, setListRecord] = useState<PageResultRecord | null>(null);
   const [metricRecord, setMetricRecord] = useState<PageResultRecord | null>(null);
-  const agentView = useResearchAgentView(researchAsOf);
+  const agentView = useResearchView(researchAsOf);
   const listKey = JSON.stringify([productKind, searchKeyword, filters, conditions, snapshotMetrics, sortKey, sortDir, page, pageSize, agentView.identity]);
   const [researchPreference, setResearchPreference] = useMetricDisplayPreference(
     'product-research',
@@ -570,7 +570,7 @@ export default function ProductResearch() {
     viewMode, researchAsOf, allMatchingSelected, Object.keys(selectedProducts).sort(), Array.from(excludedProductIds).sort(),
     metricsKey, agentView.identity,
   ]));
-  const agentPageContext: AgentPageContext = {
+  const agentPageContext: ResearchPageContext = {
     page: 'product-research',
     page_instance_id: `product-research:${productKind}`,
     context_revision: agentContextRevision,
@@ -1229,8 +1229,8 @@ export default function ProductResearch() {
         )}
       </section>
       <MetricDefinitionDrawer indicator={definitionIndicator} onClose={() => setDefinitionIndicator(null)} />
-      <AgentPanel pageContext={agentPageContext} busy={loading || !!error || responseKey !== listKey || agentView.viewState === 'unknown'}
-        conversationOptions={{ capturePageSnapshot: captureAgentSnapshot, enabled: !loading && !error && responseKey === listKey && agentView.viewState !== 'unknown', cancelOnUnmount: true }}
+      <PortableAgentMount pageContext={agentPageContext} busy={loading || !!error || responseKey !== listKey || agentView.viewState === 'unknown'}
+        capturePageSnapshot={captureAgentSnapshot}
         renderStatus={() => <p role="status" className="text-xs text-slate-600">{loading || error || responseKey !== listKey ? s('agent.researchPage.loading') : s('agent.researchPage.batch', { count: agentBatchTargets.length, visible: currentPageTargets.length, selected: selectedCount })}</p>} />
     </div>
   );

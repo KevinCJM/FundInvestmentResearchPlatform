@@ -1,4 +1,5 @@
 import { ErrorPanel } from '../components/ui'
+import ScenarioAssistant from '../integrations/portable-agent/ScenarioAssistant';
 import { isNativeNumericalExecution } from '../utils/fixedNjitExecution';
 import { NumberInput } from "../components/risk-models/ResearchUI";
 import {
@@ -2675,7 +2676,7 @@ function PublishPanel({
   );
 }
 
-export function ScenarioSimulationCenter() {
+export function ScenarioSimulationCenter({ active = true }: { active?: boolean }) {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("configure");
   const [configureStep, setConfigureStep] = useState(0);
   const [visitedSteps, setVisitedSteps] = useState([true, false, false, false]);
@@ -2923,6 +2924,10 @@ export function ScenarioSimulationCenter() {
 
   return (
     <div className="space-y-5" data-testid="scenario-algorithm-center">
+      <ScenarioAssistant page="scenario-algorithms" workspace="stress" active={active} busy={loading || !!busy}
+        definition={draft as unknown as Record<string, unknown> | null}
+        onApply={value => { setDraft(value as unknown as ScenarioDefinition); setSaved(null); setRun(null); setActiveTab('configure') }}
+        onView={value => { if (value.result) { setRun(value.result as unknown as ScenarioStressRun); setActiveTab('result') } }} />
       <header className="rounded-xl border border-slate-800 bg-slate-950 px-5 py-5 text-white shadow-sm sm:px-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>

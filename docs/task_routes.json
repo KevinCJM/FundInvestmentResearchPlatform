@@ -239,14 +239,21 @@
         "regimes.validate",
         "regimes.read",
         "regimes.lookup",
-        "AI 找不到情景算法"
+        "AI 找不到情景算法",
+        "意图识别",
+        "中央助手",
+        "跨页交接",
+        "PlatformAgent",
+        "CopilotKit",
+        "AG-UI",
+        "ResearchRunner"
       ],
       "negative_keywords": [
         "routing memory only"
       ],
       "route_priority": 100,
       "first_read_modules": [
-        "ai_research_agent"
+        "portable_agent_integration"
       ],
       "expand_to_modules": [
         "backend_custom_indicator_service",
@@ -257,7 +264,8 @@
         "market_data_snapshot_lifecycle",
         "project_docs",
         "backend_regime_research",
-        "frontend_regime_research"
+        "frontend_regime_research",
+        "frontend_app_shell"
       ],
       "pitfall_ids": [
         "P01",
@@ -1472,6 +1480,88 @@
       "scope_flags": [
         "subtree_only",
         "research_only"
+      ]
+    },
+    {
+      "id": "R89",
+      "task_type": "standalone_embeddable_agent_product",
+      "match_keywords": [
+        "portable-agent",
+        "PortableAgent",
+        "独立智能体",
+        "独立网页智能体",
+        "独立嵌入端",
+        "智能体整体独立"
+      ],
+      "negative_keywords": [],
+      "route_priority": 110,
+      "first_read_modules": [
+        "portable_agent_integration"
+      ],
+      "expand_to_modules": [
+        "portable_agent_integration",
+        "documentation_maintenance"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P25",
+        "P35"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair"
+      ],
+      "stop_and_verify_codes": [
+        "run_minimum_regression"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape"
+      ],
+      "scope_flags": [
+        "subtree_only"
+      ]
+    },
+    {
+      "id": "R90",
+      "task_type": "portable_agent_platform_integration_and_migration",
+      "match_keywords": [
+        "portable-agent-platform-integration",
+        "KevinCJM/portable-web-agent",
+        "融入智能体",
+        "智能体整体迁移",
+        "不保留智能体代码",
+        "平台接入独立智能体"
+      ],
+      "negative_keywords": [],
+      "route_priority": 112,
+      "first_read_modules": [
+        "portable_agent_integration",
+        "documentation_maintenance"
+      ],
+      "expand_to_modules": [
+        "backend_custom_indicator_service",
+        "frontend_app_shell"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P12",
+        "P25",
+        "P35"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair",
+        "inspect_security_surface"
+      ],
+      "stop_and_verify_codes": [
+        "run_minimum_regression",
+        "validate_ai_routing"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape",
+        "read_unsampled_module_paths"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "external_framework_separate_repository"
       ]
     }
   ]

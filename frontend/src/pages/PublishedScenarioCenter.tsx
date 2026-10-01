@@ -1,4 +1,5 @@
 import { ErrorPanel } from '../components/ui'
+import ScenarioAssistant from '../integrations/portable-agent/ScenarioAssistant'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
@@ -19,7 +20,7 @@ export function ScenarioPathTable({ variables, rows, title }: { variables: RiskV
   return <div className="min-w-0"><div className="max-h-80 overflow-auto"><table className="w-full min-w-[400px] text-sm"><caption className="mb-2 text-left font-medium">{title}（每期变动）</caption><thead className="bg-slate-50 text-xs text-slate-600"><tr><th scope="col" className="p-2 text-left">期数</th>{variables.map(variable => <th scope="col" key={variable.id} className="p-2 text-right">{variable.name}<br /><span className="font-normal">{variable.unit_label}</span></th>)}</tr></thead><tbody className="divide-y divide-slate-100">{rows.slice(offset, offset + 24).map((row, index) => <tr key={offset + index}><td className="p-2">{offset + index + 1}</td>{row.map((value, column) => <td className="p-2 text-right tabular-nums" key={variables[column].id}>{numberText(variables[column].unit === 'return' ? value * 100 : value, 4)}</td>)}</tr>)}</tbody></table></div>{rows.length > 24 && <div className="mt-2 flex items-center justify-between gap-2 text-xs"><button type="button" className={buttonClass} disabled={page === 0} onClick={() => setPage(value => value - 1)}>上一页</button><span>{offset + 1}—{Math.min(offset + 24, rows.length)} / {rows.length} 期</span><button type="button" className={buttonClass} disabled={offset + 24 >= rows.length} onClick={() => setPage(value => value + 1)}>下一页</button></div>}</div>
 }
 
-export default function PublishedScenarioCenter() {
+export default function PublishedScenarioCenter({ active = true }: { active?: boolean }) {
   const [pane, setPane] = useState<'library' | 'build' | 'transmission' | 'advanced'>('library')
   const [visited, setVisited] = useState({ transmission: false, advanced: false })
   const [catalog, setCatalog] = useState<RiskCatalog | null>(null)
@@ -97,6 +98,10 @@ export default function PublishedScenarioCenter() {
     finally { if (alive.current) setBusy('') }
   }
   return <div className="min-w-0 space-y-5" data-testid="published-scenario-center">
+    <ScenarioAssistant page="published-scenarios" workspace="published" active={active && (pane === 'build' || pane === 'library')}
+      busy={loading || !!busy} definition={draft as unknown as Record<string, unknown>}
+      onApply={value => { patch(value as unknown as ScenarioDraft); setPane('build'); setStep(0) }}
+      onView={value => { if (value.result) { setDraft(value.definition as unknown as ScenarioDraft); setPreview(value.result as unknown as ScenarioPreview); setSignature(JSON.stringify(value.definition)); setPublishedId(''); setAcknowledged(false); setPane('build'); setStep(2) } }} />
     <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-semibold text-slate-950">情景模拟与压测</h2><p className="mt-2 text-sm text-slate-600">从事件、经济变量或市场冲击开始，生成可复用情景，再应用于产品和组合。</p></div><button type="button" className={primaryClass} disabled={Boolean(busy)} onClick={newScenario}>新建情景</button></div>
     {/* 构建工作区不做并列页签：从情景库的「新建情景」或「查看路径」进入，返回时回到清单。 */}
     {pane === 'build'
@@ -119,7 +124,7 @@ export default function PublishedScenarioCenter() {
       </div>}
     </>}</>}
     <section hidden={pane !== 'transmission'}>{visited.transmission && <ResearchWorkbench domain="transmission" />}</section>
-    <section hidden={pane !== 'advanced'}>{visited.advanced && <div className="space-y-4"><p className="rounded-lg bg-amber-50 p-4 text-sm leading-6 text-amber-900">这里保留历史重演、随机路径、状态条件抽样和反向压力的独立实验。手工传导系数是实验假设，不会自动变成已验证的风险暴露；产品应用请使用已发布模型与情景。</p><ScenarioSimulationCenter /></div>}</section>
+    <section hidden={pane !== 'advanced'}>{visited.advanced && <div className="space-y-4"><p className="rounded-lg bg-amber-50 p-4 text-sm leading-6 text-amber-900">这里保留历史重演、随机路径、状态条件抽样和反向压力的独立实验。手工传导系数是实验假设，不会自动变成已验证的风险暴露；产品应用请使用已发布模型与情景。</p><ScenarioSimulationCenter active={active && pane === 'advanced'} /></div>}</section>
   </div>
 }
 

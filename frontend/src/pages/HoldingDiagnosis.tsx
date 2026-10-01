@@ -22,10 +22,10 @@ import type { MetricPresentation } from '../services/customIndicators'
 import { humanizeIndicatorMessage } from '../utils/indicatorDiagnostics'
 import { RegimeConditioningPanel } from '../components/HistoricalRegimeBacktest'
 import { PortfolioRiskSection } from '../components/risk-models/PublishedRiskPanel'
-import AgentPanel from '../components/agent/AgentPanel'
-import usePageContextRevision from '../components/agent/usePageContextRevision'
-import { buildHoldingDiagnosisEvidence, shortStableId, pageResultReference, type PageResultRecord, type FrozenIndicatorRef } from '../services/agentPageEvidence'
-import type { AgentPageContext } from '../services/agent'
+import PortableAgentMount from '../integrations/portable-agent/PortableAgentMount'
+import { usePageContextRevision } from '../app/useResearchBinding'
+import { buildHoldingDiagnosisEvidence, shortStableId, pageResultReference, type PageResultRecord, type FrozenIndicatorRef } from '../services/researchPageEvidence'
+import type { ResearchPageContext } from '../services/researchContracts'
 import { systemText as s } from '../i18n/runtime'
 
 const percent = (value: number | null | undefined) => value === null || value === undefined || !Number.isFinite(value) ? '—' : `${(value * 100).toFixed(2)}%`
@@ -114,7 +114,7 @@ function HoldingDiagnosisRun({ targetId, suppliedRunId }: { targetId: string | n
     run?.id ?? null, scenario.name, scenario.start_date, scenario.end_date,
     metricPreference.indicatorIds, metricPreference.periodsByIndicator, agentScenario,
   ]))
-  const agentPageContext: AgentPageContext = {
+  const agentPageContext: ResearchPageContext = {
     page: 'holding-diagnosis',
     // 页面对象由 URL 选择决定：加载中的快照不会让已打开的对话重挂。
     page_instance_id: `holding-diagnosis:${shortStableId(suppliedRunId ?? targetId ?? 'none')}`,
@@ -143,10 +143,10 @@ function HoldingDiagnosisRun({ targetId, suppliedRunId }: { targetId: string | n
       },
     })
   }
-  const assistant = <AgentPanel
+  const assistant = <PortableAgentMount
     pageContext={agentPageContext}
     busy={loading || !run || !/^run-[0-9a-f]{32}$/.test(run.id)}
-    conversationOptions={{ capturePageSnapshot: captureAgentSnapshot, enabled: !loading && !!run && /^run-[0-9a-f]{32}$/.test(run.id), cancelOnUnmount: true }}
+    capturePageSnapshot={captureAgentSnapshot}
     renderStatus={() => run ? null : <p role="status" className="text-sm text-slate-600">{s('agent.researchPage.holdingNoRun')}</p>}
   />
 

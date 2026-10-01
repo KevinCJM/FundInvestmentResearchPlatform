@@ -77,7 +77,7 @@
 | 验证证据 | [工程、指标与界面：验收纪要](verification/engineering.md) | 工程、指标与界面验收证据及适用版本 |
 | 验证证据 | [因子研究：有效历史证据](verification/factors.md) | 因子研究验收及未闭合资格 |
 | 验证证据 | [情景研究：决策与验收纪要](verification/regimes.md) | 情景研究验收、限制与待复验问题 |
-| 研究草稿 | [AI 功能设计](research/ai-functions-design.md) | AI Harness当前实现、数据准入、任务与记忆、页面范围和验证边界；真实模型效果与工程回归分开核对 |
+| 研究草稿 | [AI 功能设计](research/ai-functions-design.md) | AI Harness当前实现、数据准入、任务与记忆、页面范围和验证边界；真实模型效果与工程回归分开核对；平台能力目录、意图识别、中央入口与跨页任务交接 |
 | 研究草稿 | [指标中心 × 产品研究：AI 智能体详细设计](research/ai-agent-indicator-product-research-design-2026-09-18.md) | 未采纳研究草稿；实施前重新核对需求、代码和证据 |
 | 研究草稿 | [投前研究流程与机构买方投研差距分析](research/pre-investment-institutional-gap-analysis-2026-09-19.md) | 未采纳研究草稿；实施前重新核对需求、代码和证据 |
 | 部署 | [Production deployment](../deploy/README.md) | 部署方式、运行环境与持久化要求 |
@@ -88,6 +88,7 @@
 | 研究草稿 | [AI 指标与产品研究早期实现设计](research/ai-agent-indicator-product-research-implementation-design-2026-09-19.md) | 回溯初始实现契约；当前页面范围及接口以统一设计和代码为准 |
 | 研究草稿 | [AI 助手共用架构与接入设计](research/ai-agent-reusable-architecture-design-2026-09-21.md) | 接入公共对话、页面证据及业务适配；配合 AI 功能设计核对已验收范围 |
 | 研究草稿 | [AI 对话界面设计依据](research/ai-assistant-conversation-ui-design-2026-09-20.md) | 回溯对话交互设计；当前视觉契约以 frontend/README.md 为准 |
+| 独立产品 | [投研平台接入独立智能体：整体迁移设计](research/portable-agent-platform-integration.md) | 独立智能体整体迁移的Dev候选、业务协议、离线验收证据与剩余正式发布/生产切换门槛 |
 <!-- DOCUMENT-INDEX:END -->
 
 ## 阅读与维护边界

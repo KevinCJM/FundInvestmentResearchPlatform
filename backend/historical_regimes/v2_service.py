@@ -1797,6 +1797,7 @@ class RegimeGraphV2Service:
             job_id
             for job_id, job in self._jobs.items()
             if job["status"] in TERMINAL_JOB_STATUSES and job["expires_at"] <= now
+            and not (job.get("thread") and job["thread"].is_alive())
         ]
         for job_id in expired:
             del self._jobs[job_id]
@@ -1874,7 +1875,7 @@ class RegimeGraphV2Service:
             for key, value in job.items()
             if not key.startswith("_")
             and key not in {"definition", "cancel_event", "thread", "expires_at"}
-        } | {"expires_at": _iso(job["expires_at"])}
+        } | {"expires_at": _iso(job["expires_at"]), "execution_finished": not bool(job.get("thread") and job["thread"].is_alive())}
 
     def _update_job(self, job_id: str, **fields: Any) -> None:
         with self._lock:

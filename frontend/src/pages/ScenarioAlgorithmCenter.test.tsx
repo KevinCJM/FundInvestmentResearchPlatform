@@ -1,3 +1,5 @@
+import { portablePageProbe } from '../test/portablePageProbe'
+vi.mock('../integrations/portable-agent/PortableAgentMount', async () => ({ default: (await import('../test/portablePageProbe')).PortablePageProbe }))
 import { cppAotAudit } from '../test/cppAotFixture';
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

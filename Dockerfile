@@ -5,6 +5,8 @@ WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY frontend ./
+COPY shared /build/shared
+COPY locales /build/locales
 RUN npm run build
 
 FROM python:3.12-slim AS runtime
@@ -28,6 +30,7 @@ COPY backend/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY backend ./backend
+COPY shared ./shared
 COPY config.py ./config.py
 COPY T01_get_data.py ./T01_get_data.py
 COPY data ./data

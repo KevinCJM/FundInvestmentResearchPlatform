@@ -325,19 +325,18 @@ from services.timing_research_routes import router as timing_research_router
 from services.tactical_allocation_routes import router as tactical_allocation_router
 from services.strategic_allocation_routes import router as strategic_allocation_router
 from services.localization_routes import router as localization_router
-from services.llm_settings_routes import router as llm_settings_router
-from agent.routes import router as agent_router
-from agent.research_pages import runtime_callbacks
-from services import instrument_service
-from services.custom_indicator_routes import indicator_service as agent_indicator_service
-from services.portfolio_routes import portfolio_service as agent_portfolio_service
-
-app.state.agent_indicator_service = agent_indicator_service
-from agent.regimes import runtime_callbacks as regime_agent_callbacks
-from services.research_series_routes import research_series_service
+from integrations.portable_agent.routes import install as install_portable_agent
+from research_access.research_pages import runtime_callbacks
 from services.historical_regime_routes import regime_graph_v2_service
-app.state.agent_page_services = {**runtime_callbacks(instruments=instrument_service, portfolio=agent_portfolio_service),
-                                 **regime_agent_callbacks(regime_graph_v2_service, research_series_service)}
+from services.scenario_stress_routes import scenario_stress_service
+from services.published_scenario_routes import published_scenario_service
+from services.research_series_routes import research_series_service
+from services import instrument_service
+from services.custom_indicator_routes import indicator_service as assistant_indicator_service
+from services.portfolio_routes import portfolio_service as assistant_portfolio_service
+
+assistant_page_services = runtime_callbacks(instruments=instrument_service, portfolio=assistant_portfolio_service)
+assistant_page_services.update(graph=regime_graph_v2_service, stress=scenario_stress_service, published=published_scenario_service, sources=research_series_service)
 
 app.include_router(data_router)
 app.include_router(pit_router)
@@ -366,8 +365,7 @@ app.include_router(risk_model_router)
 app.include_router(transmission_router)
 app.include_router(published_scenario_router)
 app.include_router(localization_router)
-app.include_router(llm_settings_router)
-app.include_router(agent_router)
+install_portable_agent(app, indicator_service=assistant_indicator_service, page_services=assistant_page_services)
 
 
 @app.get("/api/health")

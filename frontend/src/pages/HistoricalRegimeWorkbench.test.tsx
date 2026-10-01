@@ -1,8 +1,10 @@
+vi.mock('../integrations/portable-agent/PortableAgentMount', async () => ({ default: (await import('../test/portablePageProbe')).PortablePageProbe }))
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StrictMode, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import HistoricalRegimeWorkbench from './HistoricalRegimeWorkbench'
+import { portablePageProbe } from '../test/portablePageProbe'
 import { ResearchContextProvider } from '../app/ResearchContext'
 import type { RegimeGraphDefinition } from '../services/regimeGraph'
 
@@ -138,6 +140,7 @@ describe('HistoricalRegimeWorkbench', () => {
     const user = userEvent.setup()
     render(<HistoricalRegimeWorkbench workspace={workspace} initialDefinition={workspace === 'events' ? manual : templateDefinition} />)
     const eventScope = workspace === 'events'
+    await waitFor(() => expect(portablePageProbe.props?.pageContext.page).toBe(eventScope ? 'global-events' : 'historical-regimes'))
     await screen.findByRole('button', { name: '选择算法：' + (eventScope ? '人工历史事件区间' : '牛熊震荡计算图') })
     expect(screen.queryByRole('button', { name: '选择算法：' + (eventScope ? '牛熊震荡计算图' : '人工历史事件区间') })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '选择算法：' + (eventScope ? templateDefinition.name : '已保存人工事件') })).not.toBeInTheDocument()

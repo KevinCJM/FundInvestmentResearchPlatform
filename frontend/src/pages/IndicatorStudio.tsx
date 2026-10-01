@@ -60,9 +60,9 @@ import {
 } from '../services/customIndicators'
 import { IndicatorInputDates, MetricUnavailableReason, MetricValue } from '../components/metrics/MetricDisplay'
 import { SearchDropdown } from '../components/FilterDropdown'
-import IndicatorAgentPanel from '../components/agent/IndicatorAgentPanel'
-import { useAdoptedIndicatorPreview } from '../components/agent/useIndicatorPreview'
-import { buildIndicatorStudioEvidence, submittedParameterOverrides, type FrozenPreviewRequest } from '../services/agentPageEvidence'
+import IndicatorAssistant from '../integrations/portable-agent/IndicatorAssistant'
+import { useAdoptedIndicatorPreview } from '../components/indicators/useAdoptedIndicatorPreview'
+import { buildIndicatorStudioEvidence, submittedParameterOverrides, type FrozenPreviewRequest } from '../services/researchPageEvidence'
 
 const FALLBACK_PERIODS = [
   { value: '1W', label: '近 1 周', description: '最近 5 个收益观察值' },
@@ -2441,7 +2441,13 @@ export default function IndicatorStudio() {
 
   return (
     <div className={`mx-auto w-full ${editorMode === 'canvas' ? 'max-w-[1920px]' : 'max-w-[1440px]'}`}>
-      <IndicatorAgentPanel
+      <IndicatorAssistant
+        ready={!loading && !error}
+        onRestoredContext={context => {
+          setPeriod(String(context.calculation.period || '1Y'))
+          setAsOf(String(context.calculation.as_of || ''))
+          setTargets(((context.calculation.targets || []) as EvaluationTarget[]).map(target => ({ ...target, name: target.product_id })))
+        }}
         capturePageSnapshot={capturePageEvidence}
         pageContext={{
           page: 'indicator-studio',
@@ -2450,7 +2456,6 @@ export default function IndicatorStudio() {
           view_state: 'inherit',
           calculation: { context_kind: STUDIO_CONTEXT, targets: targets.map(({ kind, product_id }) => ({ kind, product_id })), period: activePeriod, as_of: asOf || null },
         }}
-        draft={draft as unknown as Record<string, unknown>}
         onApplyDraft={(value) => patchDraft(value as Partial<IndicatorDraft>)}
         onCommitted={() => { void refreshCatalog() }}
         onPreview={receiveAgentPreview}
