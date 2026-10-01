@@ -118,7 +118,15 @@ class HostIntegration:
             if stress := self.pages.get('stress'):
                 catalogs['stress'] = stress.list_definitions()
             if published := self.pages.get('published'):
-                catalogs['releases'] = published.releases(date.fromisoformat(page.calculation.as_of) if page.calculation.as_of else None)
+                from backend.custom_indicators.errors import IndicatorDomainError
+                try:
+                    as_of = date.fromisoformat(page.calculation.as_of) if page.calculation.as_of else None
+                except ValueError:
+                    raise ResearchError('VALIDATION_ERROR', '研究日期格式无效，应为 YYYY-MM-DD。', status_code=422) from None
+                try:
+                    catalogs['releases'] = published.releases(as_of)
+                except IndicatorDomainError as exc:
+                    raise ResearchError(exc.code, exc.message, status_code=exc.status_code) from exc
             if sources := self.pages.get('sources'):
                 catalogs['sources'] = {'snapshot': read_active_manifest(sources.data_dir),
                                        'indicators': sources._indicator_versions()}

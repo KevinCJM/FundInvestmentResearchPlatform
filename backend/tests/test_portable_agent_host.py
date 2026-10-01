@@ -242,6 +242,22 @@ def test_scenario_catalog_mutation_invalidates_model_evidence(host, tmp_path, ch
     assert tool(client, fresh, 'scenarios_catalog', {'section': 'definitions'})[0]['status'] == 'succeeded'
 
 
+@pytest.mark.parametrize('as_of', ['2026-13-01', '2999-01-01'])
+def test_scenario_catalog_dates_return_controlled_validation(host, tmp_path, as_of):
+    from scenario_stress.published import PublishedScenarioService
+    client, bridge, _, _ = host
+    bridge.pages['published'] = PublishedScenarioService(tmp_path)
+    page = {'page': 'published-scenarios', 'page_instance_id': 'invalid-date', 'view_state': 'unknown',
+            'calculation': {'context_kind': 'scenario', 'workspace': 'published', 'as_of': as_of}}
+    with TestClient(client.app, raise_server_exceptions=False) as requests:
+        requests.headers.update(client.headers)
+        response = requests.post('/api/integrations/portable-agent/contexts', json={'page_context': page})
+        assert response.status_code == 422, response.text
+        assert response.json()['error']['code'] in {'VALIDATION_ERROR', 'FUTURE_RESEARCH_DATE'}
+        page['calculation']['as_of'] = '2020-01-01'
+        assert requests.post('/api/integrations/portable-agent/contexts', json={'page_context': page}).status_code == 200
+
+
 def test_saved_object_recovers_after_receipt_gap_without_a_second_create(host, monkeypatch):
     client, _, service, _ = host
     ctx = context(client)
