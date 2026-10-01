@@ -4,7 +4,7 @@ import json
 import time
 import uuid
 
-from research_access import data_policy, tools
+from research_access import data_policy, identity, tools
 from research_access.authoring import stable_hash, stable_json
 from research_access.contracts import PageContext, ResearchError
 from .service import TOOL_NAMES
@@ -51,7 +51,8 @@ def role_message(message):
     return result
 
 
-def validate_messages(messages, record, *, store, versions, prepare=False, run_id=None):
+async def validate_messages(messages, record, *, integration, versions, prepare=False, run_id=None):
+    store, source_contexts = integration.store, set()
     normalized = [role_message(m) for m in messages]
     non_system = [m for m in normalized if m['role'] != 'system']
     aliases = copy.deepcopy(non_system)
@@ -95,6 +96,9 @@ def validate_messages(messages, record, *, store, versions, prepare=False, run_i
                     if operation['subject'] != record['subject'] or operation['workspace'] != record['workspace']:
                         raise ResearchError('MODEL_INPUT_REJECTED', '业务结果不属于当前主体。', status_code=403)
                     source = store.context(payload.get('research_context_ref'), subject=record['subject'], workspace=record['workspace'])
+                    if source['id'] not in source_contexts:
+                        await integration.authorize(identity.application_id(), record['subject'], integration.public_context(source), action='read')
+                        source_contexts.add(source['id'])
                     stale = source['catalog_version'] != versions['catalog_version'] or (operation.get('current_data') and source['data_generation'] != versions['data_generation'])
                     if stale:
                         replacement = stable_json(data_policy.seal({'ok': False, 'status': 'historical_stale',
@@ -143,7 +147,7 @@ def validate_messages(messages, record, *, store, versions, prepare=False, run_i
                 output[index]['content'] = replacement
             else:
                 output[index]['data']['content'] = replacement
-    return output
+    return output, source_contexts
 
 
 async def admit(integration, body):
@@ -156,11 +160,14 @@ async def admit(integration, body):
                              (body.receipt_id, body.subject, record['id'])).fetchone()
         receipt = json.loads(row[0]) if row else {}
         compared = versions | {'data_generation': versions['data_generation'] if receipt.get('current_data') else None}
-        if receipt.get('payload_hash') != body.payload_hash or receipt.get('expires', 0) <= time.time() or receipt.get('versions') != compared:
+        if receipt.get('payload_hash') != body.payload_hash or receipt.get('expires', 0) <= time.time() or receipt.get('versions') != compared or not isinstance(receipt.get('source_contexts'), list):
             raise ResearchError('MODEL_RESULT_STALE', '模型等待期间的数据或目录已改变。', status_code=409)
+        for cid in receipt['source_contexts']:
+            source = integration.store.context(cid, subject=body.subject, workspace=record['workspace'])
+            await integration.authorize(body.application, body.subject, integration.public_context(source), action='read')
         return {'allow': True, 'payload_hash': body.payload_hash}
     if body.phase in {'input', 'prepare'}:
-        messages = validate_messages(body.messages, record, store=integration.store, versions=versions,
+        messages, _ = await validate_messages(body.messages, record, integration=integration, versions=versions,
                                      prepare=body.phase == 'prepare', run_id=body.run_id)
         return {'allow': True, 'messages': messages}
     wire = body.wire
@@ -172,7 +179,7 @@ async def admit(integration, body):
         raise ResearchError('MODEL_INPUT_REJECTED', '模型请求含未登记的传输字段。', status_code=422)
     controls = {k: v for k, v in wire.items() if k in allowed_controls}
     data_policy.check(controls); data_policy.check_text_fields(controls)
-    validate_messages(wire.get('messages', []), record, store=integration.store, versions=versions)
+    _, source_contexts = await validate_messages(wire.get('messages', []), record, integration=integration, versions=versions)
     current_data = record['page_context']['calculation']['context_kind'] == 'single_product'
     for message in wire.get('messages', []):
         if message.get('role') == 'tool':
@@ -199,9 +206,9 @@ async def admit(integration, body):
                     or schema_contract(function.get('parameters', {})) != schema_contract(registered.arguments.model_json_schema())):
                 raise ResearchError('MODEL_INPUT_REJECTED', '工具声明不匹配已登记业务契约。', status_code=422)
     rid = uuid.uuid4().hex
-    # Only hashes/versions are stored here. Conversation content belongs to the external service.
+    # Only hashes, versions, and owned source context IDs are stored here. Conversation content belongs to the external service.
     receipt = {'payload_hash': body.payload_hash, 'versions': versions | {'data_generation': versions['data_generation'] if current_data else None},
-               'current_data': current_data, 'expires': time.time()+1900}
+               'current_data': current_data, 'source_contexts': sorted(source_contexts), 'expires': time.time()+1900}
     with integration.store.db() as db:
         db.execute("DELETE FROM admissions WHERE json_extract(body,'$.expires')<?", (time.time(),))
         db.execute('INSERT INTO admissions VALUES(?,?,?,?)', (rid, body.subject, record['id'], stable_json(receipt)))
