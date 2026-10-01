@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize('interrupted', [0, 1, 2, 'permission'])
+@pytest.mark.parametrize('interrupted', [0, 1, 2, 'permission', 'authority_response'])
 def test_business_archive_dry_run_replay_and_corruption(tmp_path, monkeypatch, interrupted):
     root = Path(__file__).resolve().parents[2]
     import sys
@@ -70,18 +70,20 @@ def test_business_archive_dry_run_replay_and_corruption(tmp_path, monkeypatch, i
         table = db.execute("SELECT name FROM sqlite_master WHERE name='migration_imports'").fetchone()
         assert not table or db.execute('SELECT COUNT(*) FROM migration_imports').fetchone()[0] == 0
     principal['scopes'] = scopes
-    if interrupted == 'permission':
+    if interrupted in {'permission', 'authority_response'}:
         original_register = module.HostIntegration.register
         calls = 0
         async def deny_second(bridge, *args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 2:
+                if interrupted == 'authority_response':
+                    raise ValueError('fixture: authority returned invalid JSON')
                 raise ResearchError('FORBIDDEN', '权限已撤销', status_code=403)
             return await original_register(bridge, *args, **kwargs)
         with monkeypatch.context() as patch:
             patch.setattr(module.HostIntegration, 'register', deny_second)
-            with pytest.raises(ResearchError):
+            with pytest.raises(ValueError if interrupted == 'authority_response' else ResearchError):
                 run(True)
         assert not output.exists()
         with ResearchStore(business).db() as db:
