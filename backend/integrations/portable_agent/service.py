@@ -260,31 +260,32 @@ class HostIntegration:
                 return
             try:
                 authoring, expected, result, versions, current_data = await run_in_threadpool(self.calculate, operation, record, principal)
-                live = self.store.operation(oid)
-                stale = versions['catalog_version'] != record['catalog_version'] or (current_data and versions['data_generation'] != record['data_generation'])
-                if stale or live.get('cancel_requested'):
-                    projection = {'ok': False, 'status': 'stale' if stale else 'cancelled', 'message': '操作已结束，旧结果不再采纳。'}
-                    artifact = None
-                else:
-                    scenario = result.get('_scenario_payload')
-                    full = authoring.pop('_preview_payload', None)
-                    if full:
-                        full.update(context_hash=record['hash'], run_id=operation['payload']['run_id'], data_generation=record['data_generation'], catalog_version=record['catalog_version'])
-                    saved = self.store.save_authoring(authoring, expected, preview=full)
-                    # The domain handler's _progress_payload can contain full market arrays. It never crosses the host boundary.
-                    projection = {k: v for k, v in result.items() if not k.startswith('_')}
-                    artifact = {'type': 'research.indicator', 'group': 'indicator:'+saved['id'], 'title': '查看指标草稿与试算', 'authoring_id': saved['id'],
-                        'revision': saved['revision'], 'source_run_id': saved['draft'].get('source_run_id'),
-                        'preview_id': (saved.get('preview') or {}).get('preview_id')} if (saved.get('draft') or {}).get('valid') and (full or tools.get_tool(operation['name']).progress == 'draft') else None
-                    if scenario:
-                        self.store.save_scenario_artifact(oid, principal, {**scenario, 'context_ref': record['id'], 'source_run_id': operation['payload']['run_id']})
-                        artifact = {'type': 'research.scenario', 'group': 'scenario:'+record['scope_key'], 'title': '查看情景候选与试算', 'artifact_id': oid}
-                marker = stable_hash({'name': operation['name'], 'arguments': operation['payload']['arguments'], 'result': projection})
-                projection = data_policy.seal({**projection, 'context_ref': 'op-'+oid, 'research_context_ref': record['id']}, operation['name'])
-                envelope = {'model': projection, 'progress_token': marker}
-                if artifact:
-                    envelope['artifact'] = artifact
-                self.store.update_operation(oid, status='succeeded', result=envelope, current_data=current_data)
+                with self.store.db() as db:
+                    live = self.store.operation(oid, db=db)
+                    stale = versions['catalog_version'] != record['catalog_version'] or (current_data and versions['data_generation'] != record['data_generation'])
+                    if stale or live.get('cancel_requested'):
+                        projection = {'ok': False, 'status': 'stale' if stale else 'cancelled', 'message': '操作已结束，旧结果不再采纳。'}
+                        artifact = None
+                    else:
+                        scenario = result.get('_scenario_payload')
+                        full = authoring.pop('_preview_payload', None)
+                        if full:
+                            full.update(context_hash=record['hash'], run_id=operation['payload']['run_id'], data_generation=record['data_generation'], catalog_version=record['catalog_version'])
+                        saved = self.store.save_authoring(authoring, expected, preview=full, db=db)
+                        # The domain handler's _progress_payload can contain full market arrays. It never crosses the host boundary.
+                        projection = {k: v for k, v in result.items() if not k.startswith('_')}
+                        artifact = {'type': 'research.indicator', 'group': 'indicator:'+saved['id'], 'title': '查看指标草稿与试算', 'authoring_id': saved['id'],
+                            'revision': saved['revision'], 'source_run_id': saved['draft'].get('source_run_id'),
+                            'preview_id': (saved.get('preview') or {}).get('preview_id')} if (saved.get('draft') or {}).get('valid') and (full or tools.get_tool(operation['name']).progress == 'draft') else None
+                        if scenario:
+                            self.store.save_scenario_artifact(oid, principal, {**scenario, 'context_ref': record['id'], 'source_run_id': operation['payload']['run_id']}, db=db)
+                            artifact = {'type': 'research.scenario', 'group': 'scenario:'+record['scope_key'], 'title': '查看情景候选与试算', 'artifact_id': oid}
+                    marker = stable_hash({'name': operation['name'], 'arguments': operation['payload']['arguments'], 'result': projection})
+                    projection = data_policy.seal({**projection, 'context_ref': 'op-'+oid, 'research_context_ref': record['id']}, operation['name'])
+                    envelope = {'model': projection, 'progress_token': marker}
+                    if artifact:
+                        envelope['artifact'] = artifact
+                    self.store.update_operation(oid, db=db, status='cancelled' if live.get('cancel_requested') else 'succeeded', result=envelope, current_data=current_data)
             except ResearchError as exc:
                 # These errors prove no business side effect began; other post-dispatch failures stay uncertain.
                 terminal = tools.get_tool(operation['name']).progress in {None, 'read'} or exc.code in {'AGENT_DRAFT_REQUIRED', 'AGENT_PREVIEW_TARGET_REQUIRED', 'AGENT_TOOL_DOMAIN_MISMATCH',

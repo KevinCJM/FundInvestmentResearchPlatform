@@ -115,21 +115,23 @@ class ResearchStore:
             raise ResearchError('AUTHORING_NOT_FOUND', '指标创作不存在。', status_code=404)
         return value
 
-    def save_authoring(self, value, expected_revision, *, preview=None):
-        with self.db() as db:
-            current = self.read_authoring(value['id'], db=db)
-            if current['revision'] != expected_revision or current.get('committing'):
-                raise ResearchError('REVISION_CONFLICT', '草稿已更新或正在保存，请重新读取。', status_code=409)
-            clean = {k: v for k, v in value.items() if not k.startswith('_')}
-            clean['revision'] = expected_revision+1
-            if preview:
-                pid = uuid.uuid4().hex
-                preview = {**preview, 'preview_id': pid, 'authoring_id': value['id']}
-                db.execute('INSERT INTO previews VALUES(?,?,?)', (pid, value['id'], stable_json(preview)))
-                clean['preview'] = {k: preview.get(k) for k in ('preview_id', 'authoring_id', 'definition_hash', 'draft_revision', 'context_hash', 'run_id', 'target', 'period', 'as_of', 'result_kind')}
-            db.execute('UPDATE authorings SET revision=?,body=? WHERE id=?', (clean['revision'], stable_json(clean), value['id']))
-            db.execute('INSERT INTO authoring_revisions VALUES(?,?,?)', (value['id'], clean['revision'], stable_json(clean)))
-            return clean
+    def save_authoring(self, value, expected_revision, *, preview=None, db=None):
+        if db is None:
+            with self.db() as connection:
+                return self.save_authoring(value, expected_revision, preview=preview, db=connection)
+        current = self.read_authoring(value['id'], db=db)
+        if current['revision'] != expected_revision or current.get('committing'):
+            raise ResearchError('REVISION_CONFLICT', '草稿已更新或正在保存，请重新读取。', status_code=409)
+        clean = {k: v for k, v in value.items() if not k.startswith('_')}
+        clean['revision'] = expected_revision+1
+        if preview:
+            pid = uuid.uuid4().hex
+            preview = {**preview, 'preview_id': pid, 'authoring_id': value['id']}
+            db.execute('INSERT INTO previews VALUES(?,?,?)', (pid, value['id'], stable_json(preview)))
+            clean['preview'] = {k: preview.get(k) for k in ('preview_id', 'authoring_id', 'definition_hash', 'draft_revision', 'context_hash', 'run_id', 'target', 'period', 'as_of', 'result_kind')}
+        db.execute('UPDATE authorings SET revision=?,body=? WHERE id=?', (clean['revision'], stable_json(clean), value['id']))
+        db.execute('INSERT INTO authoring_revisions VALUES(?,?,?)', (value['id'], clean['revision'], stable_json(clean)))
+        return clean
 
     def preview(self, authoring_id, preview_id, historical=True):
         with self.db() as db:
@@ -138,9 +140,11 @@ class ResearchStore:
             raise ResearchError('PREVIEW_NOT_FOUND', '试算结果不存在或已过期。', status_code=404)
         return json.loads(row[0])
 
-    def save_scenario_artifact(self, oid, principal, value):
-        with self.db() as db:
-            db.execute('INSERT INTO scenario_artifacts VALUES(?,?,?,?)', (oid, principal['sub'], principal['workspace'], stable_json(value)))
+    def save_scenario_artifact(self, oid, principal, value, *, db=None):
+        if db is None:
+            with self.db() as connection:
+                return self.save_scenario_artifact(oid, principal, value, db=connection)
+        db.execute('INSERT INTO scenario_artifacts VALUES(?,?,?,?)', (oid, principal['sub'], principal['workspace'], stable_json(value)))
 
     def scenario_artifact(self, oid, principal):
         with self.db() as db:
@@ -183,19 +187,23 @@ class ResearchStore:
             db.execute('INSERT INTO operations VALUES(?,?,?,?,?,?)', (oid, principal['sub'], principal['workspace'], scope_key, 'accepted', stable_json(value)))
             return value, True
 
-    def operation(self, oid):
-        with self.db() as db:
-            row = db.execute('SELECT body FROM operations WHERE id=?', (oid,)).fetchone()
+    def operation(self, oid, *, db=None):
+        if db is None:
+            with self.db() as connection:
+                return self.operation(oid, db=connection)
+        row = db.execute('SELECT body FROM operations WHERE id=?', (oid,)).fetchone()
         if not row:
             raise ResearchError('OPERATION_NOT_FOUND', '业务操作不存在，不能据此重新执行。', status_code=404)
         return json.loads(row[0])
 
-    def update_operation(self, oid, **fields):
-        with self.db() as db:
-            row = db.execute('SELECT body FROM operations WHERE id=?', (oid,)).fetchone()
-            value = json.loads(row[0]) | fields
-            db.execute('UPDATE operations SET status=?,body=? WHERE id=?', (value['status'], stable_json(value), oid))
-            return value
+    def update_operation(self, oid, *, db=None, **fields):
+        if db is None:
+            with self.db() as connection:
+                return self.update_operation(oid, db=connection, **fields)
+        row = db.execute('SELECT body FROM operations WHERE id=?', (oid,)).fetchone()
+        value = json.loads(row[0]) | fields
+        db.execute('UPDATE operations SET status=?,body=? WHERE id=?', (value['status'], stable_json(value), oid))
+        return value
 
     def claim_operation(self, oid):
         with self.db() as db:

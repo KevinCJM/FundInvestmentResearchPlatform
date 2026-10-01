@@ -391,3 +391,63 @@ def test_operation_claim_and_cancellation_share_one_transaction(tmp_path):
     assert store.claim_operation(operation['operation_id']) is None
     assert store.cancel_operation(operation['operation_id'])['status'] == 'stop_requested'
     assert store.claim_operation(operation['operation_id']) is None
+
+
+@pytest.mark.parametrize('ordering', ['cancel_first', 'finish_first', 'persistence_failure'])
+def test_operation_completion_and_artifacts_are_one_transaction(tmp_path, monkeypatch, ordering):
+    import asyncio
+    import threading
+    from integrations.portable_agent.service import HostIntegration
+    monkeypatch.setenv('CUSTOM_INDICATOR_DATA_DIR', str(tmp_path))
+    store = ResearchStore(tmp_path)
+    bridge = HostIntegration(None, {}, store=store)
+    assert bridge.store is store  # Startup recovery precedes acceptance of new work.
+    principal = {'sub': 'alice', 'workspace': 'lab'}
+    authoring = store.authoring(principal, 'page', scope='indicator-studio', context_hash='hash')
+    operation, _ = store.start_operation(principal, {'operation_id': 'finish-race', 'run_id': 'turn', 'arguments': {}}, 'metrics.validate', 'scope')
+    record = {'catalog_version': 'catalog', 'data_generation': 'data', 'hash': 'hash', 'id': 'ctx', 'scope_key': 'scope'}
+    def calculate(*_):
+        if ordering == 'cancel_first':
+            assert store.cancel_operation('finish-race')['status'] == 'stop_requested'
+        return ({**authoring, 'draft': {'valid': True, 'source_run_id': 'turn'},
+                 '_preview_payload': {'definition_hash': 'hash'}}, 0,
+                {'ok': True, '_scenario_payload': {'valid': True}}, record, False)
+    monkeypatch.setattr(bridge, 'calculate', calculate)
+    cancellation = []
+    workers = []
+    original_save = store.save_authoring
+    def save(*args, **kwargs):
+        assert kwargs['db'].in_transaction
+        if ordering == 'finish_first':
+            started = threading.Event()
+            def cancel():
+                started.set()
+                cancellation.append(store.cancel_operation('finish-race'))
+            worker = threading.Thread(target=cancel)
+            workers.append(worker)
+            worker.start()
+            assert started.wait(2)
+        return original_save(*args, **kwargs)
+    monkeypatch.setattr(store, 'save_authoring', save)
+    if ordering == 'persistence_failure':
+        original_artifact = store.save_scenario_artifact
+        def fail(*args, **kwargs):
+            original_artifact(*args, **kwargs)
+            raise OSError('fixture: fail after artifact INSERT, before commit')
+        monkeypatch.setattr(store, 'save_scenario_artifact', fail)
+    asyncio.run(bridge.execute(operation, record, principal))
+    asyncio.run(bridge.close())
+    for worker in workers:
+        worker.join(3)
+        assert not worker.is_alive()
+    final = store.operation('finish-race')
+    assert final['status'] == {'cancel_first': 'cancelled', 'finish_first': 'succeeded', 'persistence_failure': 'unknown'}[ordering]
+    persisted = ordering == 'finish_first'
+    assert store.read_authoring(authoring['id'])['revision'] == int(persisted)
+    with store.db() as db:
+        for table in ['previews', 'scenario_artifacts', 'authoring_revisions']:
+            assert db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0] == int(persisted)
+    if persisted:
+        assert cancellation[0]['status'] == 'succeeded'  # Completion committed before cancellation could acquire the lock.
+    else:
+        assert 'artifact' not in final.get('result', {})
