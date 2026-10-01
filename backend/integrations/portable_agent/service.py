@@ -4,6 +4,7 @@ import fcntl
 import copy
 import json
 import os
+import sys
 import time
 from contextlib import contextmanager
 from datetime import date
@@ -118,7 +119,9 @@ class HostIntegration:
             try:
                 if graph := self.pages.get('graph'):
                     catalogs['definitions'] = graph.list_definitions()
-                    catalogs['events'] = graph.event_library._entries()
+                    if any(not isinstance(item, dict) for item in catalogs['definitions']):
+                        raise TypeError('Invalid graph catalog record')
+                    catalogs['events'] = graph.event_library.list(archived=True, limit=sys.maxsize)
                 if stress := self.pages.get('stress'):
                     catalogs['stress'] = stress.list_definitions()
                 if published := self.pages.get('published'):

@@ -259,7 +259,8 @@ def test_scenario_catalog_dates_return_controlled_validation(host, tmp_path, as_
 
 
 @pytest.mark.parametrize('fault', ['manifest_json', 'manifest_target', 'manifest_unreadable', 'source_indicators', 'graph_store', 'release_index',
-    'graph_record', 'graph_record_type', 'source_record_type', 'release_index_symlink', 'release_index_oversize', 'release_checksum'])
+    'graph_record', 'graph_record_type', 'graph_current_type', 'source_record_type', 'events_record', 'events_record_type', 'events_current_type',
+    'release_index_symlink', 'release_index_oversize', 'release_checksum'])
 def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tmp_path, monkeypatch, fault):
     from pathlib import Path
     from historical_regimes.v2_service import RegimeGraphV2Service
@@ -279,6 +280,7 @@ def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tm
     headers = {'Authorization': 'Bearer '+SERVICE_TOKEN}
     path = (sources.workspace_data_dir/'custom_indicators.json' if fault.startswith('source_') else
             graph.definitions.store.path if fault.startswith('graph_') else
+            graph.event_library.store.path if fault.startswith('events_') else
             published.artifacts.root/release['id']/'manifest.json' if fault == 'release_checksum' else
             published.artifacts.index.path if fault.startswith('release_') else sources.data_dir/'tushare_active.json')
     original = path.read_text() if path.exists() else None
@@ -300,8 +302,9 @@ def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tm
             path.write_text(' ' * 16_000_001)
         elif fault == 'release_checksum':
             path.write_text(json.dumps({**json.loads(original), 'name': '篡改发布'}))
-        elif fault in {'graph_record', 'graph_record_type', 'source_record_type'}:
-            entry = {} if fault == 'graph_record' else None if fault == 'graph_record_type' else {'current': None}
+        elif fault in {'graph_record', 'graph_record_type', 'graph_current_type', 'source_record_type',
+                       'events_record', 'events_record_type', 'events_current_type'}:
+            entry = {} if fault.endswith('_record') else None if fault in {'graph_record_type', 'events_record_type'} else {'current': None}
             path.write_text(json.dumps({'items': [entry]}))
         else:
             path.write_text(json.dumps({**json.loads(original), 'snapshot_dir': 'missing-snapshot'}) if fault == 'manifest_target' else '{broken')
