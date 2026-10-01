@@ -242,6 +242,36 @@ def test_scenario_catalog_mutation_invalidates_model_evidence(host, tmp_path, ch
     assert tool(client, fresh, 'scenarios_catalog', {'section': 'definitions'})[0]['status'] == 'succeeded'
 
 
+def test_missing_snapshot_keeps_local_catalogs_available_and_source_failure_terminal(host, tmp_path):
+    from historical_regimes.v2_service import RegimeGraphV2Service
+    from historical_regimes.v2_templates import TEMPLATES_V2
+    from test_research_series_routes import _write_fixture
+    client, bridge, _, _ = host
+    graph, sources = RegimeGraphV2Service(tmp_path, tmp_path), _write_fixture(tmp_path/'sources')
+    graph.definitions.create(TEMPLATES_V2[0]['definition'])
+    graph.event_library.create({'name': '本地事件', 'windows': [{'id': 'local-window', 'label': '窗口',
+        'start_date': '2020-01-01', 'end_date': '2020-01-31', 'rationale': '本地记录'}]})
+    manifest = sources.data_dir/'tushare_active.json'
+    original = manifest.read_text()
+    manifest.unlink()
+    bridge.pages.update(graph=graph, sources=sources)
+    body = {'page_context': {'page': 'historical-regimes', 'page_instance_id': 'no-snapshot',
+        'view_state': 'unknown', 'calculation': {'context_kind': 'scenario', 'workspace': 'graph'}}}
+    response = client.post('/api/integrations/portable-agent/contexts', json=body)
+    assert response.status_code == 200, response.text
+    ctx = response.json()
+    result, _ = tool(client, ctx, 'scenarios_catalog', {'section': 'sources'})
+    assert result['status'] == 'failed', result
+    assert result['error']['code'] == 'ACTIVE_SNAPSHOT_REQUIRED'
+    for section in ('definitions', 'events'):
+        result, _ = tool(client, ctx, 'scenarios_catalog', {'section': section})
+        assert result['status'] == 'succeeded' and result['model']['result']['items']
+    manifest.write_text(original)
+    fresh = client.post('/api/integrations/portable-agent/contexts', json=body).json()
+    assert fresh['hash'] != ctx['hash']
+    assert tool(client, fresh, 'scenarios_catalog', {'section': 'sources'})[0]['status'] == 'succeeded'
+
+
 @pytest.mark.parametrize('as_of', ['2026-13-01', '2999-01-01'])
 def test_scenario_catalog_dates_return_controlled_validation(host, tmp_path, as_of):
     from scenario_stress.published import PublishedScenarioService
@@ -259,16 +289,19 @@ def test_scenario_catalog_dates_return_controlled_validation(host, tmp_path, as_
 
 
 @pytest.mark.parametrize('fault', ['manifest_json', 'manifest_target', 'manifest_unreadable', 'source_indicators', 'graph_store', 'release_index',
-    'graph_record', 'graph_record_type', 'graph_current_type', 'source_record_type', 'events_record', 'events_record_type', 'events_current_type',
+    'graph_record', 'graph_record_type', 'graph_current_type', 'graph_empty', 'stress_empty', 'source_record_type', 'events_record', 'events_record_type', 'events_current_type',
     'release_index_symlink', 'release_index_oversize', 'release_checksum'])
 def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tmp_path, monkeypatch, fault):
     from pathlib import Path
     from historical_regimes.v2_service import RegimeGraphV2Service
     from scenario_stress.published import PublishedScenarioService
     from test_research_series_routes import _write_fixture
+    from scenario_stress.service import ScenarioStressService
     client, bridge, _, _ = host
     graph, published, sources = RegimeGraphV2Service(tmp_path, tmp_path), PublishedScenarioService(tmp_path), _write_fixture(tmp_path/'sources')
     bridge.pages.update(graph=graph, published=published, sources=sources)
+    stress = ScenarioStressService(tmp_path, tmp_path)
+    bridge.pages['stress'] = stress
     if fault == 'release_checksum':
         release = published.artifacts.save('release', {'name': '正常发布', 'lineage': [],
             'effective_at': '2020-01-01T00:00:00+00:00', 'expires_at': '2099-01-01T00:00:00+00:00'})
@@ -280,6 +313,7 @@ def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tm
     headers = {'Authorization': 'Bearer '+SERVICE_TOKEN}
     path = (sources.workspace_data_dir/'custom_indicators.json' if fault.startswith('source_') else
             graph.definitions.store.path if fault.startswith('graph_') else
+            stress.definitions.store.path if fault.startswith('stress_') else
             graph.event_library.store.path if fault.startswith('events_') else
             published.artifacts.root/release['id']/'manifest.json' if fault == 'release_checksum' else
             published.artifacts.index.path if fault.startswith('release_') else sources.data_dir/'tushare_active.json')
@@ -302,9 +336,10 @@ def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tm
             path.write_text(' ' * 16_000_001)
         elif fault == 'release_checksum':
             path.write_text(json.dumps({**json.loads(original), 'name': '篡改发布'}))
-        elif fault in {'graph_record', 'graph_record_type', 'graph_current_type', 'source_record_type',
+        elif fault in {'graph_record', 'graph_record_type', 'graph_current_type', 'graph_empty', 'stress_empty', 'source_record_type',
                        'events_record', 'events_record_type', 'events_current_type'}:
-            entry = {} if fault.endswith('_record') else None if fault in {'graph_record_type', 'events_record_type'} else {'current': None}
+            entry = ({'current': {}} if fault in {'graph_empty', 'stress_empty'} else {} if fault.endswith('_record') else
+                     None if fault in {'graph_record_type', 'events_record_type'} else {'current': None})
             path.write_text(json.dumps({'items': [entry]}))
         else:
             path.write_text(json.dumps({**json.loads(original), 'snapshot_dir': 'missing-snapshot'}) if fault == 'manifest_target' else '{broken')

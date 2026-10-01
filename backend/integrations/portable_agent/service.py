@@ -110,6 +110,7 @@ class HostIntegration:
         catalog_version = build_catalog(self.indicators)['version']
         if page.context_kind == 'scenario':
             from historical_regimes.v2_registry import REGISTRY_VERSION
+            from historical_regimes.v2_contracts import parse_definition_v2
             from market_data import MarketDataManifestError, read_active_manifest
             from custom_indicators.errors import IndicatorDomainError
             from backend.custom_indicators.errors import IndicatorDomainError as BackendDomainError
@@ -119,11 +120,14 @@ class HostIntegration:
             try:
                 if graph := self.pages.get('graph'):
                     catalogs['definitions'] = graph.list_definitions()
-                    if any(not isinstance(item, dict) for item in catalogs['definitions']):
-                        raise TypeError('Invalid graph catalog record')
+                    for item in catalogs['definitions']:
+                        parse_definition_v2(item)
                     catalogs['events'] = graph.event_library.list(archived=True, limit=sys.maxsize)
                 if stress := self.pages.get('stress'):
+                    from scenario_stress.contracts import normalize_definition
                     catalogs['stress'] = stress.list_definitions()
+                    for item in catalogs['stress']:
+                        normalize_definition(item)
                 if published := self.pages.get('published'):
                     try:
                         as_of = date.fromisoformat(page.calculation.as_of) if page.calculation.as_of else None
@@ -272,11 +276,14 @@ class HostIntegration:
                 raise ResearchError('CONTEXT_CHANGED', '数据或目录已改变，请重新发送。', status_code=409)
             if operation['name'].startswith('scenarios.'):
                 from custom_indicators.errors import IndicatorDomainError
+                from backend.custom_indicators.errors import IndicatorDomainError as BackendDomainError
+                from research_series.service import ResearchSeriesError
+                from backend.research_series.service import ResearchSeriesError as BackendSeriesError
                 try:
                     result = scenarios.execute(operation['name'], tools.parse_arguments(operation['name'], payload['arguments']), page, record['page_snapshot'], self.pages,
                         checkpoint=lambda **fields: self.store.update_operation(operation['operation_id'], **fields),
                         cancelled=lambda: self.store.operation(operation['operation_id']).get('cancel_requested', False))
-                except IndicatorDomainError as exc:
+                except (IndicatorDomainError, BackendDomainError, ResearchSeriesError, BackendSeriesError) as exc:
                     raise ResearchError(exc.code, exc.message, status_code=exc.status_code) from exc
             else:
                 result = tools.execute_business(operation['name'], payload['arguments'], authoring=authoring, page_context=page,

@@ -17,7 +17,8 @@ sys.path[:0] = [str(ROOT), str(ROOT/'backend')]
 from custom_indicators.service import CustomIndicatorService
 from integrations.portable_agent.contracts import ContextInput
 from integrations.portable_agent.service import HostIntegration
-from research_access import data_policy
+from research_access import data_policy, identity
+from research_access.contracts import ResearchError
 from research_access.authoring import definition_hash, stable_hash, stable_json
 from research_access.store import ResearchStore
 
@@ -45,6 +46,7 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
     try:
         # Use the same trusted authority as live bootstrap; an archive cannot grant permissions.
         principal = await integration.current_principal(principal['sub'], principal['workspace'])
+        identity.permit(principal, 'assistant:use')
         with store.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS migration_imports(dataset TEXT PRIMARY KEY, hash TEXT NOT NULL, result TEXT NOT NULL)')
             old = db.execute('SELECT hash,result FROM migration_imports WHERE dataset=?', (archive['dataset_id'],)).fetchone()
@@ -79,7 +81,9 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
                         **page['calculation'], 'context_kind': 'scenario', 'workspace': 'graph'}}
                 body = ContextInput(page_context=page)
                 record = persisted_context or await integration.register(principal, body, pit_off=body.page_context.view_state == 'off')
-            except Exception as exc:
+            except (KeyError, TypeError, ValueError, ResearchError) as exc:
+                if isinstance(exc, ResearchError) and (exc.status_code in {401, 403} or exc.status_code >= 500):
+                    raise
                 result['quarantined'].append({'kind': 'session', 'id': sid, 'reason': type(exc).__name__})
                 continue
             draft = session.get('draft')

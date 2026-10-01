@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize('interrupted', [0, 1, 2])
+@pytest.mark.parametrize('interrupted', [0, 1, 2, 'permission'])
 def test_business_archive_dry_run_replay_and_corruption(tmp_path, monkeypatch, interrupted):
     root = Path(__file__).resolve().parents[2]
     import sys
@@ -60,7 +60,33 @@ def test_business_archive_dry_run_replay_and_corruption(tmp_path, monkeypatch, i
     source.write_text(json.dumps(archive))
     run = lambda apply: asyncio.run(module.prepare(source, business, market, output, apply=apply))
     assert run(False)['applied'] is False and not business.exists()
-    if interrupted:
+    from research_access.contracts import ResearchError
+    scopes = principal['scopes']
+    principal['scopes'] = []
+    with pytest.raises(ResearchError) as denied:
+        run(True)
+    assert denied.value.status_code == 403 and not output.exists()
+    with ResearchStore(business).db() as db:
+        table = db.execute("SELECT name FROM sqlite_master WHERE name='migration_imports'").fetchone()
+        assert not table or db.execute('SELECT COUNT(*) FROM migration_imports').fetchone()[0] == 0
+    principal['scopes'] = scopes
+    if interrupted == 'permission':
+        original_register = module.HostIntegration.register
+        calls = 0
+        async def deny_second(bridge, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise ResearchError('FORBIDDEN', '权限已撤销', status_code=403)
+            return await original_register(bridge, *args, **kwargs)
+        with monkeypatch.context() as patch:
+            patch.setattr(module.HostIntegration, 'register', deny_second)
+            with pytest.raises(ResearchError):
+                run(True)
+        assert not output.exists()
+        with ResearchStore(business).db() as db:
+            assert db.execute('SELECT result FROM migration_imports').fetchone()[0] == ''
+    elif interrupted:
         original = module.HostIntegration.public_context
         completed = 0
         def crash_after_authoring(record):
