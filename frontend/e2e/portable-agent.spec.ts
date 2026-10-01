@@ -191,3 +191,21 @@ for (const [capability, route] of [
     }
   })
 }
+
+test('人工历史事件仅启用当前事件工作区助手并通过真实授权', async ({ page }, info) => {
+  const registrations: Array<Record<string, any>> = []
+  page.on('request', request => {
+    if (request.url().endsWith('/api/integrations/portable-agent/contexts')) registrations.push(request.postDataJSON())
+  })
+  await page.goto('/settings/scenario-algorithms?center=events&event_view=manual')
+  const agent = page.getByRole('region', { name: '人工历史事件工作区', exact: true }).locator('portable-agent')
+  await expect(agent).toHaveCount(1)
+  await expect(page.getByRole('button', { name: '打开 AI 助手', exact: true })).toHaveCount(1)
+  await agent.getByRole('button', { name: '打开 AI 助手', exact: true }).click()
+  await expect(agent.getByRole('button', { name: '发送', exact: true })).toBeEnabled()
+  const manual = registrations.filter(item => item.page_context.calculation.purpose === 'manual_events')
+  expect(manual.length).toBeGreaterThan(0)
+  expect(manual.every(item => item.page_context.page === 'global-events' && item.page_context.calculation.workspace === 'events')).toBe(true)
+  await expect(agent.getByText('AGENT_SCOPE_PAGE_MISMATCH')).toHaveCount(0)
+  await page.screenshot({ path: info.outputPath('manual-events-assistant.png'), fullPage: true })
+})

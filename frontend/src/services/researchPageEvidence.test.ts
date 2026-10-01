@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MAX_PAGE_EVIDENCE_CHARS, buildIndicatorStudioEvidence, freezePageSnapshot, newPageSnapshotId, submittedParameterOverrides, type IndicatorStudioEvidenceInput } from './researchPageEvidence'
-import type { AgentPreview, PageEvidenceSnapshot } from './agent'
+import type { IndicatorPreview, PageEvidenceSnapshot } from './researchContracts'
 import type { EvaluationResult, IndicatorDraft, TimeSeriesIndicatorResult } from './customIndicators'
 
 const draft = { name: '波动率', description: 'd', expression: 'std(returns, 1)', unit: '%', display_format: 'percent', precision: 2, direction: 'lower_better', annual_risk_free_rate_percent: 1.5, parameter_contract_version: '1.0', parameter_schema: [{ id: 'window', label: '窗口', type: 'integer', default: 20, minimum: 1, maximum: 200, step: 1 }] }
@@ -29,13 +29,13 @@ const seriesResult = (product = '510300.SH', count = 12): TimeSeriesIndicatorRes
   ],
 }) as unknown as TimeSeriesIndicatorResult
 
-const preview = (overrides: Partial<AgentPreview> = {}): AgentPreview => ({
-  preview_id: 'preview-1', run_id: 'run-1', session_id: 's-1', definition_hash: 'h'.repeat(64), target: { kind: 'etf', product_id: '510300.SH' },
+const preview = (overrides: Partial<IndicatorPreview> = {}): IndicatorPreview => ({
+  preview_id: 'preview-1', run_id: 'run-1', authoring_id: 'a-1', definition_hash: 'h'.repeat(64), target: { kind: 'etf', product_id: '510300.SH' },
   period: '6M', as_of: '2019-12-30', result_kind: 'time_series', created_at: '2026-09-21T01:00:00+00:00', expires_at: '2026-09-22T01:00:00+00:00',
-  definition: previewDraft as unknown as AgentPreview['definition'], result: { results: [seriesResult()] },
+  definition: previewDraft as unknown as IndicatorPreview['definition'], result: { results: [seriesResult()] },
   context_hash: 'ctx-1', data_generation: 'gen-1', effective_context: { as_of: '2019-12-27', run_mode: 'pit', data_release_id: 'rel-1' },
   ...overrides,
-} as AgentPreview)
+} as IndicatorPreview)
 
 const frozenRequest = (overrides: Partial<IndicatorStudioEvidenceInput['manual_request']> = {}) => ({
   definition: { expression: 'std(returns, 1)', result_kind: 'scalar', parameter_contract_version: '1.0' },

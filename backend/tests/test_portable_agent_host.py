@@ -361,3 +361,33 @@ if __name__ == '__main__':
             raise AssertionError('Parent did not kill the process')
         patch.setattr(service, 'create_indicator', crash_window)
         client.post(f'/api/custom-indicators/authorings/{aid}/commits', json=body)
+
+
+def test_read_only_failure_is_terminal_and_next_operation_can_start(host):
+    client, bridge, _, _ = host
+    response = client.post('/api/integrations/portable-agent/contexts', json={'page_context': {
+        'page': 'historical-regimes', 'page_instance_id': 'read-failure', 'context_revision': 0, 'view_state': 'unknown',
+        'calculation': {'context_kind': 'scenario', 'workspace': 'graph', 'purpose': 'research', 'mode': 'realtime', 'as_of': None}}})
+    assert response.status_code == 200, response.text
+    ctx = response.json()
+    for name, arguments in [('scenarios_catalog', {}), ('scenarios_read', {'definition_id': 'missing', 'revision': 1})]:
+        result, _ = tool(client, ctx, name, arguments)
+        assert result['status'] == 'failed', result
+        assert result['model']['ok'] is False
+    # Failed reads must release this exact stable page scope for the next tool.
+    result, _ = tool(client, ctx, 'scenarios_catalog', {})
+    assert result['status'] == 'failed'
+
+
+def test_operation_claim_and_cancellation_share_one_transaction(tmp_path):
+    store = ResearchStore(tmp_path)
+    principal = {'sub': 'alice', 'workspace': 'lab'}
+    operation, _ = store.start_operation(principal, {'operation_id': 'cancel-first'}, 'scenarios.catalog', 'scope')
+    assert store.cancel_operation(operation['operation_id'])['status'] == 'cancelled'
+    assert store.claim_operation(operation['operation_id']) is None
+    assert store.operation(operation['operation_id'])['status'] == 'cancelled'
+    operation, _ = store.start_operation(principal, {'operation_id': 'claim-first'}, 'scenarios.catalog', 'scope')
+    assert store.claim_operation(operation['operation_id'])['status'] == 'running'
+    assert store.claim_operation(operation['operation_id']) is None
+    assert store.cancel_operation(operation['operation_id'])['status'] == 'stop_requested'
+    assert store.claim_operation(operation['operation_id']) is None

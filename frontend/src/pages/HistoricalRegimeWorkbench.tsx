@@ -813,7 +813,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition, w
 
   return (
     <div className={focused ? 'fixed inset-0 z-[100] overflow-auto bg-slate-50 p-3 sm:p-5' : `mx-auto min-w-0 py-6 ${editorMode === 'canvas' ? 'max-w-[1920px]' : 'max-w-[1440px]'}`} data-testid="historical-regime-workbench" onKeyDown={event => { if (focused && !drawer && event.key === 'Escape') { event.preventDefault(); setFocused(false) } }}>
-      <ScenarioAssistant page="historical-regimes" workspace={eventWorkspace ? 'events' : 'graph'} purpose={purpose || (eventWorkspace ? 'manual_events' : 'research')}
+      <ScenarioAssistant page={eventWorkspace ? 'global-events' : 'historical-regimes'} workspace={eventWorkspace ? 'events' : 'graph'} purpose={purpose || (eventWorkspace ? 'manual_events' : 'research')}
         active={active} busy={loadingCatalog || loadingDefinition || loadingTemplate || formulaPending || formulaBusy || savingDefinition || savingResearch || running}
         mode={mode} asOf={asOf} definition={definition as unknown as Record<string, unknown>}
         onApply={value => {

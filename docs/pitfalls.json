@@ -2172,7 +2172,10 @@
         "frontend/e2e/portable-agent.spec.ts",
         "backend/research_access/scenario_contracts.py",
         "backend/tests/test_research_scenarios.py",
-        "scripts/check_portable_agent_boundary.py"
+        "scripts/check_portable_agent_boundary.py",
+        "backend/research_access/store.py",
+        "frontend/src/pages/HistoricalRegimeWorkbench.tsx",
+        "frontend/src/pages/HistoricalRegimeWorkbench.test.tsx"
       ],
       "affected_modules": [
         "portable_agent_integration"
@@ -2197,7 +2200,10 @@
         "Long offline endurance probes must renew expiring test credentials as the SDK does; an expired token is not a leaked execution task.",
         "After Dev integration, preserve the research study identity and causal/realtime gate when filling a scenario candidate; saved-definition read must use the requested revision.",
         "A business process killed after atomic creation can reconcile by operation_id; an absent write receipt stays fenced as COMMIT_UNCERTAIN instead of retrying a new write.",
-        "page.read contains projected JSON text: verify the entire signed receipt and ownership first, then exempt only result.content from the free-text heuristic. Never admit unsigned/tampered page content; test the actual model admission path, not only the tool output."
+        "page.read contains projected JSON text: verify the entire signed receipt and ownership first, then exempt only result.content from the free-text heuristic. Never admit unsigned/tampered page content; test the actual model admission path, not only the tool output.",
+        "Manual-event workbench contexts must use page global-events with workspace events; hidden event-library assistants remain inactive.",
+        "Known ResearchError failures for progress=read are terminal failed and release the stable page scope; unknown remains reserved for unconfirmed dispatched work.",
+        "Claim accepted operations and honor pre-dispatch cancellation in one BEGIN IMMEDIATE transaction. A cancelled operation must never transition back to running."
       ],
       "safe_observation_methods": [
         "env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_portable_agent_host.py backend/tests/test_portable_scenarios.py -q"

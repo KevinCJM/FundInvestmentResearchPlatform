@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import copy
 import json
+import os
 import sqlite3
 import time
 import uuid
@@ -194,6 +195,16 @@ class ResearchStore:
             row = db.execute('SELECT body FROM operations WHERE id=?', (oid,)).fetchone()
             value = json.loads(row[0]) | fields
             db.execute('UPDATE operations SET status=?,body=? WHERE id=?', (value['status'], stable_json(value), oid))
+            return value
+
+    def claim_operation(self, oid):
+        with self.db() as db:
+            row = db.execute('SELECT body FROM operations WHERE id=?', (oid,)).fetchone()
+            value = json.loads(row[0]) if row else None
+            if not value or value['status'] != 'accepted' or value.get('cancel_requested'):
+                return None
+            value.update(status='running', executor_pid=os.getpid())
+            db.execute('UPDATE operations SET status=?,body=? WHERE id=?', ('running', stable_json(value), oid))
             return value
 
     def cancel_operation(self, oid):

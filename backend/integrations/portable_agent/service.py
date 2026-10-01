@@ -255,9 +255,9 @@ class HostIntegration:
     async def execute(self, operation, record, principal):
         oid = operation['operation_id']
         async with self.slots:
-            if self.store.operation(oid)['status'] == 'cancelled':
+            operation = self.store.claim_operation(oid)
+            if operation is None:
                 return
-            self.store.update_operation(oid, status='running', executor_pid=os.getpid())
             try:
                 authoring, expected, result, versions, current_data = await run_in_threadpool(self.calculate, operation, record, principal)
                 live = self.store.operation(oid)
@@ -287,7 +287,7 @@ class HostIntegration:
                 self.store.update_operation(oid, status='succeeded', result=envelope, current_data=current_data)
             except ResearchError as exc:
                 # These errors prove no business side effect began; other post-dispatch failures stay uncertain.
-                terminal = tools.get_tool(operation['name']).progress is None or exc.code in {'AGENT_DRAFT_REQUIRED', 'AGENT_PREVIEW_TARGET_REQUIRED', 'AGENT_TOOL_DOMAIN_MISMATCH',
+                terminal = tools.get_tool(operation['name']).progress in {None, 'read'} or exc.code in {'AGENT_DRAFT_REQUIRED', 'AGENT_PREVIEW_TARGET_REQUIRED', 'AGENT_TOOL_DOMAIN_MISMATCH',
                     'AGENT_CONTEXT_CHANGED', 'CONTEXT_CHANGED', 'REVISION_CONFLICT', 'VALIDATION_ERROR',
                     'SCENARIO_PURPOSE_MISMATCH', 'SCENARIO_DEFINITION_REQUIRED', 'SCENARIO_AUTHORING_INVALID',
                     'RAW_DATA_FORBIDDEN', 'TOOL_DOMAIN_MISMATCH'}
