@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { auditTextContrast } from './helpers/contrast'
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('pit.view.override', JSON.stringify({ off: true })))
@@ -208,4 +209,56 @@ test('人工历史事件仅启用当前事件工作区助手并通过真实授�
   expect(manual.every(item => item.page_context.page === 'global-events' && item.page_context.calculation.workspace === 'events')).toBe(true)
   await expect(agent.getByText('AGENT_SCOPE_PAGE_MISMATCH')).toHaveCount(0)
   await page.screenshot({ path: info.outputPath('manual-events-assistant.png'), fullPage: true })
+})
+
+test('保留情景页签草稿时只挂载活动助手，隐藏页签不启动', async ({ page }, info) => {
+  const registrations: Array<Record<string, any>> = []
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  page.on('request', request => {
+    if (request.url().endsWith('/api/integrations/portable-agent/contexts')) registrations.push(request.postDataJSON())
+  })
+  const agent = page.locator('portable-agent')
+  const ready = async () => {
+    await expect(agent).toHaveCount(1)
+    await agent.getByRole('button', { name: '打开 AI 助手', exact: true }).click()
+    await expect(agent.getByRole('button', { name: '发送', exact: true })).toBeEnabled()
+    await page.waitForLoadState('networkidle')
+    await expect(agent).toHaveCount(1)
+    await agent.getByRole('button', { name: '关闭 AI 助手', exact: true }).click()
+  }
+  await page.goto('/settings/scenario-algorithms?center=market-state&stage=historical&new=1')
+  await ready()
+  expect(registrations.length).toBeGreaterThan(0)
+  expect(registrations.every(item => item.page_snapshot.sections.editing.definition != null)).toBe(true)
+  const historicalName = page.locator('#market-state-stage-historical').getByLabel('研究名称', { exact: true })
+  await historicalName.fill('切换后保留的研究草稿')
+  await page.getByRole('link', { name: '返回历史参考清单' }).click()
+  await ready()
+  await page.getByRole('link', { name: '新建历史参考算法' }).first().click()
+  await ready()
+  await expect(historicalName).toHaveValue('切换后保留的研究草稿')
+  await page.getByRole('tablist', { name: '市场状态研究步骤' }).getByRole('tab', { name: /建立实时识别/ }).click()
+  await ready()
+  await page.getByRole('link', { name: '新建实时识别模型' }).first().click()
+  await ready()
+  registrations.length = 0
+  await page.getByRole('tab', { name: /^全球历史事件库/ }).click()
+  await ready()
+  expect(registrations.every(item => item.page_context.page === 'global-events')).toBe(true)
+  registrations.length = 0
+  await page.getByRole('button', { name: '人工历史事件', exact: true }).click()
+  await ready()
+  expect(registrations.every(item => item.page_context.calculation.purpose === 'manual_events')).toBe(true)
+  await page.getByRole('button', { name: '事件库', exact: true }).click()
+  await ready()
+  await page.getByRole('tab', { name: /^市场状态研究/ }).click()
+  await ready()
+  await page.getByRole('link', { name: '新建历史参考算法' }).first().click()
+  await ready()
+  await expect(historicalName).toHaveValue('切换后保留的研究草稿')
+  await expect.poll(() => page.evaluate(auditTextContrast)).toEqual([])
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+  expect(errors).toEqual([])
+  await page.screenshot({ path: info.outputPath('retained-pane-assistant.png'), fullPage: true })
 })

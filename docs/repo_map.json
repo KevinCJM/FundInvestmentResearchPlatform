@@ -5424,6 +5424,7 @@
         "frontend/e2e/portable-agent.spec.ts",
         "frontend/src/test/portablePageProbe.tsx",
         "frontend/src/integrations/portable-agent/ScenarioAssistant.test.tsx",
+        "frontend/src/integrations/portable-agent/PortableAgentMount.test.tsx",
         "scripts/tests/test_portable_boundary.py",
         "backend/tests/test_research_catalog.py",
         "backend/tests/test_research_pages.py",
