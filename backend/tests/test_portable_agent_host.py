@@ -67,6 +67,35 @@ def host(tmp_path, monkeypatch):
     service.close_compute_engine()
 
 
+def test_tool_navigation_is_exported_with_stable_ids_and_no_execution_grant(host):
+    import importlib.util
+    from pathlib import Path
+    client, _, _, _ = host
+    response = client.get('/api/integrations/portable-agent/capabilities')
+    assert response.status_code == 200, response.text
+    items = response.json()['items']
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location('portable_config_export', root/'scripts/export_portable_agent_config.py')
+    exporter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(exporter)
+    configured = exporter.configuration('http://127.0.0.1:18080', 'http://127.0.0.1:14173', [])['applications'][0]['capabilities']
+    by_path, by_id = {item['path']: item for item in items}, {item['id']: item for item in configured}
+    assert len(by_id) == len(configured) == len(items)
+    paths = ['/pre-investment/saa/policy', '/pre-investment/saa/asset-classes',
+        '/pre-investment/saa/auto-classification', '/pre-investment/saa/allocation-lab',
+        '/pre-investment/product-allocation-timing/timing']
+    for path in paths:
+        assert path in by_path
+        capability = by_path[path]
+        assert capability['id'] == path.strip('/').replace('/', '.')
+        assert capability['actions'] == ['navigate'] and capability['handoff'] is False
+        assert capability['parameters'] == {'type': 'object', 'additionalProperties': False}
+        assert by_id[capability['id']] == {key: value for key, value in capability.items() if key not in {'path', 'status'}}
+    assert by_path['/post-investment/research-diagnosis']['id'] == 'holding-diagnosis'
+    assert by_path['/post-investment/research-diagnosis']['actions'] == ['navigate', 'read', 'execute']
+    assert [item['id'] for item in items if item['handoff']] == ['indicator-studio']
+
+
 def context(client):
     response = client.post('/api/integrations/portable-agent/contexts', json={'page_context': {
         'page': 'indicator-studio', 'page_instance_id': 'workbench', 'context_revision': 0, 'view_state': 'unknown',
