@@ -58,17 +58,28 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
                 db.execute('INSERT INTO migration_imports VALUES(?,?,?)', (archive['dataset_id'], archive['content_hash'], ''))
         for session in archive['sessions']:
             sid = session['source_id']
+            aid = target_id(archive['dataset_id'], 'authoring', sid)
+            persisted_context = None
+            with store.db() as db:
+                imported = db.execute('SELECT body FROM authorings WHERE id=?', (aid,)).fetchone()
+                if imported:
+                    initial = json.loads(imported['body'])
+                    reference = db.execute("SELECT id FROM contexts WHERE subject=? AND workspace=? AND json_extract(body,'$.hash')=?",
+                        (principal['sub'], principal['workspace'], initial['context_hash'])).fetchone()
+                    if not reference:
+                        raise ValueError('Imported authoring has no owned frozen context')
+            if imported:
+                persisted_context = store.context(reference['id'], subject=principal['sub'], workspace=principal['workspace'])
             try:
                 page = session['page_context']
                 if page.get('page') == 'regime-workbench':
                     page = {**page, 'page': 'historical-regimes', 'calculation': {
                         **page['calculation'], 'context_kind': 'scenario', 'workspace': 'graph'}}
                 body = ContextInput(page_context=page)
-                record = await integration.register(principal, body, pit_off=body.page_context.view_state == 'off')
+                record = persisted_context or await integration.register(principal, body, pit_off=body.page_context.view_state == 'off')
             except Exception as exc:
                 result['quarantined'].append({'kind': 'session', 'id': sid, 'reason': type(exc).__name__})
                 continue
-            aid = target_id(archive['dataset_id'], 'authoring', sid)
             draft = session.get('draft')
             if draft:
                 draft = {**draft, 'definition_hash': definition_hash(draft['definition']), 'compile_token': None,
@@ -84,9 +95,11 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
                 db.execute('INSERT OR IGNORE INTO authorings VALUES(?,?,?,?,?,?)', (aid, principal['sub'], principal['workspace'],
                     'import:'+archive['dataset_id']+':'+sid, 1, stable_json(value)))
                 db.execute('INSERT OR IGNORE INTO authoring_revisions VALUES(?,?,?)', (aid, 1, stable_json(value)))
-            # Rebind the business reference; the framework only retains this opaque authority record.
-            body = body.model_copy(update={'authoring_id': aid}) if body.page_context.context_kind == 'single_product' else body
-            record = await integration.register(principal, body, pit_off=body.page_context.view_state == 'off')
+            # Rebind only the authoring identity; imported evidence retains its first frozen PIT/data/catalog.
+            if body.page_context.context_kind == 'single_product':
+                frozen = {k: v for k, v in record.items() if k not in {'id', 'hash', 'subject', 'workspace',
+                          'grant_id', 'grant_revision', 'revoked', 'expires'}}
+                record = store.register_context(principal, {**frozen, 'authoring_id': aid})
             turns, by_run = [], {}
             for message in session['messages']:
                 text = message.get('text') or ''

@@ -65,11 +65,15 @@ def test_business_archive_dry_run_replay_and_corruption(tmp_path, monkeypatch, i
         with pytest.raises(ValueError, match='different archive'):
             run(True)
         source.write_text(json.dumps(archive))
+        versions = module.HostIntegration.versions
+        monkeypatch.setattr(module.HostIntegration, 'versions', lambda self, page: {
+            **versions(self, page), 'catalog_version': 'catalog-after-interruption', 'data_generation': 'data-after-interruption'})
     first = run(True)
     assert first['sessions'] == 2 and first['quarantined'] == []
     prepared = json.loads(output.read_text())
     assert prepared['sessions'][0]['turns'][0]['output'] == '已生成草稿。'
     authority = prepared['sessions'][0]['context']
+    assert authority['summary']['catalog_version'] != 'catalog-after-interruption'
     store = ResearchStore(business)
     authoring = store.read_authoring(authority['authoring_id'], {'sub': 'alice', 'workspace': 'lab'})
     assert authoring['draft']['compile_token'] is None and authoring['draft']['valid'] is False
