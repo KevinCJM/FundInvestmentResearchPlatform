@@ -131,10 +131,11 @@ class HostIntegration:
                     catalogs['sources'] = {'snapshot': read_active_manifest(sources.data_dir),
                                            'indicators': sources._indicator_versions()}
             except (IndicatorDomainError, BackendDomainError) as exc:
-                if exc.status_code < 500:
+                # Date is the only request input to these catalog reads; other errors describe stored evidence.
+                if exc.code == 'FUTURE_RESEARCH_DATE':
                     raise ResearchError(exc.code, exc.message, status_code=exc.status_code) from exc
                 raise ResearchError('RESEARCH_SERVICE_UNAVAILABLE', '情景目录暂不可读取，请检查业务数据后重试。', status_code=503) from exc
-            except (MarketDataManifestError, StorageError, OSError) as exc:
+            except (MarketDataManifestError, StorageError, OSError, KeyError, TypeError, AttributeError, ValueError) as exc:
                 raise ResearchError('RESEARCH_SERVICE_UNAVAILABLE', '情景目录暂不可读取，请检查业务数据后重试。', status_code=503) from exc
             catalog_version = stable_hash([catalog_version, REGISTRY_VERSION, page.calculation.workspace, catalogs])
         return {'catalog_version': catalog_version,
