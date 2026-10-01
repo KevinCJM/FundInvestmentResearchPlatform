@@ -6,6 +6,7 @@ import json
 import os
 import time
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -108,7 +109,56 @@ class HostIntegration:
         catalog_version = build_catalog(self.indicators)['version']
         if page.context_kind == 'scenario':
             from historical_regimes.v2_registry import REGISTRY_VERSION
-            catalog_version = stable_hash([catalog_version, REGISTRY_VERSION, page.calculation.workspace])
+            from historical_regimes.v2_contracts import parse_definition_v2
+            from historical_regimes.event_library import EventDraft
+            from market_data import MarketDataManifestError, read_active_manifest
+            from custom_indicators.errors import IndicatorDomainError
+            from backend.custom_indicators.errors import IndicatorDomainError as BackendDomainError
+            from backend.data_storage import StorageError
+            catalogs = {}
+            # ponytail: hash current repository metadata; add durable generations if catalog size makes this costly.
+            try:
+                try:
+                    as_of = date.fromisoformat(page.calculation.as_of) if page.calculation.as_of is not None else None
+                    if as_of is not None and as_of.isoformat() != page.calculation.as_of:
+                        raise ValueError('Noncanonical research date')
+                except ValueError:
+                    raise ResearchError('VALIDATION_ERROR', '研究日期格式无效，应为 YYYY-MM-DD。', status_code=422) from None
+                if graph := self.pages.get('graph'):
+                    for key, repository in (('definitions', graph.definitions), ('events', graph.event_library)):
+                        with repository.store.locked():
+                            entries = repository.store.read_unlocked()['items']
+                        catalogs[key] = []
+                        for entry in entries:
+                            versions = [entry['current'], *entry.get('history', [])]
+                            if any(item['id'] != entry['current']['id'] for item in versions):
+                                raise ValueError('Catalog history changed identity')
+                            catalogs[key].extend(versions)
+                        for item in catalogs[key]:
+                            if not isinstance(item['id'], str) or not item['id'] or type(item['revision']) is not int or item['revision'] < 1:
+                                raise ValueError('Invalid catalog identity')
+                            if key == 'definitions':
+                                parse_definition_v2(item)
+                            else:
+                                EventDraft.model_validate({k: v for k, v in item.items() if k in EventDraft.model_fields})
+                if stress := self.pages.get('stress'):
+                    from scenario_stress.contracts import normalize_definition
+                    catalogs['stress'] = stress.list_definitions()
+                    for item in catalogs['stress']:
+                        normalize_definition(item)
+                if published := self.pages.get('published'):
+                    catalogs['releases'] = published.releases(as_of)
+                if sources := self.pages.get('sources'):
+                    catalogs['sources'] = {'snapshot': read_active_manifest(sources.data_dir),
+                                           'indicators': sources._indicator_versions()}
+            except (IndicatorDomainError, BackendDomainError) as exc:
+                # Date is the only request input to these catalog reads; other errors describe stored evidence.
+                if exc.code == 'FUTURE_RESEARCH_DATE':
+                    raise ResearchError(exc.code, exc.message, status_code=exc.status_code) from exc
+                raise ResearchError('RESEARCH_SERVICE_UNAVAILABLE', '情景目录暂不可读取，请检查业务数据后重试。', status_code=503) from exc
+            except (MarketDataManifestError, StorageError, OSError, KeyError, TypeError, AttributeError, ValueError) as exc:
+                raise ResearchError('RESEARCH_SERVICE_UNAVAILABLE', '情景目录暂不可读取，请检查业务数据后重试。', status_code=503) from exc
+            catalog_version = stable_hash([catalog_version, REGISTRY_VERSION, page.calculation.workspace, catalogs])
         return {'catalog_version': catalog_version,
                 'data_generation': market_data_generation(self.indicators.market_data_dir)}
 
@@ -240,11 +290,14 @@ class HostIntegration:
                 raise ResearchError('CONTEXT_CHANGED', '数据或目录已改变，请重新发送。', status_code=409)
             if operation['name'].startswith('scenarios.'):
                 from custom_indicators.errors import IndicatorDomainError
+                from backend.custom_indicators.errors import IndicatorDomainError as BackendDomainError
+                from research_series.service import ResearchSeriesError
+                from backend.research_series.service import ResearchSeriesError as BackendSeriesError
                 try:
                     result = scenarios.execute(operation['name'], tools.parse_arguments(operation['name'], payload['arguments']), page, record['page_snapshot'], self.pages,
                         checkpoint=lambda **fields: self.store.update_operation(operation['operation_id'], **fields),
                         cancelled=lambda: self.store.operation(operation['operation_id']).get('cancel_requested', False))
-                except IndicatorDomainError as exc:
+                except (IndicatorDomainError, BackendDomainError, ResearchSeriesError, BackendSeriesError) as exc:
                     raise ResearchError(exc.code, exc.message, status_code=exc.status_code) from exc
             else:
                 result = tools.execute_business(operation['name'], payload['arguments'], authoring=authoring, page_context=page,

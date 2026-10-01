@@ -78,6 +78,16 @@ trusted Bearer token. The current-permissions endpoint receives
 `{subject, workspace}` and returns matching `sub`, `workspace`, and `scopes`.
 No public local-owner login is enabled by this overlay.
 
+The platform archive importer uses this same authority to mint contexts for the
+archive's assigned owner/workspace; the archive cannot grant wildcard permissions.
+`--apply` therefore needs the configured authority URL/token in production and
+fails before binding the dataset if that identity cannot be verified or lacks
+`assistant:use`. Authorization/service failures during import leave it retryable;
+restore access and rerun the same archive instead of accepting a partial import. `--apply` in explicit local mode accepts
+only the configured local owner/workspace. Dry-run remains offline and creates no
+business store. Retry preserves previously frozen grants; live bootstrap still
+checks current permissions, including subsequent revocations.
+
 Generate the non-secret application configuration with the platform's Python:
 
 ```bash

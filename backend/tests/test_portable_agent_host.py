@@ -184,6 +184,209 @@ def test_signed_tool_wire_and_late_dependency_change(host):
     assert client.post('/internal/portable-agent/admission', headers=headers, json=after).status_code == 409
 
 
+@pytest.mark.parametrize('changed', ['graph', 'graph_history', 'events', 'event_history', 'stress', 'source_manifest', 'source_indicator', 'releases'])
+def test_scenario_catalog_mutation_invalidates_model_evidence(host, tmp_path, changed):
+    from historical_regimes.v2_service import RegimeGraphV2Service
+    from historical_regimes.v2_templates import TEMPLATES_V2
+    from scenario_stress.service import ScenarioStressService
+    from scenario_stress.published import PublishedScenarioService
+    from custom_indicators.repository import IndicatorRepository
+    from test_research_series_routes import _write_fixture
+    from test_scenario_stress import _template
+    client, bridge, _, _ = host
+    graph = RegimeGraphV2Service(tmp_path, tmp_path)
+    stress = ScenarioStressService(tmp_path, tmp_path)
+    published = PublishedScenarioService(tmp_path)
+    sources = _write_fixture(tmp_path/'sources')
+    bridge.pages.update(graph=graph, stress=stress, published=published, sources=sources)
+    if changed == 'graph_history':
+        saved = graph.definitions.create(TEMPLATES_V2[0]['definition'])
+        graph.definitions.update(saved['id'], 1, {**TEMPLATES_V2[0]['definition'], 'name': '当前版本'})
+    if changed == 'event_history':
+        saved = graph.event_library.create({'name': '初始事件', 'windows': [{'id': 'historical-window', 'label': '窗口',
+            'start_date': '2020-01-01', 'end_date': '2020-01-31', 'rationale': '历史窗口'}]})
+        graph.event_library.update(saved['id'], 1, {'name': '当前事件', 'windows': saved['windows']})
+    body = {'page_context': {'page': 'historical-regimes', 'page_instance_id': 'mutable-catalog',
+        'view_state': 'unknown', 'calculation': {'context_kind': 'scenario', 'workspace': 'graph'}}}
+    ctx = client.post('/api/integrations/portable-agent/contexts', json=body).json()
+    result, _ = tool(client, ctx, 'scenarios_catalog', {'section': 'definitions'})
+    assert result['status'] == 'succeeded'
+    messages = [{'role': 'user', 'content': '列出情景定义'},
+        {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'c', 'type': 'function', 'function': {
+            'name': 'scenarios_catalog', 'arguments': '{"section":"definitions"}'}}]},
+        {'role': 'tool', 'tool_call_id': 'c', 'content': json.dumps(result['model'])}]
+    wire = {'model': 'offline', 'messages': messages, 'tools': []}
+    before = {'application': 'fund-research', 'subject': 'alice', 'context': ctx,
+              'phase': 'before', 'wire': wire, 'payload_hash': stable_hash(wire)}
+    headers = {'Authorization': 'Bearer '+SERVICE_TOKEN}
+    admitted = client.post('/internal/portable-agent/admission', headers=headers, json=before)
+    assert admitted.status_code == 200, admitted.text
+    if changed in {'graph_history', 'event_history'}:
+        path = (graph.definitions if changed == 'graph_history' else graph.event_library).store.path
+        stored = json.loads(path.read_text())
+        stored['items'][0]['history'][0]['name'] = '变更历史但保留当前版本'
+        path.write_text(json.dumps(stored))
+    elif changed == 'graph':
+        graph.definitions.create(TEMPLATES_V2[0]['definition'])
+    elif changed == 'events':
+        graph.event_library.create({'name': '新事件', 'windows': [{'id': 'event-window', 'label': '窗口',
+            'start_date': '2020-01-01', 'end_date': '2020-01-31', 'rationale': '固定测试窗口'}]})
+    elif changed == 'stress':
+        stress.create_definition(_template('factor_path'))
+    elif changed == 'source_manifest':
+        path = sources.data_dir/'tushare_active.json'
+        manifest = json.loads(path.read_text())
+        path.write_text(json.dumps({**manifest, 'generation': 'next-catalog-generation'}))
+    elif changed == 'source_indicator':
+        IndicatorRepository(sources.workspace_data_dir/'custom_indicators.json', []).create(_draft(name='新增来源'))
+    else:
+        published.artifacts.save('release', {'name': '新情景版本', 'lineage': [],
+            'effective_at': '2020-01-01T00:00:00+00:00', 'expires_at': '2099-01-01T00:00:00+00:00'})
+    after = {key: value for key, value in before.items() if key != 'wire'}
+    after.update(phase='after', receipt_id=admitted.json()['receipt_id'])
+    assert client.post('/internal/portable-agent/admission', headers=headers, json=after).status_code == 409
+    fresh = client.post('/api/integrations/portable-agent/contexts', json=body).json()
+    assert fresh['hash'] != ctx['hash']
+    prepared = client.post('/internal/portable-agent/admission', headers=headers, json={
+        'application': 'fund-research', 'subject': 'alice', 'context': fresh, 'phase': 'prepare', 'messages': messages})
+    assert prepared.status_code == 200, prepared.text
+    assert json.loads(prepared.json()['messages'][-1]['content'])['status'] == 'historical_stale'
+    assert tool(client, fresh, 'scenarios_catalog', {'section': 'definitions'})[0]['status'] == 'succeeded'
+
+
+def test_missing_snapshot_keeps_local_catalogs_available_and_source_failure_terminal(host, tmp_path):
+    from historical_regimes.v2_service import RegimeGraphV2Service
+    from historical_regimes.v2_templates import TEMPLATES_V2
+    from test_research_series_routes import _write_fixture
+    client, bridge, _, _ = host
+    graph, sources = RegimeGraphV2Service(tmp_path, tmp_path), _write_fixture(tmp_path/'sources')
+    graph.definitions.create(TEMPLATES_V2[0]['definition'])
+    graph.event_library.create({'name': '本地事件', 'windows': [{'id': 'local-window', 'label': '窗口',
+        'start_date': '2020-01-01', 'end_date': '2020-01-31', 'rationale': '本地记录'}]})
+    manifest = sources.data_dir/'tushare_active.json'
+    original = manifest.read_text()
+    manifest.unlink()
+    bridge.pages.update(graph=graph, sources=sources)
+    body = {'page_context': {'page': 'historical-regimes', 'page_instance_id': 'no-snapshot',
+        'view_state': 'unknown', 'calculation': {'context_kind': 'scenario', 'workspace': 'graph'}}}
+    response = client.post('/api/integrations/portable-agent/contexts', json=body)
+    assert response.status_code == 200, response.text
+    ctx = response.json()
+    result, _ = tool(client, ctx, 'scenarios_catalog', {'section': 'sources'})
+    assert result['status'] == 'failed', result
+    assert result['error']['code'] == 'ACTIVE_SNAPSHOT_REQUIRED'
+    for section in ('definitions', 'events'):
+        result, _ = tool(client, ctx, 'scenarios_catalog', {'section': section})
+        assert result['status'] == 'succeeded' and result['model']['result']['items']
+    manifest.write_text(original)
+    fresh = client.post('/api/integrations/portable-agent/contexts', json=body).json()
+    assert fresh['hash'] != ctx['hash']
+    assert tool(client, fresh, 'scenarios_catalog', {'section': 'sources'})[0]['status'] == 'succeeded'
+
+
+@pytest.mark.parametrize('as_of', ['2026-13-01', '2999-01-01', '20200101', '2020-W01-1', ''])
+def test_scenario_catalog_dates_return_controlled_validation(host, tmp_path, as_of):
+    from scenario_stress.published import PublishedScenarioService
+    client, bridge, _, _ = host
+    bridge.pages['published'] = PublishedScenarioService(tmp_path)
+    page = {'page': 'published-scenarios', 'page_instance_id': 'invalid-date', 'view_state': 'unknown',
+            'calculation': {'context_kind': 'scenario', 'workspace': 'published', 'as_of': as_of}}
+    with TestClient(client.app, raise_server_exceptions=False) as requests:
+        requests.headers.update(client.headers)
+        response = requests.post('/api/integrations/portable-agent/contexts', json={'page_context': page})
+        assert response.status_code == 422, response.text
+        assert response.json()['error']['code'] in {'VALIDATION_ERROR', 'FUTURE_RESEARCH_DATE'}
+        page['calculation']['as_of'] = '2020-01-01'
+        assert requests.post('/api/integrations/portable-agent/contexts', json={'page_context': page}).status_code == 200
+
+
+@pytest.mark.parametrize('fault', ['manifest_json', 'manifest_target', 'manifest_unreadable', 'source_indicators', 'graph_store', 'release_index',
+    'graph_record', 'graph_record_type', 'graph_current_type', 'graph_empty', 'graph_history', 'graph_history_identity', 'stress_empty', 'source_record_type', 'events_record', 'events_record_type', 'events_current_type', 'events_empty_windows', 'events_history', 'events_history_identity',
+    'release_index_symlink', 'release_index_oversize', 'release_checksum'])
+def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tmp_path, monkeypatch, fault):
+    from pathlib import Path
+    from historical_regimes.v2_service import RegimeGraphV2Service
+    from scenario_stress.published import PublishedScenarioService
+    from test_research_series_routes import _write_fixture
+    from scenario_stress.service import ScenarioStressService
+    client, bridge, _, _ = host
+    graph, published, sources = RegimeGraphV2Service(tmp_path, tmp_path), PublishedScenarioService(tmp_path), _write_fixture(tmp_path/'sources')
+    bridge.pages.update(graph=graph, published=published, sources=sources)
+    stress = ScenarioStressService(tmp_path, tmp_path)
+    bridge.pages['stress'] = stress
+    if fault in {'graph_history', 'graph_history_identity'}:
+        from historical_regimes.v2_templates import TEMPLATES_V2
+        saved = graph.definitions.create(TEMPLATES_V2[0]['definition'])
+        graph.definitions.update(saved['id'], 1, {**TEMPLATES_V2[0]['definition'], 'name': '当前版本'})
+    if fault in {'events_empty_windows', 'events_history', 'events_history_identity'}:
+        saved = graph.event_library.create({'name': '正常事件', 'windows': [{'id': 'event-window', 'label': '窗口',
+            'start_date': '2020-01-01', 'end_date': '2020-01-31', 'rationale': '固定测试窗口'}]})
+        if fault in {'events_history', 'events_history_identity'}:
+            graph.event_library.update(saved['id'], 1, {'name': '当前事件', 'windows': saved['windows']})
+    if fault == 'release_checksum':
+        release = published.artifacts.save('release', {'name': '正常发布', 'lineage': [],
+            'effective_at': '2020-01-01T00:00:00+00:00', 'expires_at': '2099-01-01T00:00:00+00:00'})
+    body = {'page_context': {'page': 'historical-regimes', 'page_instance_id': 'unhealthy-catalog',
+        'view_state': 'unknown', 'calculation': {'context_kind': 'scenario', 'workspace': 'graph'}}}
+    ctx = client.post('/api/integrations/portable-agent/contexts', json=body).json()
+    incoming = {'application': 'fund-research', 'subject': 'alice', 'context': ctx,
+                'phase': 'input', 'messages': [{'role': 'user', 'content': '继续研究'}]}
+    headers = {'Authorization': 'Bearer '+SERVICE_TOKEN}
+    path = (sources.workspace_data_dir/'custom_indicators.json' if fault.startswith('source_') else
+            graph.definitions.store.path if fault.startswith('graph_') else
+            stress.definitions.store.path if fault.startswith('stress_') else
+            graph.event_library.store.path if fault.startswith('events_') else
+            published.artifacts.root/release['id']/'manifest.json' if fault == 'release_checksum' else
+            published.artifacts.index.path if fault.startswith('release_') else sources.data_dir/'tushare_active.json')
+    original = path.read_text() if path.exists() else None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with monkeypatch.context() as patch:
+        if fault == 'manifest_unreadable':
+            read_text = Path.read_text
+            def unreadable(target, *args, **kwargs):
+                if target == path:
+                    raise PermissionError('fixture: manifest unreadable')
+                return read_text(target, *args, **kwargs)
+            patch.setattr(Path, 'read_text', unreadable)
+        elif fault in {'events_empty_windows', 'events_history', 'events_history_identity', 'graph_history', 'graph_history_identity'}:
+            stored = json.loads(original)
+            record = stored['items'][0]['history'][0] if '_history' in fault else stored['items'][0]['current']
+            if fault.endswith('_identity'):
+                record['id'] = 'other-owned-object'
+            elif fault == 'graph_history':
+                record.pop('graph')
+            else:
+                record['windows'] = []
+            path.write_text(json.dumps(stored))
+        elif fault == 'release_index_symlink':
+            target = path.with_name('index-target.json')
+            target.write_text(original or '{"items":[]}')
+            path.unlink(missing_ok=True)
+            path.symlink_to(target)
+        elif fault == 'release_index_oversize':
+            path.write_text(' ' * 16_000_001)
+        elif fault == 'release_checksum':
+            path.write_text(json.dumps({**json.loads(original), 'name': '篡改发布'}))
+        elif fault in {'graph_record', 'graph_record_type', 'graph_current_type', 'graph_empty', 'stress_empty', 'source_record_type',
+                       'events_record', 'events_record_type', 'events_current_type'}:
+            entry = ({'current': {}} if fault in {'graph_empty', 'stress_empty'} else {} if fault.endswith('_record') else
+                     None if fault in {'graph_record_type', 'events_record_type'} else {'current': None})
+            path.write_text(json.dumps({'items': [entry]}))
+        else:
+            path.write_text(json.dumps({**json.loads(original), 'snapshot_dir': 'missing-snapshot'}) if fault == 'manifest_target' else '{broken')
+        with TestClient(client.app, raise_server_exceptions=False) as requests:
+            requests.headers.update(client.headers)
+            for response in (requests.post('/api/integrations/portable-agent/contexts', json=body),
+                             requests.post('/internal/portable-agent/admission', headers=headers, json=incoming)):
+                assert response.status_code == 503, response.text
+                assert response.json()['error']['code'] == 'RESEARCH_SERVICE_UNAVAILABLE'
+    if path.is_symlink():
+        path.unlink()
+    path.write_text(original) if original is not None else path.unlink(missing_ok=True)
+    assert client.post('/api/integrations/portable-agent/contexts', json=body).status_code == 200
+    assert client.post('/internal/portable-agent/admission', headers=headers, json=incoming).status_code == 200
+
+
 def test_saved_object_recovers_after_receipt_gap_without_a_second_create(host, monkeypatch):
     client, _, service, _ = host
     ctx = context(client)
