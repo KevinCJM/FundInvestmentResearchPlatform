@@ -184,7 +184,7 @@ def test_signed_tool_wire_and_late_dependency_change(host):
     assert client.post('/internal/portable-agent/admission', headers=headers, json=after).status_code == 409
 
 
-@pytest.mark.parametrize('changed', ['graph', 'events', 'stress', 'source_manifest', 'source_indicator', 'releases'])
+@pytest.mark.parametrize('changed', ['graph', 'graph_history', 'events', 'event_history', 'stress', 'source_manifest', 'source_indicator', 'releases'])
 def test_scenario_catalog_mutation_invalidates_model_evidence(host, tmp_path, changed):
     from historical_regimes.v2_service import RegimeGraphV2Service
     from historical_regimes.v2_templates import TEMPLATES_V2
@@ -199,6 +199,13 @@ def test_scenario_catalog_mutation_invalidates_model_evidence(host, tmp_path, ch
     published = PublishedScenarioService(tmp_path)
     sources = _write_fixture(tmp_path/'sources')
     bridge.pages.update(graph=graph, stress=stress, published=published, sources=sources)
+    if changed == 'graph_history':
+        saved = graph.definitions.create(TEMPLATES_V2[0]['definition'])
+        graph.definitions.update(saved['id'], 1, {**TEMPLATES_V2[0]['definition'], 'name': '当前版本'})
+    if changed == 'event_history':
+        saved = graph.event_library.create({'name': '初始事件', 'windows': [{'id': 'historical-window', 'label': '窗口',
+            'start_date': '2020-01-01', 'end_date': '2020-01-31', 'rationale': '历史窗口'}]})
+        graph.event_library.update(saved['id'], 1, {'name': '当前事件', 'windows': saved['windows']})
     body = {'page_context': {'page': 'historical-regimes', 'page_instance_id': 'mutable-catalog',
         'view_state': 'unknown', 'calculation': {'context_kind': 'scenario', 'workspace': 'graph'}}}
     ctx = client.post('/api/integrations/portable-agent/contexts', json=body).json()
@@ -214,7 +221,12 @@ def test_scenario_catalog_mutation_invalidates_model_evidence(host, tmp_path, ch
     headers = {'Authorization': 'Bearer '+SERVICE_TOKEN}
     admitted = client.post('/internal/portable-agent/admission', headers=headers, json=before)
     assert admitted.status_code == 200, admitted.text
-    if changed == 'graph':
+    if changed in {'graph_history', 'event_history'}:
+        path = (graph.definitions if changed == 'graph_history' else graph.event_library).store.path
+        stored = json.loads(path.read_text())
+        stored['items'][0]['history'][0]['name'] = '变更历史但保留当前版本'
+        path.write_text(json.dumps(stored))
+    elif changed == 'graph':
         graph.definitions.create(TEMPLATES_V2[0]['definition'])
     elif changed == 'events':
         graph.event_library.create({'name': '新事件', 'windows': [{'id': 'event-window', 'label': '窗口',
@@ -272,7 +284,7 @@ def test_missing_snapshot_keeps_local_catalogs_available_and_source_failure_term
     assert tool(client, fresh, 'scenarios_catalog', {'section': 'sources'})[0]['status'] == 'succeeded'
 
 
-@pytest.mark.parametrize('as_of', ['2026-13-01', '2999-01-01'])
+@pytest.mark.parametrize('as_of', ['2026-13-01', '2999-01-01', '20200101', '2020-W01-1', ''])
 def test_scenario_catalog_dates_return_controlled_validation(host, tmp_path, as_of):
     from scenario_stress.published import PublishedScenarioService
     client, bridge, _, _ = host
@@ -289,7 +301,7 @@ def test_scenario_catalog_dates_return_controlled_validation(host, tmp_path, as_
 
 
 @pytest.mark.parametrize('fault', ['manifest_json', 'manifest_target', 'manifest_unreadable', 'source_indicators', 'graph_store', 'release_index',
-    'graph_record', 'graph_record_type', 'graph_current_type', 'graph_empty', 'stress_empty', 'source_record_type', 'events_record', 'events_record_type', 'events_current_type',
+    'graph_record', 'graph_record_type', 'graph_current_type', 'graph_empty', 'graph_history', 'stress_empty', 'source_record_type', 'events_record', 'events_record_type', 'events_current_type', 'events_empty_windows', 'events_history',
     'release_index_symlink', 'release_index_oversize', 'release_checksum'])
 def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tmp_path, monkeypatch, fault):
     from pathlib import Path
@@ -302,6 +314,15 @@ def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tm
     bridge.pages.update(graph=graph, published=published, sources=sources)
     stress = ScenarioStressService(tmp_path, tmp_path)
     bridge.pages['stress'] = stress
+    if fault == 'graph_history':
+        from historical_regimes.v2_templates import TEMPLATES_V2
+        saved = graph.definitions.create(TEMPLATES_V2[0]['definition'])
+        graph.definitions.update(saved['id'], 1, {**TEMPLATES_V2[0]['definition'], 'name': '当前版本'})
+    if fault in {'events_empty_windows', 'events_history'}:
+        saved = graph.event_library.create({'name': '正常事件', 'windows': [{'id': 'event-window', 'label': '窗口',
+            'start_date': '2020-01-01', 'end_date': '2020-01-31', 'rationale': '固定测试窗口'}]})
+        if fault == 'events_history':
+            graph.event_library.update(saved['id'], 1, {'name': '当前事件', 'windows': saved['windows']})
     if fault == 'release_checksum':
         release = published.artifacts.save('release', {'name': '正常发布', 'lineage': [],
             'effective_at': '2020-01-01T00:00:00+00:00', 'expires_at': '2099-01-01T00:00:00+00:00'})
@@ -327,6 +348,14 @@ def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tm
                     raise PermissionError('fixture: manifest unreadable')
                 return read_text(target, *args, **kwargs)
             patch.setattr(Path, 'read_text', unreadable)
+        elif fault in {'events_empty_windows', 'events_history', 'graph_history'}:
+            stored = json.loads(original)
+            record = stored['items'][0]['history'][0] if fault.endswith('_history') else stored['items'][0]['current']
+            if fault == 'graph_history':
+                record.pop('graph')
+            else:
+                record['windows'] = []
+            path.write_text(json.dumps(stored))
         elif fault == 'release_index_symlink':
             target = path.with_name('index-target.json')
             target.write_text(original or '{"items":[]}')
@@ -336,7 +365,7 @@ def test_scenario_catalog_storage_failure_is_controlled_and_recoverable(host, tm
             path.write_text(' ' * 16_000_001)
         elif fault == 'release_checksum':
             path.write_text(json.dumps({**json.loads(original), 'name': '篡改发布'}))
-        elif fault in {'graph_record', 'graph_record_type', 'graph_current_type', 'graph_empty', 'stress_empty', 'source_record_type',
+        elif fault in {'graph_record', 'graph_record_type', 'graph_current_type', 'graph_empty', 'graph_history', 'stress_empty', 'source_record_type',
                        'events_record', 'events_record_type', 'events_current_type'}:
             entry = ({'current': {}} if fault in {'graph_empty', 'stress_empty'} else {} if fault.endswith('_record') else
                      None if fault in {'graph_record_type', 'events_record_type'} else {'current': None})

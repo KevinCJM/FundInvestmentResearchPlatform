@@ -4,7 +4,6 @@ import fcntl
 import copy
 import json
 import os
-import sys
 import time
 from contextlib import contextmanager
 from datetime import date
@@ -111,6 +110,7 @@ class HostIntegration:
         if page.context_kind == 'scenario':
             from historical_regimes.v2_registry import REGISTRY_VERSION
             from historical_regimes.v2_contracts import parse_definition_v2
+            from historical_regimes.event_library import EventDraft
             from market_data import MarketDataManifestError, read_active_manifest
             from custom_indicators.errors import IndicatorDomainError
             from backend.custom_indicators.errors import IndicatorDomainError as BackendDomainError
@@ -118,21 +118,30 @@ class HostIntegration:
             catalogs = {}
             # ponytail: hash current repository metadata; add durable generations if catalog size makes this costly.
             try:
+                try:
+                    as_of = date.fromisoformat(page.calculation.as_of) if page.calculation.as_of is not None else None
+                    if as_of is not None and as_of.isoformat() != page.calculation.as_of:
+                        raise ValueError('Noncanonical research date')
+                except ValueError:
+                    raise ResearchError('VALIDATION_ERROR', '研究日期格式无效，应为 YYYY-MM-DD。', status_code=422) from None
                 if graph := self.pages.get('graph'):
-                    catalogs['definitions'] = graph.list_definitions()
-                    for item in catalogs['definitions']:
-                        parse_definition_v2(item)
-                    catalogs['events'] = graph.event_library.list(archived=True, limit=sys.maxsize)
+                    for key, repository in (('definitions', graph.definitions), ('events', graph.event_library)):
+                        with repository.store.locked():
+                            entries = repository.store.read_unlocked()['items']
+                        catalogs[key] = [item for entry in entries for item in [entry['current'], *entry.get('history', [])]]
+                        for item in catalogs[key]:
+                            if not isinstance(item['id'], str) or not item['id'] or type(item['revision']) is not int or item['revision'] < 1:
+                                raise ValueError('Invalid catalog identity')
+                            if key == 'definitions':
+                                parse_definition_v2(item)
+                            else:
+                                EventDraft.model_validate({k: v for k, v in item.items() if k in EventDraft.model_fields})
                 if stress := self.pages.get('stress'):
                     from scenario_stress.contracts import normalize_definition
                     catalogs['stress'] = stress.list_definitions()
                     for item in catalogs['stress']:
                         normalize_definition(item)
                 if published := self.pages.get('published'):
-                    try:
-                        as_of = date.fromisoformat(page.calculation.as_of) if page.calculation.as_of else None
-                    except ValueError:
-                        raise ResearchError('VALIDATION_ERROR', '研究日期格式无效，应为 YYYY-MM-DD。', status_code=422) from None
                     catalogs['releases'] = published.releases(as_of)
                 if sources := self.pages.get('sources'):
                     catalogs['sources'] = {'snapshot': read_active_manifest(sources.data_dir),
