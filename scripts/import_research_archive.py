@@ -49,37 +49,57 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
             if old:
                 if old['hash'] != archive['content_hash']:
                     raise ValueError('Dataset ID already refers to a different archive')
-                output.write_text(old['result']); output.chmod(0o600)
-                return {'applied': True, 'replayed': True}
+                if old['result']:
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    output.write_text(old['result']); output.chmod(0o600)
+                    return {'applied': True, 'replayed': True}
+            else:
+                # Bind interrupted work to this exact archive before writing any imported objects.
+                db.execute('INSERT INTO migration_imports VALUES(?,?,?)', (archive['dataset_id'], archive['content_hash'], ''))
         for session in archive['sessions']:
             sid = session['source_id']
+            aid = target_id(archive['dataset_id'], 'authoring', sid)
+            persisted_context = None
+            with store.db() as db:
+                imported = db.execute('SELECT body FROM authorings WHERE id=?', (aid,)).fetchone()
+                if imported:
+                    initial = json.loads(imported['body'])
+                    reference = db.execute("SELECT id FROM contexts WHERE subject=? AND workspace=? AND json_extract(body,'$.hash')=?",
+                        (principal['sub'], principal['workspace'], initial['context_hash'])).fetchone()
+                    if not reference:
+                        raise ValueError('Imported authoring has no owned frozen context')
+            if imported:
+                persisted_context = store.context(reference['id'], subject=principal['sub'], workspace=principal['workspace'])
             try:
                 page = session['page_context']
                 if page.get('page') == 'regime-workbench':
                     page = {**page, 'page': 'historical-regimes', 'calculation': {
                         **page['calculation'], 'context_kind': 'scenario', 'workspace': 'graph'}}
                 body = ContextInput(page_context=page)
-                record = await integration.register(principal, body, pit_off=body.page_context.view_state == 'off')
+                record = persisted_context or await integration.register(principal, body, pit_off=body.page_context.view_state == 'off')
             except Exception as exc:
                 result['quarantined'].append({'kind': 'session', 'id': sid, 'reason': type(exc).__name__})
                 continue
-            aid = target_id(archive['dataset_id'], 'authoring', sid)
             draft = session.get('draft')
             if draft:
                 draft = {**draft, 'definition_hash': definition_hash(draft['definition']), 'compile_token': None,
                          'stale': True, 'valid': False}  # Historical validation is not current execution authority.
             value = {'id': aid, 'revision': 1, 'subject': principal['sub'], 'workspace': principal['workspace'],
                      'scope': record['scope'], 'context_hash': record['hash'], 'draft': draft}
+            final_revision = 2 + sum(isinstance(item.get('draft'), dict) and bool(item['draft'].get('definition'))
+                                     for item in session.get('draft_history', []))
             with store.db() as db:
                 existing = db.execute('SELECT body FROM authorings WHERE id=?', (aid,)).fetchone()
-                if existing and json.loads(existing[0]) != value:
+                if existing and json.loads(existing[0]) not in (value, {**value, 'revision': final_revision}):
                     raise ValueError('Imported authoring collides with a different object')
                 db.execute('INSERT OR IGNORE INTO authorings VALUES(?,?,?,?,?,?)', (aid, principal['sub'], principal['workspace'],
                     'import:'+archive['dataset_id']+':'+sid, 1, stable_json(value)))
                 db.execute('INSERT OR IGNORE INTO authoring_revisions VALUES(?,?,?)', (aid, 1, stable_json(value)))
-            # Rebind the business reference; the framework only retains this opaque authority record.
-            body = body.model_copy(update={'authoring_id': aid}) if body.page_context.context_kind == 'single_product' else body
-            record = await integration.register(principal, body, pit_off=body.page_context.view_state == 'off')
+            # Rebind only the authoring identity; imported evidence retains its first frozen PIT/data/catalog.
+            if body.page_context.context_kind == 'single_product':
+                frozen = {k: v for k, v in record.items() if k not in {'id', 'hash', 'subject', 'workspace',
+                          'grant_id', 'grant_revision', 'revoked', 'expires'}}
+                record = store.register_context(principal, {**frozen, 'authoring_id': aid})
             turns, by_run = [], {}
             for message in session['messages']:
                 text = message.get('text') or ''
@@ -113,9 +133,14 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
                 if turn:
                     oid = target_id(archive['dataset_id'], 'artifact', str(historical['seq'])+sid)
                     if body.page_context.context_kind == 'scenario':
-                        store.save_scenario_artifact(oid, principal, {'definition': past['definition'], 'valid': False,
+                        artifact = {'definition': past['definition'], 'valid': False,
                             'validation_scope': 'historical', 'workspace': body.page_context.calculation.workspace,
-                            'context_ref': record['id'], 'source_run_id': turn['id']})
+                            'context_ref': record['id'], 'source_run_id': turn['id']}
+                        with store.db() as db:
+                            existing = db.execute('SELECT subject,workspace,body FROM scenario_artifacts WHERE id=?', (oid,)).fetchone()
+                            if existing and (existing['subject'], existing['workspace'], json.loads(existing['body'])) != (principal['sub'], principal['workspace'], artifact):
+                                raise ValueError('Imported scenario artifact collides with a different object')
+                            db.execute('INSERT OR IGNORE INTO scenario_artifacts VALUES(?,?,?,?)', (oid, principal['sub'], principal['workspace'], stable_json(artifact)))
                         reference = {'type': 'research.scenario', 'group': 'scenario:'+record['scope_key'],
                                      'title': '历史情景草稿', 'artifact_id': oid, 'historical': True}
                     else:
@@ -204,7 +229,7 @@ async def prepare(source, business_dir, market_dir, output, *, apply=False):
         result['content_hash'] = stable_hash(result)
         serialized = json.dumps(result, ensure_ascii=False, indent=2)
         with store.db() as db:
-            db.execute('INSERT INTO migration_imports VALUES(?,?,?)',(archive['dataset_id'],archive['content_hash'],serialized))
+            db.execute('UPDATE migration_imports SET result=? WHERE dataset=? AND hash=?', (serialized, archive['dataset_id'], archive['content_hash']))
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(serialized); output.chmod(0o600)
         return {'applied':True,'sessions':len(result['sessions']),'memories':len(result['memories']),'quarantined':result['quarantined']}

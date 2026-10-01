@@ -386,6 +386,61 @@ def test_read_only_failure_is_terminal_and_next_operation_can_start(host):
     assert result['status'] == 'failed'
 
 
+@pytest.mark.parametrize(('sections', 'code'), [
+    (None, 'AGENT_PAGE_EVIDENCE_REQUIRED'),
+    ({'editing': {}}, 'AGENT_PAGE_SECTION_UNAVAILABLE'),
+    ({'results': {}}, 'AGENT_PAGE_DEFINITION_UNAVAILABLE'),
+    ({'results': {'frozen_definition': _draft(), 'frozen_request': {'targets': []}}}, 'AGENT_PAGE_TARGET_UNAVAILABLE'),
+])
+def test_preview_input_failure_releases_page_scope(host, sections, code):
+    client, bridge, _, _ = host
+    page = {'page': 'indicator-studio', 'page_instance_id': 'preview-errors', 'context_revision': 0,
+            'view_state': 'inherit', 'calculation': {'context_kind': 'single_product', 'targets': [], 'period': '1M', 'as_of': None}}
+    body = {'page_context': page}
+    if sections is not None:
+        body['page_snapshot'] = {'version': 1, 'page': page['page'], 'snapshot_id': 'snap-'+uuid.uuid4().hex, 'sections': sections}
+    response = client.post('/api/integrations/portable-agent/contexts', json=body)
+    assert response.status_code == 200, response.text
+    ctx = response.json()
+    result, _ = tool(client, ctx, 'page_recompute', {})
+    assert result['status'] == 'failed', result
+    assert result['error']['code'] == code
+    assert data_policy.verify(result['model'], 'page.recompute')
+    bridge.store.recover()
+    assert tool(client, ctx, 'metrics_lookup', {'query': 'std'})[0]['status'] == 'succeeded'
+
+
+def test_partial_revocation_blocks_old_context_and_model_evidence(host):
+    from research_access import tools
+    client, bridge, _, permissions = host
+    permissions[:] = ['assistant:use', 'research:read', 'indicator:draft']
+    ctx = context(client)
+    result, request = tool(client, ctx, 'metrics_lookup', {'query': 'std'})
+    declaration = tools.get_tool('metrics.lookup')
+    messages = [{'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'read', 'type': 'function',
+        'function': {'name': 'metrics_lookup', 'arguments': json.dumps(request['arguments'])}}]},
+        {'role': 'tool', 'tool_call_id': 'read', 'content': json.dumps(result['model'])}]
+    wire = {'model': 'offline', 'messages': messages, 'tools': [{'type': 'function', 'function': {
+        'name': 'metrics_lookup', 'description': declaration.description, 'parameters': declaration.arguments.model_json_schema()}}]}
+    headers = {'Authorization': 'Bearer '+SERVICE_TOKEN}
+    body = {'application': 'fund-research', 'subject': 'alice', 'context': ctx}
+    before = {**body, 'phase': 'before', 'wire': wire, 'payload_hash': stable_hash(wire)}
+    admitted = client.post('/internal/portable-agent/admission', headers=headers, json=before)
+    assert admitted.status_code == 200, admitted.text
+    permissions.remove('research:read')
+    for action in ['read', 'run', 'model', 'memory']:
+        assert client.post('/internal/portable-agent/authorize', headers=headers, json=body | {'action': action}).status_code == 403
+    for purpose in ['primary', 'summary']:
+        for phase in ['input', 'prepare', 'before', 'after']:
+            payload = {**before, 'phase': phase, 'purpose': purpose, 'messages': messages, 'receipt_id': admitted.json()['receipt_id']}
+            assert client.post('/internal/portable-agent/admission', headers=headers, json=payload).status_code == 403
+    assert client.post('/api/integrations/portable-agent/bootstrap', json={'context_ref': ctx['ref']}).status_code == 403
+    fresh = context(client)
+    assert fresh['ref'] != ctx['ref']
+    assert 'metrics.lookup' not in bridge.store.context(fresh['ref'])['tool_names']
+    validated(client, fresh)  # Retained draft permission works after explicit re-registration.
+
+
 def test_operation_claim_and_cancellation_share_one_transaction(tmp_path):
     store = ResearchStore(tmp_path)
     principal = {'sub': 'alice', 'workspace': 'lab'}
