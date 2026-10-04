@@ -4,7 +4,7 @@
 
 [返回主页](README.md) · [业务知识](navigation/business.md) · [开发知识](navigation/developer.md)
 
-覆盖：105份受管文档、36个Hermes模块、92个相关附档/基准入口、4份原技能/操作说明。
+覆盖：105份受管文档、36个Hermes模块、92个相关附档/基准入口、12份原技能/操作说明。
 
 ## 全部文档
 
@@ -163,10 +163,18 @@
 
 这些说明不计入受管文档数，但保留原位置和原Hermes入口。
 
+- [.agents/skills/obsidian-wiki/SKILL.md](../../.agents/skills/obsidian-wiki/SKILL.md)：项目技能/操作说明；从原Hermes读取，不复制规则
 - [skills/ai-hermes-routing-init/README.md](../../skills/ai-hermes-routing-init/README.md)：项目技能/操作说明；从原Hermes读取，不复制规则
 - [skills/ai-hermes-routing-init/SKILL.md](../../skills/ai-hermes-routing-init/SKILL.md)：项目技能/操作说明；从原Hermes读取，不复制规则
 - [skills/ai-hermes-self-evolve/README.md](../../skills/ai-hermes-self-evolve/README.md)：项目技能/操作说明；从原Hermes读取，不复制规则
 - [skills/ai-hermes-self-evolve/SKILL.md](../../skills/ai-hermes-self-evolve/SKILL.md)：项目技能/操作说明；从原Hermes读取，不复制规则
+- [skills/obsidian-wiki/SKILL.md](../../skills/obsidian-wiki/SKILL.md)：项目技能/操作说明；从原Hermes读取，不复制规则
+- [skills/obsidian-wiki/UPSTREAM.md](../../skills/obsidian-wiki/UPSTREAM.md)：项目技能/操作说明；从原Hermes读取，不复制规则
+- [skills/obsidian-wiki/references/context-pack.md](../../skills/obsidian-wiki/references/context-pack.md)：项目技能/操作说明；从原Hermes读取，不复制规则
+- [skills/obsidian-wiki/references/ingest.md](../../skills/obsidian-wiki/references/ingest.md)：项目技能/操作说明；从原Hermes读取，不复制规则
+- [skills/obsidian-wiki/references/lint.md](../../skills/obsidian-wiki/references/lint.md)：项目技能/操作说明；从原Hermes读取，不复制规则
+- [skills/obsidian-wiki/references/query.md](../../skills/obsidian-wiki/references/query.md)：项目技能/操作说明；从原Hermes读取，不复制规则
+- [skills/obsidian-wiki/references/update.md](../../skills/obsidian-wiki/references/update.md)：项目技能/操作说明；从原Hermes读取，不复制规则
 
 ## 相关附档与基准
 
@@ -200,9 +208,9 @@
 | [docs/images/frontend-design-20260912/product-quadrant-tooltip.png](../images/frontend-design-20260912/product-quadrant-tooltip.png) | png/126995 bytes | 历史/示意图或源资产；非当前运行证明 | [docs/verification/engineering.md](../verification/engineering.md)；[docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md) |
 | [docs/images/frontend-design-20260912/report-desktop.png](../images/frontend-design-20260912/report-desktop.png) | png/97261 bytes | 历史/示意图或源资产；非当前运行证明 | [docs/verification/engineering.md](../verification/engineering.md)；[docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md) |
 | [docs/images/frontend-design-20260912/report-mobile.png](../images/frontend-design-20260912/report-mobile.png) | png/35545 bytes | 历史/示意图或源资产；非当前运行证明 | [docs/verification/engineering.md](../verification/engineering.md)；[docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md) |
-| [docs/pitfalls.json](../pitfalls.json) | json/200185 bytes | 原JSON所有者/结构资料；按原协议读取 | [docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md)；[docs/wiki/topics/developer-delivery.md](topics/developer-delivery.md) |
+| [docs/pitfalls.json](../pitfalls.json) | json/201309 bytes | 原JSON所有者/结构资料；按原协议读取 | [docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md)；[docs/wiki/topics/developer-delivery.md](topics/developer-delivery.md) |
 | [docs/qa/data-storage-attach-desktop.png](../qa/data-storage-attach-desktop.png) | png/57905 bytes | 历史/示意图或源资产；非当前运行证明 | [docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md) |
-| [docs/repo_map.json](../repo_map.json) | json/326266 bytes | 原JSON所有者/结构资料；按原协议读取 | [docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md)；[docs/wiki/topics/business-decisions.md](topics/business-decisions.md)；[docs/wiki/topics/developer-delivery.md](topics/developer-delivery.md) |
+| [docs/repo_map.json](../repo_map.json) | json/327438 bytes | 原JSON所有者/结构资料；按原协议读取 | [docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md)；[docs/wiki/topics/business-decisions.md](topics/business-decisions.md)；[docs/wiki/topics/developer-delivery.md](topics/developer-delivery.md) |
 | [docs/research/ai-assistant-conversation-ui-prototype-2026-09-20.html](../research/ai-assistant-conversation-ui-prototype-2026-09-20.html) | html/18128 bytes | HTML原型/页面源文件；非产品运行验收 | [docs/research/ai-assistant-conversation-ui-design-2026-09-20.md](../research/ai-assistant-conversation-ui-design-2026-09-20.md)；[docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md) |
 | [docs/research/assets/csi300-market-trend-reference-v1.png](../research/assets/csi300-market-trend-reference-v1.png) | png/153273 bytes | 历史/示意图或源资产；非当前运行证明 | [docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md) |
 | [docs/research/assets/regime-math-formula-2026-09-07.png](../research/assets/regime-math-formula-2026-09-07.png) | png/35587 bytes | 历史/示意图或源资产；非当前运行证明 | [docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md) |
@@ -240,7 +248,7 @@
 | [docs/research/screenshots/saa-taa-20260913/frontier-200-mobile.png](../research/screenshots/saa-taa-20260913/frontier-200-mobile.png) | png/31336 bytes | 历史/示意图或源资产；非当前运行证明 | [docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md) |
 | [docs/research/screenshots/saa-taa-20260913/policy-desktop.png](../research/screenshots/saa-taa-20260913/policy-desktop.png) | png/229494 bytes | 历史/示意图或源资产；非当前运行证明 | [docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md) |
 | [docs/research/screenshots/saa-taa-20260913/policy-mobile.png](../research/screenshots/saa-taa-20260913/policy-mobile.png) | png/134602 bytes | 历史/示意图或源资产；非当前运行证明 | [docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md) |
-| [docs/task_routes.json](../task_routes.json) | json/42999 bytes | 原JSON所有者/结构资料；按原协议读取 | [docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md)；[docs/wiki/topics/developer-delivery.md](topics/developer-delivery.md) |
+| [docs/task_routes.json](../task_routes.json) | json/43161 bytes | 原JSON所有者/结构资料；按原协议读取 | [docs/wiki/audit-files-2026-10-04.md](audit-files-2026-10-04.md)；[docs/wiki/topics/developer-delivery.md](topics/developer-delivery.md) |
 | [frontend/index.html](../../frontend/index.html) | html/513 bytes | HTML原型/页面源文件；非产品运行验收 | 未找到正文入链；用途待核 |
 | [frontend/public/homepage/images/brand.svg](../../frontend/public/homepage/images/brand.svg) | svg/386 bytes | 历史/示意图或源资产；非当前运行证明 | 未找到正文入链；用途待核 |
 | [frontend/public/homepage/images/data-globe-1200.webp](../../frontend/public/homepage/images/data-globe-1200.webp) | webp/76270 bytes | 历史/示意图或源资产；非当前运行证明 | 未找到正文入链；用途待核 |

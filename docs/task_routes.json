@@ -191,7 +191,14 @@
         "第二大脑",
         "主张核验",
         "knowledge_base",
-        "Wiki"
+        "Wiki",
+        "obsidian-wiki",
+        "Wiki闭环",
+        "知识入库",
+        "知识复核",
+        "context-pack",
+        "wiki query",
+        "wiki lint"
       ],
       "negative_keywords": [],
       "route_priority": 104,

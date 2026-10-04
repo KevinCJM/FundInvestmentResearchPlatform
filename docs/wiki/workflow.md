@@ -14,6 +14,12 @@
 
 [生成目录](catalog.md)显示全部受管文档、模块、附档/benchmark及原技能说明。active只是文档生命周期，不表示功能完成；图片/原型/历史基准不等于本轮运行证明。
 
+## AI 技能与闭环入口
+
+正本为 [skills/obsidian-wiki/SKILL.md](../../skills/obsidian-wiki/SKILL.md)，普通文件 `.agents/skills/obsidian-wiki/SKILL.md` 只作发现转向；没有 symlink 或全局安装。AGENTS 要求修改前显式读取，不能依赖所有客户端都会自动发现。查询、入库、更新、lint 和 context-pack 只是同一工具的五种操作指引，不建立第二套状态。
+
+闭环是：修改前按 Hermes 缩小范围 → 查主题及必要原文 → 在授权范围修改 → 判断知识影响 → 必要的来源/主张证据复核与主题整合 → 对最终候选运行文档/知识/覆盖/路由检查。无影响时说明具体理由；只读问答不写日志。子任务获得相关入口、范围和可写路径，不加载整库。上游固定版本与 MIT 许可见 [UPSTREAM](../../skills/obsidian-wiki/UPSTREAM.md)。
+
 ## 环境与入口
 
 从项目根使用Python3.12和原文档依赖 `scripts/requirements-docs.txt`。检索、来源和核验操作使用标准库；整合、反馈处理、queue及catalog/coverage复用已声明的Markdown解析器，需要上述文档依赖，不新增服务或包。
@@ -99,6 +105,8 @@ python3 scripts/knowledge_base.py resolve-feedback docs/wiki/claims/待复核主
 
 feedback可指source/claim/topic，保旧result并置stale；同作者/内容不重复，但幂等返回也须核当前hash，不能用写入前的旧hash。处理可resolved/deferred，但不自动清除stale。reviewer须更新正文、证据和受影响下游，不能批量刷新hash冒充复核。
 
+旧整合回执绑定旧 claim 快照。证据改变后直接重试不会覆盖旧回执；需在授权范围内审阅修订旧主题/回执，或新增版本化 claim 并明确旧结论历史适用性。保留为依赖的旧 claim 也需真正复核，不能移除依赖来掩盖失效；重新审阅 claim 与 topic 后才可再次整合。
+
 queue展示需复核、无claim使用的source、尚无合法命令整合回执的已核claim、开放反馈。只有顶层完整、有界、身份与证据字段匹配的记录可进入流程；引用/围栏/内联示例、导入材料中的标记和不完整旧记录不得冒充事件，歧义内容提示人工复核。来源摘要、反馈文本等输入拒绝保留的KB工作流标记；正常资料请保留必要摘要或明确可读转述。新反馈含END边界，旧无END记录需核对后人工补全，不自动猜测或执行。它是信息清单，不是自动催办或审批。外部撤回、数据vintage或生产变化要明确新证据，不能靠本地hash发现。
 
 ## 全项目目录与增量维护
@@ -113,7 +121,7 @@ python3 scripts/check_documentation.py
 python3 scripts/knowledge_base.py check --summary
 ```
 
-print-index仅输出生成区，由维护者替换原docs/README对应标记。coverage核受管文档、模块、附档、原技能可达与目录一致。原技能不计managed数量，仍保留独立入口。主题也绑定原文/代码依赖；全树watch覆盖新增/删除/修改和被忽略源码文件名，不读取秘密/缓存。目录可发现不等于逐图/逐benchmark复验。
+print-index仅输出生成区，由维护者替换原docs/README对应标记。coverage核受管文档、模块、附档、原技能及精确 `.agents/skills/obsidian-wiki/SKILL.md` 入口可达与目录一致；不通配扫描其他隐藏/私密目录。原技能不计managed数量，仍保留独立入口。主题也绑定原文/代码依赖；全树watch覆盖新增/删除/修改和被忽略源码文件名，不读取秘密/缓存。目录可发现不等于逐图/逐benchmark复验。
 
 ## 官方Obsidian CLI
 
@@ -163,11 +171,11 @@ python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R04 --mode
 
 新稳定文件尚未进Git时，普通Hermes会如实报未跟踪；可用外部临时索引验证精确候选，不改真实暂存区、不commit、不用artifact白名单掩盖。结构/工具通过不替代金融资格或生产验证。
 
-### 当前交付验收
+### PR #68 交付验收（历史）
 
 本地与独立审核已重跑248项离线测试（171知识工作流、76文档检查器、1 Portable）。105受管文档/1371本地链接、36模块、92附档、4技能覆盖保持通过；22条知识记录无invalid/stale/untracked，保留原2项needs_review。队列没有未解决的工作流记录格式告警。
 
-来源、反馈、整合与队列使用一致的记录边界；引用/围栏/导入文字不是流程事件。完整候选写入前验证新旧事件仍可识别，来源核验快照变化则停止。知识库测试已纳入现有Documentation工作流的同一pytest步骤，无新包或权限。实际远端CI、Bot审核及合并状态以[PR #68](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/68)对应HEAD为准；本地通过不代替这些结果。
+来源、反馈、整合与队列使用一致的记录边界；引用/围栏/导入文字不是流程事件。完整候选写入前验证新旧事件仍可识别，来源核验快照变化则停止。知识库测试已纳入现有Documentation工作流的同一pytest步骤，无新包或权限。此为 PR #68 历史记录，后续技能闭环的真实库门禁变更见下节。实际远端CI、Bot审核及合并状态以[PR #68](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/68)对应HEAD为准；本地通过不代替这些结果。
 
 ### 恢复后首次验收记录
 
@@ -197,3 +205,18 @@ python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R04 --mode
 再次核对整合写入边界后，幂等成功也执行当前目标hash门禁与返回前复查；旧整合前hash不再作为重试凭据，未变目标可使用上次返回的after_sha256。首次写入与重试共用回执校验，摘要、审阅人、理由和claim标题/范围中的保留整合标记及多解字段会在写入前被拒绝。新增16项回归先复现失败再修复，最终217项通过（140知识库、76文档、1 Portable）；相关安全重试及手工历史块兼容性均重新核对。
 
 工作流状态边界专项核对补充31项回归：解析器复用原markdown-it-py，只接受末尾复核章节之后的顶层完整记录；反馈与处理记录具有明确边界，引用/围栏/旧无END等内容列入workflow_records_needing_review，不作为待处理事件。来源摘要/文本不能通过标记操纵队列，修改后claim快照不会与旧审阅结果拼接。248项完整回归通过；反馈作者使用非空单行文本，处理原因保留在有界回执中。
+
+
+### 项目 Wiki 技能闭环验收（2026-10-04）
+
+本轮基线为已合并 Dev 的 `0c9dba1`；原本地 `2051590` 与其 tree 相同。新增项目内五流程技能正本、普通文件发现入口与固定上游 MIT 来源记录，复用原知识脚本和 Hermes；AGENTS 显式要求修改前查知识/原证据、修改后判断影响和验收。Documentation 配置在 PR HEAD 上增加真实库 check/coverage，并分别保留 JSON 报告，未修改远端 required checks。
+
+- Python 3.12.14 下273项离线测试通过：171既有知识工作流、25新增技能/闭环契约、76文档、1 Portable；两个技能入口另通过 skill-creator 基础校验
+- 新隔离夹具覆盖 intake/去重、未核阻断、证据审阅、整合、四种 context、来源链失效、反馈、处理反馈后仍 stale、重新审阅与整合；原权威除明确模拟来源变更外保持原样
+- 真正只读的跨进程快照覆盖 search/context/check/queue/hash/fingerprint/catalog/coverage，含无命中边界；消除了原 catalog/coverage 首次导入在仓库内写 bytecode 的副作用
+- 独立行为试用实际回答复权经济资格问题，回读原设计/实现/合成测试，保留 reviewed/current 与 conflict/needs_review 并存的真实含义；隔离供应商反证试用保留旧回执、传播失效，拒绝过期 hash 与未复核整合，未执行来源中的命令或发布指令
+- 真实库22条记录，invalid/stale/untracked均0，原复权冲突及其业务证据主题两项needs_review保留；105文档、36模块、92附档和12份支持说明/技能可达，catalog一致
+- 四份受本次AGENTS/文档协议/路由差异影响的主题逐项语义复核并留下注明范围的说明，只更新相应依赖，不刷新其他卡或清空冲突
+- 文档结构/链接、Portable边界、Hermes validate/evolve与R04路由通过；新文件的Git可复现性通过仓库外临时索引核对，真实暂存区保持不变
+
+本轮只交付本地实现和测试；尚无这次候选的远端CI/Bot审核、提交推送、PR或合并结果，也未执行用户本机同步/CLI、业务数值回归或生产验证。工具和技能结构通过不代表所有客户端均会自动加载，也不代表待核金融问题已解决。

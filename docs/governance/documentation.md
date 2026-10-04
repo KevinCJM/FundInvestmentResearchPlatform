@@ -14,6 +14,14 @@
 - 文档角色、模块归属和读取场景只登记在 `docs/repo_map.json` 的 `documentation.documents`。模块代码/测试路径仍由同一文件的 modules 维护，任务匹配在 task_routes，坑点事实在 pitfalls。不要另建一套文件映射。
 - 索引表由目录元数据生成，修改目录后运行 `python3 scripts/check_documentation.py --print-index`，仅替换索引的标记区；其余导航说明手工维护。不要在索引复制算法、回归命令或实施状态。
 
+## 项目 Wiki 的执行闭环
+
+[技能正本](../../skills/obsidian-wiki/SKILL.md) 将来源入库、只读查询、增量更新、健康检查和按需取证接入现有流程；`.agents/skills/obsidian-wiki/SKILL.md` 只是精确发现入口，不保证所有客户端自动加载。AGENTS 在修改前要求显式读正本、查相关知识与原证据，修改后做影响判断、必要同步和验收；无影响须给出具体理由。
+
+知识及工作流状态仍在 `docs/wiki/`，执行仍由 `scripts/knowledge_base.py` 承担，路由复用 Hermes。子任务只接收相关入口、范围与必要证据，不额外建立 Harness、索引状态机或强制全库上下文。上游只用于固定版本的技能改编，许可及删改依据见 [来源记录](../../skills/obsidian-wiki/UPSTREAM.md)；不运行其 setup/runtime、不装全局 hooks、不收集会话、不写全局配置或自动提交。
+
+查询/取证/检查完全只读，发现问题不自动转为修复。写入采用现有未核草稿、真实证据审阅、hash/回执、反馈与复核流程；保留 conflict 和尚未覆盖的证据边界。真实库检查通过仍不代表语义或投资资格通过。
+
 ## 何时核对和更新
 
 关键里程碑完成、任务收尾及已获授权的提交前集中执行。逐次编辑可以做轻量检查，无须每次保存都改文档。只读问答、无需落盘的调查不强制制造文档修改。
@@ -93,7 +101,7 @@ Git 候选模式也从对应 Git 内容加载检查器自身，在内存中执�
 ## 触发与部署边界
 
 - AGENTS 已规定里程碑和收尾必须执行；它是智能体执行协议，不是原生自动事件。
-- `.github/workflows/documentation.yml` 在 PR 中调用同一检查器并保留影响报告，执行结构检查、文档检查器及知识工作流回归；它不会代替语义审核，也不是 Bot 审核替代品。
+- `.github/workflows/documentation.yml` 在 PR 中调用同一检查器并保留影响报告，执行结构检查、文档检查器及知识工作流回归，并对 checkout 的 PR HEAD 运行真实知识库 check/coverage、保留各自 JSON 报告；它不会代替语义审核，也不是 Bot 审核替代品。
 - 工作流文件进入远端后才会触发。设置 required check 是另一个远端配置动作；本次不修改远端设置。
 - 本项目未安装客户端原生 Stop hook，也未改 Git hooksPath。未来需要接入时先核实实际客户端支持，复用此入口，设置去重、超时和有限重试，尊重用户中断。
 - 无需定时重写所有文档；后续定期维护如需启用应单独配置。

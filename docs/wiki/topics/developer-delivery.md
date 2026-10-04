@@ -9,7 +9,7 @@ scope: "2026-10-04当前工作树原文与实现的有源概述；仅支持本�
 reviewed_at: "2026-10-04"
 reviewed_by: "AI 原文与实现核对"
 source_revision: "8ce7c06cc655d027cec6856caa873a1eafa1e51d"
-dependencies: ["AGENTS.md::sha256:c691bc21980b359d49811d69517f864e66d680956b07bd2292a23f62892dee80", "docs/governance/documentation.md::sha256:b94507fb7b49883392a0e049325ee98ad1abb33edc969cfb8798c3e76b230316", "docs/governance/numeric-computing.md::sha256:ed5c01fbd46d8dd2048dfdb4922d853835a9a38f76f77ad9b14d817523ffdb7b", "docs/governance/operator-contracts.md::sha256:c33cc8cb3037d908208906b64ad1135efdb323175d2d946cb640b812f5303d94", "docs/governance/branch-submission-rules.md::sha256:571898a2dd34445dce22bf4b34f0102789d0671ecea565b38295f157b54557ad", "docs/governance/submission-workflow.md::sha256:e0602d59daa5fda40ed41d4dfece7f7d3b850c3708d07204eb67ff9542ac6e5b", "docs/governance/branch-protection.md::sha256:367e7ca94d41ffe294d49f06758bc3a35a4903b8a6c187033478c2cc416ee79f", "docs/frontend/README.md::sha256:258fc38478f77af14b79f63bba270da51ea3c1382b874be4d58f28d62d611cb6", "docs/data/acquisition-protocol.md::sha256:74b6148b3d575859a67ac42da42f2c56027bac2efd2cb125be173828ffb5f1cc", "docs/verification/engineering.md::sha256:676b4ce2c3e9e77cbcaa07f541beb39c4688971efa8c0087d3f1eeb5a380f80b"]
+dependencies: ["AGENTS.md::sha256:bcbe79f7c0ad26172c756530a5bbcdadb91322f69e4251da13056d8ba7922416", "docs/governance/documentation.md::sha256:c13656803d9442ed002402207739e546e489600d2d8d621aa5c92bb09c8a190c", "docs/governance/numeric-computing.md::sha256:ed5c01fbd46d8dd2048dfdb4922d853835a9a38f76f77ad9b14d817523ffdb7b", "docs/governance/operator-contracts.md::sha256:c33cc8cb3037d908208906b64ad1135efdb323175d2d946cb640b812f5303d94", "docs/governance/branch-submission-rules.md::sha256:571898a2dd34445dce22bf4b34f0102789d0671ecea565b38295f157b54557ad", "docs/governance/submission-workflow.md::sha256:e0602d59daa5fda40ed41d4dfece7f7d3b850c3708d07204eb67ff9542ac6e5b", "docs/governance/branch-protection.md::sha256:367e7ca94d41ffe294d49f06758bc3a35a4903b8a6c187033478c2cc416ee79f", "docs/frontend/README.md::sha256:258fc38478f77af14b79f63bba270da51ea3c1382b874be4d58f28d62d611cb6", "docs/data/acquisition-protocol.md::sha256:74b6148b3d575859a67ac42da42f2c56027bac2efd2cb125be173828ffb5f1cc", "docs/verification/engineering.md::sha256:676b4ce2c3e9e77cbcaa07f541beb39c4688971efa8c0087d3f1eeb5a380f80b"]
 evidence_kind: "mixed"
 aliases: ["研发约束", "交付", "测试验收"]
 ---
@@ -26,7 +26,7 @@ aliases: ["研发约束", "交付", "测试验收"]
 
 ### 先找对责任和授权范围
 
-工程任务先读AGENTS，再依次读repo_map、task_routes和pitfalls。任务路由决定先看哪些模块与何时扩展，模块事实提供代码、测试、配置及最小回归；Wiki帮助理解关系，不能改这套读取顺序。
+工程任务先读AGENTS，再依次读repo_map、task_routes和pitfalls。任务路由决定先看哪些模块与何时扩展，模块事实提供代码、测试、配置及最小回归；随后按AGENTS显式读取项目Wiki技能、查询任务相关知识，并回到必要原文取证；只加载相关流程和证据，不强制整库上下文。技能的发现入口不保证每个客户端自动加载。
 
 开始时检查工作区差异，明确本任务的文件和共享文件中的改动归属。需求授权决定能改什么；“优化”“统一实现”或文档冲突不自动授权删改既有算法。开发授权也不自动包含commit、push、合并、生产部署或远端规则修改。
 
@@ -71,3 +71,5 @@ aliases: ["研发约束", "交付", "测试验收"]
 ## 复核条件
 
 读取协议、提交授权规则、数值/前端契约或检查器职责改变时复核；依赖变化会使本页需要重读，但不自动说明原规则错误。每次交付仍须依据该任务最终差异和真实执行证据判断完成。
+
+2026-10-04 技能接入复核：按 AGENTS 和文档维护协议新增的显式技能读取、相关知识取证、收尾影响判断更新本页；Documentation 配置新增 PR HEAD 的真实库 check/coverage 报告，只证明本地配置，尚无本轮远端运行证据。原业务/生产验收未重跑；仅重新绑定这两份经逐项复核的依赖。

@@ -5253,7 +5253,7 @@
       "name": "Documentation lifecycle, catalog and candidate validation",
       "path": "scripts/check_documentation.py",
       "kind": "repository_tooling",
-      "purpose": "Owns project documentation lifecycle and original catalog/candidate checks, plus source-backed business/developer knowledge, complete document/module/attachment discovery, offline deduplication, guarded integration/feedback, evidence freshness and explicit-vault read-only Obsidian access. It does not prove financial conclusions or deployments.",
+      "purpose": "Owns project documentation lifecycle and original catalog/candidate checks, plus source-backed business/developer knowledge, complete document/module/attachment discovery, offline deduplication, guarded integration/feedback, evidence freshness and explicit-vault read-only Obsidian access. It does not prove financial conclusions or deployments. The project-local obsidian-wiki skill adapts five workflows onto the same KB implementation and Hermes routing; the exact .agents Markdown entry forwards to its canonical skill without global setup or a second state machine.",
       "module_tags": [
         "documentation",
         "docs-as-code",
@@ -5263,7 +5263,9 @@
         "scripts/check_documentation.py",
         "docs/governance/documentation.md",
         "scripts/knowledge_base.py",
-        "docs/wiki/README.md"
+        "docs/wiki/README.md",
+        "skills/obsidian-wiki/SKILL.md",
+        ".agents/skills/obsidian-wiki/SKILL.md"
       ],
       "key_symbols": [
         "Candidate",
@@ -5274,6 +5276,7 @@
       ],
       "child_modules": [],
       "first_read_files": [
+        "skills/obsidian-wiki/SKILL.md",
         "docs/governance/documentation.md",
         "docs/README.md",
         "scripts/check_documentation.py"
@@ -5314,7 +5317,15 @@
         "docs/wiki/topics/developer-operations.md",
         "docs/wiki/topics/research-library.md",
         "docs/wiki/workflow.md",
-        "scripts/tests/test_knowledge_base.py"
+        "scripts/tests/test_knowledge_base.py",
+        "skills/obsidian-wiki/UPSTREAM.md",
+        "skills/obsidian-wiki/LICENSE.txt",
+        "skills/obsidian-wiki/references/ingest.md",
+        "skills/obsidian-wiki/references/query.md",
+        "skills/obsidian-wiki/references/update.md",
+        "skills/obsidian-wiki/references/lint.md",
+        "skills/obsidian-wiki/references/context-pack.md",
+        "scripts/tests/test_wiki_skill_contract.py"
       ],
       "upstream_dependencies": [
         "ai_routing_files"
@@ -5332,7 +5343,8 @@
       "related_tests": [
         "scripts/tests/test_documentation.py",
         "backend/tests/test_tushare_data_script.py",
-        "scripts/tests/test_knowledge_base.py"
+        "scripts/tests/test_knowledge_base.py",
+        "scripts/tests/test_wiki_skill_contract.py"
       ],
       "related_configs": [
         "scripts/requirements-docs.txt",
@@ -5343,7 +5355,10 @@
         "staged_worktree_mismatch",
         "historical_evidence_not_current_proof",
         "mixed_task_scope",
-        "semantic_review_not_mechanical_validation"
+        "semantic_review_not_mechanical_validation",
+        "discovery_not_guaranteed_loading",
+        "context_candidate_not_evidence_read",
+        "read_only_query_must_not_log"
       ],
       "edit_risk": "medium",
       "blast_radius": [
@@ -5361,7 +5376,8 @@
         "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
         "python3 -m pytest scripts/tests/test_knowledge_base.py -q",
         "python3 scripts/knowledge_base.py check --summary",
-        "python3 scripts/knowledge_base.py coverage"
+        "python3 scripts/knowledge_base.py coverage",
+        "python3 -m pytest scripts/tests/test_wiki_skill_contract.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -5377,7 +5393,10 @@
           "docs/governance/documentation.md",
           ".github/workflows/documentation.yml",
           "scripts/knowledge_base.py",
-          "scripts/tests/test_knowledge_base.py"
+          "scripts/tests/test_knowledge_base.py",
+          "skills/obsidian-wiki/SKILL.md",
+          ".agents/skills/obsidian-wiki/SKILL.md",
+          "scripts/tests/test_wiki_skill_contract.py"
         ],
         "unsampled_paths": []
       }
