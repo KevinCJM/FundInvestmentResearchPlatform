@@ -55,9 +55,11 @@
 4. 宿主页面负责消费已验证的成果并绑定业务动作；模型只提交提案。保存、覆盖或发布必须继续经过业务授权与版本校验。
 5. 增加实例隔离、未知工具/权限拒绝、成果展示及取消场景测试后再开放入口。
 
-### 实际模块与入口
+### 迁移前实际模块与入口
 
-| 职责 | 唯一当前实现 |
+下表和后文CopilotKit启动/测试命令只用于解释相应历史版本；旧路径已删除，不是当前安装或接入步骤。当前宿主入口见[整体迁移设计](portable-agent-platform-integration.md)。
+
+| 职责 | 当时唯一实现（历史） |
 | --- | --- |
 | 通用浮窗、输入、消息和运行操作 | `frontend/src/components/agent/AgentPanel.tsx` |
 | 会话恢复、事件、串行发送、取消、上下文保护 | `frontend/src/components/agent/useAgentConversation.ts` |
@@ -417,7 +419,7 @@ PYTHON=python3 npm test --prefix copilotkit
 
 下一阶段的验收目标是同一个独立网页智能体，在指标页面和非投研演示系统中仅通过配置更换工具、图标与指令。指标验收还必须覆盖标量和时序、冻结条件、数据准入、权限、版本冲突、独立人工保存及丢响应重试；通用验收覆盖重连、崩溃、取消竞态和宿主动作回传。通过这些门槛后，才执行正式迁移及删除被替代实现。本节不表示已创建远端仓库、已Fork、已完成迁移或已有可交付的独立网页产品。
 
-本轮只扩展本权威文档；现有P12已覆盖精确取消、物理工具退出、恢复与业务门禁，未把上游实验能力登记为本项目已实现事实。模块和文档归属未改变，因此无需新增路由或重复坑点。
+当时只扩展本设计文档；现有P12已覆盖精确取消、物理工具退出、恢复与业务门禁，未把上游实验能力登记为本项目已实现事实。模块和文档归属未改变，因此无需新增路由或重复坑点。
 
 本地复验材料放在 `.run/langflow-validation/`，包括发布元数据、源码版本、依赖锁、探针、日志与JSON结果；该目录不随Git分发，不登记为稳定项目模块。运行命令为该目录虚拟环境Python执行 `probe.py`、`reliability.py` 与 `checkpoint_probe.py`。如进入正式开发，应把被选中实现的验收迁入独立仓库的受管测试。
 
@@ -426,6 +428,6 @@ PYTHON=python3 npm test --prefix copilotkit
 
 ## 12. 独立模块原型实施（2026-09-28）
 
-依据第11节的实测结果，本轮采用Langflow所用的LangChain/LangGraph公共运行库和官方SQLite检查点，而不依赖Langflow服务。交付位于 `standalone-agent/`，详细设计的唯一当前来源为[独立框架仓库](https://github.com/KevinCJM/portable-web-agent)，安装、嵌入、工具协议、验收与限制见[独立框架仓库](https://github.com/KevinCJM/portable-web-agent)。
+依据第11节的实测结果，本轮采用Langflow所用的LangChain/LangGraph公共运行库和官方SQLite检查点，而不依赖Langflow服务。当时交付位于 `standalone-agent/`；该目录随后已迁出并从平台删除。独立产品的当前文档应到[独立框架仓库](https://github.com/KevinCJM/portable-web-agent)查阅；安装、嵌入、工具协议、验收与限制见[独立框架仓库](https://github.com/KevinCJM/portable-web-agent)。
 
 目录包含服务端、原生Web Component、独立访问页、研究/工单两个宿主示例、HTTP适配示例、依赖锁、容器入口和测试。通用代码不导入本项目agent、业务计算或前端组件。原投研业务继续通过原实现运行；本轮不属于正式页面迁移，也不能据此删除原Agent或第10节既有接入。专业数据准入、版本和保存资格仍须由业务服务完成。

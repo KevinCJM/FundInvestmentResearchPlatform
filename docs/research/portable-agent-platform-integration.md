@@ -1,6 +1,6 @@
 # 投研平台接入 Portable Web Agent：整体迁移设计
 
-状态：开发候选与本地离线工程验收已完成；正式发布与生产切换仍待执行。首次设计：2026-09-29；当前证据：2026-10-01。两仓均未提交、推送或发布，未迁移生产数据。
+状态：平台Dev已包含本接入实现；历史离线工程验收见§18，各项只覆盖其记录版本。首次设计：2026-09-29。2026-10-04文档审查核对平台本地HEAD与远端Dev均为 `64e9b5254ad48641bf2645ec23927d4df58506df`；“两仓均未提交”是早期工作区现场，不能作为当前状态。独立框架仓库当前HEAD、固定发布制品、生产切换及生产数据迁移均未在本轮确认。
 
 目标：由 [KevinCJM/portable-web-agent](https://github.com/KevinCJM/portable-web-agent) 独立承担全部通用智能体功能。投研平台仅保留接入适配、业务接口、业务安全规则、页面配置及必要部署文件。现有用户能力必须逐项迁移，不能以“新框架暂不支持”为由删除。
 
@@ -12,11 +12,11 @@
 
 2026-09-30通过GitHub提交API及独立工作树核实，独立仓库main为 `23cf2be05530ac41b919fa3b429af893e9cc5252`。相较首次设计读取的 `0d7f6e7d22424bc66a1a537e7821d32a8f5a739c`，已增加交付治理并修复组件设置/重连竞态；仍不是满足本设计的目标版本。运行底座继续是LangChain/LangGraph及官方SQLite检查点，前端是原生Web Component，不再引入另一套运行框架。
 
-平台当前已切换到 `Dev`，基线为远端 `77ab60ee4bfe540250ece5cfa8fe5283e7bac136`；保留并整合原脏工作区，索引无未解决冲突。Dev 的九阶段导航、情景研究身份与保存算法读取均保留。候选调用链为页面 → `PortableAgentMount` → `/assistant/v2` 外部框架 → `/internal/portable-agent` → `research_access` 与原业务服务。
+2026-10-01整合记录中，平台切换到 `Dev` 时的基线为远端 `77ab60ee4bfe540250ece5cfa8fe5283e7bac136`；保留并整合原脏工作区，索引无未解决冲突。Dev 的九阶段导航、情景研究身份与保存算法读取均保留。候选调用链为页面 → `PortableAgentMount` → `/assistant/v2` 外部框架 → `/internal/portable-agent` → `research_access` 与原业务服务。
 
-旧 `backend/agent`、前端通用Agent组件、CopilotKit及 `standalone-agent` 已从平台候选删除；业务投影、数值摘要、页面冻结输入、人工保存和适用回归迁到业务模块。独立框架v2仍是未提交候选；已安装wheel的HTTP验收不代表该远端main或生产镜像已发布。
+旧 `backend/agent`、前端通用Agent组件、CopilotKit及 `standalone-agent` 已从平台候选删除；业务投影、数值摘要、页面冻结输入、人工保存和适用回归迁到业务模块。该历史整合现场的独立框架v2仍是未提交候选；本轮未重新读取其远端/工作区状态。已安装wheel的HTTP验收不代表该远端main或生产镜像已发布。
 
-迁移基线与责任清单（旧路径仅用于说明迁移前行为；当前实现和验收见18.2节）：
+迁移初期基线与责任清单（以下是2026-09-29/30原型及初期接入情况，含当时限制和待办；不是今天的能力清单。后续实施与分版本验收见§18.2–18.4，当前平台接口从 `backend/integrations/portable_agent` 和 `research_access` 核对）：
 
 | 事实 | 证据与迁移含义 |
 | --- | --- |
@@ -69,7 +69,7 @@ flowchart LR
 - 网关转发 SSE 时关闭缓冲，保留流式响应、心跳和取消请求；断线只重连观察，不重放任务。业务工具路径只在服务网络开放，浏览器使用单独的用户业务接口。
 - 网关成为唯一公共入口：生产Compose移除当前投研服务的宿主机 `ports` 映射，Agent也不直接发布端口；网关仅白名单转发公开路径并拒绝 `/internal/`，两后端仍验证身份。开发直连仅绑定回环地址。新增网关不能保留一个绕过网关的公网8000端口；从宿主机外部验证不能直达内部工具/准入接口。
 - Agent 不挂载市场数据、业务数据库或平台源码；平台不挂载 Agent 数据卷或解密主密钥。当前单节点 SQLite 模型保持单执行实例，不能通过增加 worker 扩容。
-- 本地开发两个独立虚拟环境/进程；平台 `start_services.sh` 接受已运行 Agent 地址或启动固定镜像，不下载 main 最新源码、不在平台虚拟环境安装 LangChain/LangGraph。
+- 本地开发两个独立虚拟环境/进程；平台 `start_services.sh` 只管理平台服务；先另行启动Agent，Vite通过 `VITE_PORTABLE_AGENT_TARGET` 代理其地址，固定镜像部署使用Compose覆盖文件，不下载 main 最新源码、不在平台虚拟环境安装 LangChain/LangGraph。
 - 建议交付时增加 `config/portable-agent/release.json`，记录 source commit、image digest、协议版本和兼容能力集合。初始提交只有原型源码，本设计不虚构已存在的可部署镜像。
 - 框架增加只读兼容元数据：协议主版本、组件版本、部署ID、已支持能力。挂载前核验目标协议和必要能力；不兼容则仅禁用助手，业务页面仍可独立使用。
 
@@ -81,25 +81,32 @@ flowchart LR
 
 ## 4. 平台最终保留的文件形态
 
-以下是职责示意；当前具体路径以 `docs/repo_map.json` 的 portable_agent_integration 模块为准。身份签发在 `research_access/identity.py`，业务工具在 `research_access/tools.py`；生产 `release.json` 待正式制品发布后填写。
+以下结构按2026-10-04平台Dev源码静态核对；完整机器路由仍以 `docs/repo_map.json` 的 `portable_agent_integration` 模块为准。配置导出产物和待提供的生产锁文件与已跟踪源码分开标明。
 
 ```text
 backend/
   integrations/portable_agent/
     routes.py       # bootstrap、上下文登记、内部工具/准入协议入口
-    identity.py     # 可信身份转短期凭证、访问范围与服务认证
-    tools.py        # 名称/schema映射和既有业务服务调用
-  research_access/  # 从旧目录提取的数据准入、投影与推导证明
-  custom_indicators/ # 既有计算；补业务草稿/预览/确认的独立归属
+    service.py      # 宿主操作、幂等回执、能力与release消费
+    contracts.py    # 外层协议与ID/schema
+    admission.py    # 模型输入/输出准入及来源再授权
+    catalog.py      # 平台能力目录
+  research_access/
+    identity.py     # 宿主身份与访问范围
+    tools.py        # 既有业务服务工具
+    ...             # 业务投影、草稿、预览、确认与存储
+  custom_indicators/ # 既有业务计算
 frontend/src/
   integrations/portable-agent/
     PortableAgentMount.tsx # 外部组件挂载、销毁与事件接线
-    pageBindings.ts       # 各页面上下文与动作白名单
-  components/indicators/  # 可独立展示的指标定义/试算/保存UI
+    IndicatorAssistant.tsx / ScenarioAssistant.tsx # 页面业务适配
+    client.ts / contract.ts # 宿主请求与接入类型
+  components/indicators/  # 独立指标定义/试算/保存UI
 config/portable-agent/
-  apps.json               # 工具声明、指令、来源与端点配置；不含密钥
-  release.json            # 锁定外部交付版本
-deploy/                    # 必要网关与本地联调配置
+  instructions.txt / intent-cases.json # 已跟踪接入输入
+  apps.json               # 配置导出产物；当前不随源码提供
+  release.json            # 生产受审锁文件；待固定外部制品后提供
+deploy/                    # 网关与本地联调配置
 ```
 
 只保留一个平台适配入口和现有业务服务，避免新增“Agent服务工厂”“另一套插件管理器”或每个页面一套通用 hook。业务指令配置属于接入元数据；意图解释器与执行循环属于独立框架。
@@ -182,7 +189,7 @@ bootstrap 不接受浏览器指定 subject、角色或任意 scopes。服务端�
 
 ```json
 {
-  "context_ref": "ctx-example",
+  "context_ref": "ctx-00000000000000000000000000000001",
   "context_hash": "opaque-host-hash",
   "context_revision": 1,
   "scope_key": "opaque-owner-workspace-page-object-key",
@@ -204,13 +211,13 @@ bootstrap 不接受浏览器指定 subject、角色或任意 scopes。服务端�
   "subject": "authenticated-subject",
   "session_id": "session-example",
   "run_id": "run-example",
-  "operation_id": "stable-operation-id",
-  "context": {"ref": "ctx-example", "hash": "opaque-host-hash", "grant_id": "grant-example"},
+  "operation_id": "00000000000000000000000000000002",
+  "context": {"ref": "ctx-00000000000000000000000000000001", "hash": "opaque-host-hash", "grant_id": "grant-example"},
   "arguments": {"authoring_id": "authoring-example", "draft_revision": 3}
 }
 ```
 
-这是外层envelope示例；`arguments`必须符合具体工具schema，不把这些字段套给所有工具。服务凭证来自只读部署配置，平台交叉验证application、subject与grant真实owner。工具不能根据arguments切换主体、目标URL或工作空间。HTTP `Idempotency-Key`必须等于operation_id。框架生成有界稳定ID，平台只验证不重新拼接；现有64字符ID上限保留。
+这是外层envelope结构示例，其中身份、hash、grant与业务对象均为占位内容，不是可直接重放的请求；真实值必须从已认证服务取得。`arguments`必须符合具体工具schema，不把这些字段套给所有工具。服务凭证来自只读部署配置，平台交叉验证application、subject与grant真实owner。工具不能根据arguments切换主体、目标URL或工作空间。HTTP `Idempotency-Key`必须等于operation_id。框架生成有界稳定ID，平台只验证不重新拼接。当前平台 `ToolInput`/`AdoptionInput.operation_id` 要求32位小写十六进制；`session_id`/`run_id` 为1–64字符，不能将64字符上限套给所有ID。
 
 平台hash作为不透明值回传；JS不能自行重算完整业务定义hash。完整定义比较沿用现有数值等价契约：JSON数字0与0.0等价，布尔值/字符串不等价，未知扩展字段不能被忽略。相同操作的token续期、链路trace_id变化不改变幂等身份；业务参数/上下文/目标版本变化必须是明确的新操作。
 
@@ -252,10 +259,10 @@ bootstrap 不接受浏览器指定 subject、角色或任意 scopes。服务端�
 | `metrics.availability`、`metrics.preview` | `metrics_availability`、`metrics_preview` | 真实数据与业务预览存储 |
 | `products.search/eval/series/plans` | 对应下划线工具名 | 产品服务、指标服务、方案冻结版本 |
 | `portfolios.context/eval` | `portfolios_context/eval` | 不可变组合run及组合域指标 |
-| `page.read`、`page.recompute`、`page.analyze` | `research_page_read/recompute/analyze` | 各页面冻结请求及服务端核验摘要 |
+| `page.read`、`page.recompute`、`page.analyze` | `page_read` / `page_recompute` / `page_analyze` | 各页面冻结请求及服务端核验摘要 |
 | 指标正式保存 | 用户动作调用业务确认/提交接口 | 不作为普通模型可调用工具注册 |
 
-读工具可以写内部计算缓存，但业务草稿创建/修订必须明确声明。当前框架只有read/write/ui，write强制通用审批；直接将 `metrics_validate` 标write会额外打断每次校验，伪装成read又隐藏副作用。目标协议增加 `effect=draft`：仅用于宿主草稿区域的幂等写入，要求独立草稿scope、owner及revision检查，不弹正式发布审批；宿主服务禁止这类接口写正式指标库。正式write仍强制确认。该扩展与FW-06一同验收，旧版本不支持时拒绝注册，不能通过降级effect绕过。
+读工具可以写内部计算缓存，但业务草稿创建/修订必须明确声明。迁移设计时的原型只有read/write/ui，write强制通用审批；直接将 `metrics_validate` 标write会额外打断每次校验，伪装成read又隐藏副作用。目标协议增加 `effect=draft`：仅用于宿主草稿区域的幂等写入，要求独立草稿scope、owner及revision检查，不弹正式发布审批；宿主服务禁止这类接口写正式指标库。正式write仍强制确认。该扩展与FW-06一同验收，旧版本不支持时拒绝注册，不能通过降级effect绕过。
 
 `metrics_validate`和等价的旧 `metrics.draft_save` 共用一个草稿服务实现；框架只看到一个规范工具名，历史工具名仅供导入映射。试算/查询保持read语义；填入/查看/导航是ui；指标正式保存不注册模型工具。未登记能力返回 unsupported，禁止通用 shell、Python、SQL 或任意HTTP兜底工具。
 
@@ -311,7 +318,7 @@ confirmation 与业务幂等记录移入指标业务存储，Agent session_id/ru
 
 ### 9.1 长计算
 
-新框架当前工具超时上限120秒，不能覆盖平台所有任务。扩展通用 deferred-operation 协议：工具受理后可返回202及绑定当前operation_id的业务作业引用；框架持久保存后轮询固定配置的查询端点。202不生成“工具完成”的模型回执，不占用反复调用模型的步骤。
+迁移设计时的新框架原型工具超时上限120秒，不能覆盖平台所有任务。扩展通用 deferred-operation 协议：工具受理后可返回202及绑定当前operation_id的业务作业引用；框架持久保存后轮询固定配置的查询端点。202不生成“工具完成”的模型回执，不占用反复调用模型的步骤。
 
 平台复用各业务域实际存在的执行器和作业记录，不假设当前已有统一持久作业服务。指标 `AdaptiveComputeEngine` 目前返回进程内Future；`EvaluationRunResultRepository` 是有TTL的成果存储，二者不能直接当作跨进程恢复的操作回执。需要202协议的同步业务须补最小持久业务操作登记：派发前写入operation_id、完整请求哈希与执行者身份，完成后写入真实结果引用及终态，再向框架确认；不能仅后台起一个协程后就返回202。不另造 Agent 任务队列。
 
@@ -506,7 +513,7 @@ Shadow DOM只隔离样式，不是权限边界。业务成果采用SDK创建的�
 
 ### 14.1 可重跑导入与切换失败处理
 
-导出/导入工具归独立仓库的离线migration目录，不进入平台生产镜像；不import旧RunController。导出从一致性备份读取旧SQLite/JSON，遇到WAL必须使用SQLite一致性备份接口，不能在服务写入时只复制主数据库。禁止扫描或打印真实密钥；配置通过受限文件/标准输入或受控服务端通道传递，不能放到命令行参数。
+旧格式导出和通用会话导入工具归独立仓库的离线migration目录；平台的 `scripts/import_research_archive.py` 负责平台业务草稿、成果和回执导入，由 `research_access` 保持业务权威。这些离线工具不进入当前平台生产镜像，不import旧RunController。导出从一致性备份读取旧SQLite/JSON，遇到WAL必须使用SQLite一致性备份接口，不能在服务写入时只复制主数据库。禁止扫描或打印真实密钥；配置通过受限文件/标准输入或受控服务端通道传递，不能放到命令行参数。
 
 一次迁移生成migration_id和清单：source_schema、来源数据集标识/快照时间、source/target commit、owner映射摘要、每类记录数量/hash、拒绝/隔离原因和验证结论。导入幂等键为 `(source_dataset_id, record_type, original_id, original_revision)`；同键不同内容立即报冲突。先将草稿/预览/正式保存回执导入平台业务存储，取得对象映射，再将消息、有效记忆和对象引用导入框架。包含原始曲线或未准入载荷的旧工具记录只归业务审计存储，不能整表塞进框架历史。
 

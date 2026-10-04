@@ -69,3 +69,6 @@ local_test.py
 .numba_cache/
 tmp_schema_probe.txt
 docs/.ai-hermes-user-memory/
+
+# Obsidian machine-local vault settings, workspace and plugin state
+/.obsidian/

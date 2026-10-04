@@ -439,3 +439,13 @@ TAA 的旧 `goal_check=null` 不表示已经续算资金；实际余额与剩余
 历史前沿是独立研究工具，见[历史前沿契约](historical-frontier.md)。历史审核、反例和未闭合事项见[配置验收纪要](../verification/allocation.md)。
 
 单模型前沿若已保存一个数值验证通过、满足当前收益与波动边界的配置点，可用其实际权重证明本步可行，即使独立连续求解器因预算或数值原因返回未定；保留该求解器的原诊断状态。失败点、超过风险上限的点、未检查 TE 的点以及多模型各自不同的权重不能作为此证明，资金成功率仍独立验证。
+
+## 来源编号与追溯
+
+以下恢复本页沿用的来源编号，映射取自整理前提交 `a9dd01bd143e7634a1a6436d69be8d25f2744f85` 中原综合设计的第22章，并非猜测新增出处。恢复引用只解决来源可定位，不代表每篇来源全文或本页所有推论本轮均已复验；逐项核验范围见[2026-10-04审核报告](../wiki/documentation-audit-2026-10-04.md)。
+
+- [Boyd/Vandenberghe：Convex Optimization][R9]
+- [Mutapcic/Boyd 2009：Cutting-set methods for robust convex optimization with pessimizing oracles][R10]
+
+[R9]: https://web.stanford.edu/~boyd/cvxbook/
+[R10]: https://web.stanford.edu/~boyd/papers/prac_robust.html

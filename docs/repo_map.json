@@ -7,7 +7,8 @@
     "notes": [
       "AI Hermes routing layer for the Fund Investment Research Platform.",
       "Backend strategy, analytics, backtest, and math facts were verified by code reads plus selected pytest smoke runs.",
-      "Frontend behavior is covered by Vitest and Vite production-build regression commands in this workspace."
+      "Frontend behavior is covered by Vitest and Vite production-build regression commands in this workspace.",
+      "Regression commands use python3 from an explicitly activated project Python 3.12 environment; verify version and dependencies before execution. Routing validation does not run the regression or certify the interpreter."
     ]
   },
   "modules": [
@@ -642,7 +643,7 @@
         "P15"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_data_storage.py backend/tests/test_market_data.py backend/tests/test_etl_executor.py backend/tests/test_tushare_data_script.py -q",
+        "python3 -m pytest backend/tests/test_data_storage.py backend/tests/test_market_data.py backend/tests/test_etl_executor.py backend/tests/test_tushare_data_script.py -q",
         "/bin/sh -c 'cd frontend && npm run test -- --run src/components/data-sources/DataStoragePanel.test.tsx src/pages/DataManagement.test.tsx'",
         "bash -n start_services.sh"
       ],
@@ -1024,11 +1025,11 @@
         "P11"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/app.py backend/run.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_pit_startup.py backend/tests/test_pit_workflow.py -q",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_start_services.py -q",
+        "python3 -m py_compile backend/app.py backend/run.py",
+        "python3 -m pytest backend/tests/test_pit_startup.py backend/tests/test_pit_workflow.py -q",
+        "python3 -m pytest backend/tests/test_start_services.py -q",
         "bash -n start_services.sh",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q",
+        "python3 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q",
         "python3 -m pytest backend/tests/test_pit_decision_clock.py -q"
       ],
       "routing_confidence": "high",
@@ -1176,9 +1177,9 @@
         "P21"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q",
+        "python3 -m pytest backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q",
         "python3 -m pytest backend/tests/test_frontier_grid.py backend/tests/test_optimizer_strategy_numba.py backend/tests/test_strategy_research_dates.py -q",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_frontier_sampling.py backend/tests/test_frontier_grid.py backend/tests/test_optimizer_strategy_numba.py -q"
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_frontier_sampling.py backend/tests/test_frontier_grid.py backend/tests/test_optimizer_strategy_numba.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1275,7 +1276,7 @@
         "P08"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py -q"
+        "python3 -m pytest backend/tests/test_strategy_api.py backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1368,7 +1369,7 @@
       ],
       "minimum_regression": [
         "python3 -m pytest backend/tests/test_research_input_checks.py -q",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_analytics_routes.py -q"
+        "python3 -m pytest backend/tests/test_analytics_routes.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1482,8 +1483,8 @@
         "P15"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/app.py backend/services/instrument_routes.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_routes.py -q",
+        "python3 -m py_compile backend/app.py backend/services/instrument_routes.py",
+        "python3 -m pytest backend/tests/test_instrument_routes.py -q",
         "env CUSTOM_INDICATOR_DATA_DIR=\"$(mktemp -d)\" python3 -m pytest backend/tests/test_legacy_etf_njit.py -q"
       ],
       "routing_confidence": "medium",
@@ -1599,9 +1600,9 @@
         "P16"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/services/instrument_analytics.py backend/services/instrument_routes.py backend/series_quality.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_analytics.py backend/tests/test_series_quality.py backend/tests/test_instrument_routes.py -q",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_product_analysis_numba.py tests/test_product_analysis_routes.py -q'"
+        "python3 -m py_compile backend/services/instrument_analytics.py backend/services/instrument_routes.py backend/series_quality.py",
+        "python3 -m pytest backend/tests/test_instrument_analytics.py backend/tests/test_series_quality.py backend/tests/test_instrument_routes.py -q",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_product_analysis_numba.py tests/test_product_analysis_routes.py -q'"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1703,8 +1704,8 @@
         "P15"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/market_data.py backend/market_data_validation.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_market_data.py backend/tests/test_market_data_readers.py backend/tests/test_market_data_validation.py -q"
+        "python3 -m py_compile backend/market_data.py backend/market_data_validation.py",
+        "python3 -m pytest backend/tests/test_market_data.py backend/tests/test_market_data_readers.py backend/tests/test_market_data_validation.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1800,7 +1801,7 @@
         "P06"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_numba_finance_math.py tests/test_numba_finance_indicators.py -q'"
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_numba_finance_math.py tests/test_numba_finance_indicators.py -q'"
       ],
       "routing_confidence": "medium",
       "scope_flags": [
@@ -1996,8 +1997,8 @@
         "P18"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_custom_indicator_variables.py tests/test_numba_finance_indicators.py tests/test_indicator_parallel_engine.py tests/test_evaluation_run_results.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/custom_indicators/service.py backend/custom_indicators/presentation.py backend/custom_indicators/repository.py backend/custom_indicators/periods.py backend/custom_indicators/series_provider.py backend/custom_indicators/parallel_engine.py backend/custom_indicators/run_result_repository.py backend/custom_indicators/variable_registry.py backend/cal_indicators/builtin_batch_kernel.py backend/services/custom_indicator_routes.py backend/benchmark_indicator_engine.py",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_custom_indicator_variables.py tests/test_numba_finance_indicators.py tests/test_indicator_parallel_engine.py tests/test_evaluation_run_results.py -q'",
+        "python3 -m py_compile backend/custom_indicators/service.py backend/custom_indicators/presentation.py backend/custom_indicators/repository.py backend/custom_indicators/periods.py backend/custom_indicators/series_provider.py backend/custom_indicators/parallel_engine.py backend/custom_indicators/run_result_repository.py backend/custom_indicators/variable_registry.py backend/cal_indicators/builtin_batch_kernel.py backend/services/custom_indicator_routes.py backend/benchmark_indicator_engine.py",
         "python3 -m pytest backend/tests/test_audit_regressions.py -q"
       ],
       "routing_confidence": "high",
@@ -2222,8 +2223,8 @@
         "P13"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_typed_indicator_types.py tests/test_typed_indicator_catalog.py tests/test_typed_indicator_compiler.py tests/test_typed_indicator_runtime.py tests/test_typed_numeric_backend.py tests/test_typed_numba_v22.py tests/test_typed_indicator_product_service.py tests/test_custom_indicator_variables.py tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_causality.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/cal_indicators/typed_numba_kernels.py backend/cal_indicators/typed_numba_plan.py backend/cal_indicators/typed_dsl.py backend/cal_indicators/typed_operators.py",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_typed_indicator_types.py tests/test_typed_indicator_catalog.py tests/test_typed_indicator_compiler.py tests/test_typed_indicator_runtime.py tests/test_typed_numeric_backend.py tests/test_typed_numba_v22.py tests/test_typed_indicator_product_service.py tests/test_custom_indicator_variables.py tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_causality.py -q'",
+        "python3 -m py_compile backend/cal_indicators/typed_numba_kernels.py backend/cal_indicators/typed_numba_plan.py backend/cal_indicators/typed_dsl.py backend/cal_indicators/typed_operators.py",
         "python3 -m pytest backend/tests/test_rolling_interval_graph.py backend/tests/test_rolling_interval_safety.py backend/tests/test_rolling_interval_service.py backend/tests/test_builtin_series_indicators.py backend/tests/test_cross_center_rolling.py -q",
         "python3 -m pytest backend/tests/test_cpp_aot_contracts.py backend/tests/test_compute_policy.py -q"
       ],
@@ -2347,8 +2348,8 @@
         "P15"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_portfolio_research.py tests/test_portfolio_regime_backtest.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/custom_indicators/portfolio_service.py backend/custom_indicators/portfolio_repository.py backend/services/portfolio_routes.py backend/portfolio_regime.py"
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_portfolio_research.py tests/test_portfolio_regime_backtest.py -q'",
+        "python3 -m py_compile backend/custom_indicators/portfolio_service.py backend/custom_indicators/portfolio_repository.py backend/services/portfolio_routes.py backend/portfolio_regime.py"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -2608,17 +2609,17 @@
       ],
       "minimum_regression": [
         "python3 -m pytest backend/tests/test_regime_granularity.py backend/tests/test_regime_segments.py -q",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_historical_regime_numba.py tests/test_historical_regime_trend.py tests/test_historical_regime_peak_trough.py tests/test_historical_regime_v2.py tests/test_historical_regime_v2_p1.py tests/test_research_series_numba.py tests/test_research_series_routes.py tests/test_scenario_stress.py tests/test_scenario_stress_routes.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/historical_regimes/v2_contracts.py backend/historical_regimes/v2_registry.py backend/historical_regimes/v2_service.py backend/historical_regimes/numba_kernels.py backend/historical_regimes/repository.py backend/research_series/service.py backend/scenario_stress/service.py backend/historical_regimes/trend_numba.py backend/historical_regimes/v2_numba.py backend/historical_regimes/v2_templates.py backend/historical_regimes/peak_trough_numba.py backend/historical_regimes/segment_numba.py backend/historical_regimes/authoring.py",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_series_builder.py tests/test_regime_segments.py tests/test_regime_authoring.py tests/test_indicator_graph.py tests/test_indicator_formula_roundtrip.py -q'",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_math_presentation.py tests/test_regime_authoring.py tests/test_regime_series_builder.py -q'",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_node_preview.py -q'",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_chart_normalization.py -q'",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_research_series_import.py -q'",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_indicator_nodes.py -q'",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_product_sources.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_merrill_clock.py -q",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_regime_research_versions.py -q",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_historical_regime_numba.py tests/test_historical_regime_trend.py tests/test_historical_regime_peak_trough.py tests/test_historical_regime_v2.py tests/test_historical_regime_v2_p1.py tests/test_research_series_numba.py tests/test_research_series_routes.py tests/test_scenario_stress.py tests/test_scenario_stress_routes.py -q'",
+        "python3 -m py_compile backend/historical_regimes/v2_contracts.py backend/historical_regimes/v2_registry.py backend/historical_regimes/v2_service.py backend/historical_regimes/numba_kernels.py backend/historical_regimes/repository.py backend/research_series/service.py backend/scenario_stress/service.py backend/historical_regimes/trend_numba.py backend/historical_regimes/v2_numba.py backend/historical_regimes/v2_templates.py backend/historical_regimes/peak_trough_numba.py backend/historical_regimes/segment_numba.py backend/historical_regimes/authoring.py",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_regime_series_builder.py tests/test_regime_segments.py tests/test_regime_authoring.py tests/test_indicator_graph.py tests/test_indicator_formula_roundtrip.py -q'",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_regime_math_presentation.py tests/test_regime_authoring.py tests/test_regime_series_builder.py -q'",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_regime_node_preview.py -q'",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_regime_chart_normalization.py -q'",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_research_series_import.py -q'",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_regime_indicator_nodes.py -q'",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_regime_product_sources.py -q'",
+        "python3 -m pytest backend/tests/test_merrill_clock.py -q",
+        "python3 -m pytest backend/tests/test_regime_research_versions.py -q",
         "python3 -m pytest backend/tests/test_manual_historical_events.py backend/tests/test_regime_event_library.py backend/tests/test_regime_temporal_capability.py -q",
         "python3 -m pytest backend/tests/test_scenario_audit_remediation.py backend/tests/test_recommended_prospective_workflow.py -q",
         "python3 -m pytest backend/tests/test_regime_completion_quality.py backend/tests/test_regime_completion_bootstrap.py backend/tests/test_regime_reliability_consumer.py -q",
@@ -3986,7 +3987,7 @@
         "/bin/sh -c 'cd frontend && npm run test -- --run src/components/HorizontalMetricComparison.test.tsx src/app/allocationJourney.test.tsx src/layouts/StageLayout.test.tsx src/pages/ManualConstruction.test.tsx src/pages/ProductPoolSelection.test.tsx src/pages/ProductPoolWorkspacePage.test.tsx src/pages/ProductPools.test.tsx src/pages/ClassAllocation.test.tsx src/pages/PortfolioConstruction.test.tsx'",
         "npm run test --prefix frontend -- --run",
         "npm run build --prefix frontend",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
+        "python3 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
       ],
       "routing_confidence": "medium",
       "scope_flags": [
@@ -4194,14 +4195,14 @@
         "P15"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile config.py T01_get_data.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/services/index_data.py backend/services/index_routes.py backend/services/data_refresh.py backend/services/data_routes.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_tushare_data_script.py backend/tests/test_data_refresh.py backend/tests/test_index_data.py -q",
+        "python3 -m py_compile config.py T01_get_data.py",
+        "python3 -m py_compile backend/services/index_data.py backend/services/index_routes.py backend/services/data_refresh.py backend/services/data_routes.py",
+        "python3 -m pytest backend/tests/test_tushare_data_script.py backend/tests/test_data_refresh.py backend/tests/test_index_data.py -q",
         "/bin/sh -c 'cd frontend && npm run test -- --run src/pages/IndexData.test.tsx src/components/dashboard/DataHealthRefreshPanel.test.tsx'",
         "/bin/sh -c 'cd frontend && npm run test:e2e -- e2e/index-data.spec.ts'",
         "npm run test --prefix frontend -- --run",
         "npm run build --prefix frontend",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
+        "python3 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -4302,8 +4303,8 @@
         "P07"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_data_model_catalog.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/data_model/catalog.py backend/data_model/types.py backend/services/data_model_routes.py"
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_data_model_catalog.py -q'",
+        "python3 -m py_compile backend/data_model/catalog.py backend/data_model/types.py backend/services/data_model_routes.py"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -4466,12 +4467,12 @@
         "P15"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_akshare_adapter.py tests/test_data_source_center.py tests/test_etl_snapshot.py tests/test_etl_workflows.py tests/test_multi_source_resolution.py tests/test_resolution_routes.py tests/test_source_sync_jobs.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_etl_executor.py -q",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_constituent_download.py backend/tests/test_constituent_recovery.py backend/tests/test_source_db_retry.py backend/tests/test_etl_run_view.py -q",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_etl_failure_isolation.py backend/tests/test_weight_recovery.py -q",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_fund_event_conflicts.py backend/tests/test_fund_event_download.py backend/tests/test_fund_event_recovery.py -q",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/data_sources/service.py backend/data_sources/etl_service.py backend/services/data_source_routes.py backend/services/etl_routes.py"
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_akshare_adapter.py tests/test_data_source_center.py tests/test_etl_snapshot.py tests/test_etl_workflows.py tests/test_multi_source_resolution.py tests/test_resolution_routes.py tests/test_source_sync_jobs.py -q'",
+        "python3 -m pytest backend/tests/test_etl_executor.py -q",
+        "python3 -m pytest backend/tests/test_constituent_download.py backend/tests/test_constituent_recovery.py backend/tests/test_source_db_retry.py backend/tests/test_etl_run_view.py -q",
+        "python3 -m pytest backend/tests/test_etl_failure_isolation.py backend/tests/test_weight_recovery.py -q",
+        "python3 -m pytest backend/tests/test_fund_event_conflicts.py backend/tests/test_fund_event_download.py backend/tests/test_fund_event_recovery.py -q",
+        "python3 -m py_compile backend/data_sources/service.py backend/data_sources/etl_service.py backend/services/data_source_routes.py backend/services/etl_routes.py"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -5020,7 +5021,7 @@
         "npm run test --prefix frontend -- --run StrategicAllocationWorkspace.test.tsx ClassAllocation.test.tsx FrontierGrid.test.tsx",
         "npm run build --prefix frontend",
         "npm run test:e2e --prefix frontend -- --config=playwright.strategic.config.ts",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_investment_mandate.py backend/tests/test_mandate_diagnostic_integrity.py backend/tests/test_strategic_allocation.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_investment_mandate.py backend/tests/test_mandate_diagnostic_integrity.py backend/tests/test_strategic_allocation.py -q",
         "npm run test --prefix frontend -- --run InvestmentObjectivesWorkspace.test.tsx StrategicAllocationWorkspace.test.tsx strategicAllocation.test.ts",
         "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_bettersaataa_m1.py backend/tests/test_bettersaataa_scope_journey.py backend/tests/test_cma_models.py backend/tests/test_cma_model_integration.py backend/tests/test_strategic_risk_budget.py backend/tests/test_bettersaataa_final_audit.py -q",
         "npm run test --prefix frontend -- --run StrategicAllocationModels.test.tsx CmaModelEditor.test.tsx PolicyCandidatesM2.test.tsx StrategicScopeWorkspace.test.tsx StageLayout.test.tsx",
@@ -5032,16 +5033,16 @@
         "npm run test:e2e --prefix frontend -- --config=playwright.mandate.config.ts",
         "/usr/bin/env PYTHONPATH=.:backend python3 scripts/export_mandate_contracts.py --check",
         "/usr/bin/env PYTHONPATH=.:backend python3 scripts/export_risk_scale_contracts.py --check",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_multi_cma.py backend/tests/test_cma_model_integration.py backend/tests/test_strategic_allocation.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_multi_cma.py backend/tests/test_cma_model_integration.py backend/tests/test_strategic_allocation.py -q",
         "npm run test --prefix frontend -- --run MultiCmaWorkspace.test.tsx StrategicAllocationWorkspace.test.tsx StrategicAllocationModels.test.tsx LtcmaHandoff.test.tsx",
         "npm run test:e2e --prefix frontend -- --config=playwright.multi-cma.config.ts",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 scripts/export_ltcma_contracts.py --check",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_multi_cma_compatibility.py backend/tests/test_multi_cma.py backend/tests/test_optimizer_strategy_numba.py backend/tests/test_frontier_grid.py -q",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 backend/tests/benchmark_multi_cma_compatibility.py",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_cma_review.py backend/tests/test_cma_uncertainty.py backend/tests/test_cma_diagnostics.py backend/tests/test_cma_models.py backend/tests/test_cma_model_integration.py backend/tests/test_ltcma_statistics.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 scripts/export_ltcma_contracts.py --check",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_multi_cma_compatibility.py backend/tests/test_multi_cma.py backend/tests/test_optimizer_strategy_numba.py backend/tests/test_frontier_grid.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 backend/tests/benchmark_multi_cma_compatibility.py",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_cma_review.py backend/tests/test_cma_uncertainty.py backend/tests/test_cma_diagnostics.py backend/tests/test_cma_models.py backend/tests/test_cma_model_integration.py backend/tests/test_ltcma_statistics.py -q",
         "npm run test --prefix frontend -- --run CmaReview.test.tsx StrategicAllocationWorkspace.test.tsx StrategicAllocationModels.test.tsx",
         "npm run test:e2e --prefix frontend -- --config=playwright.ltcma.config.ts",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_ltcma_scenarios.py backend/tests/test_ltcma_scenario_evidence.py backend/tests/test_ltcma_regime_intervals.py backend/tests/test_cma_scenario_selection.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_ltcma_scenarios.py backend/tests/test_ltcma_scenario_evidence.py backend/tests/test_ltcma_regime_intervals.py backend/tests/test_cma_scenario_selection.py -q",
         "npm run test --prefix frontend -- --run LtcmaScenarioFields.test.tsx LtcmaScenarioSelect.test.tsx LtcmaStatisticsFields.test.tsx LtcmaCenter.test.tsx LtcmaHandoff.test.tsx",
         "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_scope_feasibility.py backend/tests/test_scope_lifecycle.py -q",
         "npm run test --prefix frontend -- --run ScopeFeasibility.test.tsx ScopeFrontierChart.test.tsx ProductPoolWorkspacePage.test.tsx",
@@ -5208,11 +5209,11 @@
         "backend/tests/implementation_app.py"
       ],
       "minimum_regression": [
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_implementation_kernels.py backend/tests/test_implementation_packages.py backend/tests/test_implementation_paths.py backend/tests/test_implementation_scenarios.py backend/tests/test_implementation_service.py backend/tests/test_funding_continuation.py backend/tests/test_implementation_continuation.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_implementation_kernels.py backend/tests/test_implementation_packages.py backend/tests/test_implementation_paths.py backend/tests/test_implementation_scenarios.py backend/tests/test_implementation_service.py backend/tests/test_funding_continuation.py backend/tests/test_implementation_continuation.py -q",
         "npm run test --prefix frontend -- --run PreInvestmentImplementation.test.tsx StrategicAllocationWorkspace.test.tsx TacticalAllocationWorkspace.test.tsx",
         "npm run build --prefix frontend",
         "npm run test:e2e --prefix frontend -- --config=playwright.implementation.config.ts",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 backend/tests/benchmark_implementation.py"
+        "/usr/bin/env PYTHONPATH=.:backend python3 backend/tests/benchmark_implementation.py"
       ],
       "pitfall_ids": [
         "P24",
@@ -5252,7 +5253,7 @@
       "name": "Documentation lifecycle, catalog and candidate validation",
       "path": "scripts/check_documentation.py",
       "kind": "repository_tooling",
-      "purpose": "Maps scoped changes to document owners and validates catalog/index, links, explicit plan tables and optional candidate-bound review receipts. Reads worktree, staged or merge-base/head candidates without modifying them. Semantic correctness and financial/deployment qualification require separate review.",
+      "purpose": "Owns project documentation lifecycle and original catalog/candidate checks, plus source-backed business/developer knowledge, complete document/module/attachment discovery, offline deduplication, guarded integration/feedback, evidence freshness and explicit-vault read-only Obsidian access. It does not prove financial conclusions or deployments.",
       "module_tags": [
         "documentation",
         "docs-as-code",
@@ -5260,7 +5261,9 @@
       ],
       "entry_files": [
         "scripts/check_documentation.py",
-        "docs/governance/documentation.md"
+        "docs/governance/documentation.md",
+        "scripts/knowledge_base.py",
+        "docs/wiki/README.md"
       ],
       "key_symbols": [
         "Candidate",
@@ -5279,7 +5282,39 @@
         "scripts/tests/test_documentation.py",
         "scripts/requirements-docs.txt",
         ".github/workflows/documentation.yml",
-        "docs/repo_map.json"
+        "docs/repo_map.json",
+        "docs/wiki/README.md",
+        "docs/wiki/llm-wiki-design.md",
+        "docs/wiki/documentation-audit-2026-10-04.md",
+        "docs/wiki/audit-files-2026-10-04.md",
+        "docs/wiki/catalog.md",
+        "docs/wiki/claims/adjustment-economic-evidence.md",
+        "docs/wiki/claims/causal-budget-32.md",
+        "docs/wiki/claims/cpp-local-coverage.md",
+        "docs/wiki/claims/niw-frequency.md",
+        "docs/wiki/claims/portable-current.md",
+        "docs/wiki/claims/risk-scale-fx.md",
+        "docs/wiki/navigation/business.md",
+        "docs/wiki/navigation/developer.md",
+        "docs/wiki/sources/project-evidence-baseline.md",
+        "docs/wiki/templates.md",
+        "docs/wiki/topics/business-allocation.md",
+        "docs/wiki/topics/business-decisions.md",
+        "docs/wiki/topics/business-evidence.md",
+        "docs/wiki/topics/business-investment.md",
+        "docs/wiki/topics/business-process.md",
+        "docs/wiki/topics/business-products.md",
+        "docs/wiki/topics/business-purpose.md",
+        "docs/wiki/topics/business-regimes.md",
+        "docs/wiki/topics/developer-architecture.md",
+        "docs/wiki/topics/developer-data-compute.md",
+        "docs/wiki/topics/developer-decisions.md",
+        "docs/wiki/topics/developer-delivery.md",
+        "docs/wiki/topics/developer-modules.md",
+        "docs/wiki/topics/developer-operations.md",
+        "docs/wiki/topics/research-library.md",
+        "docs/wiki/workflow.md",
+        "scripts/tests/test_knowledge_base.py"
       ],
       "upstream_dependencies": [
         "ai_routing_files"
@@ -5291,15 +5326,18 @@
       "out_of_scope_dependencies": [
         "Native client Stop hooks",
         "Live GitHub required-check configuration",
-        "Automatic semantic proof of documentation correctness"
+        "Automatic semantic proof of documentation correctness",
+        "Machine-local Obsidian runtime/socket and external source revisions"
       ],
       "related_tests": [
         "scripts/tests/test_documentation.py",
-        "backend/tests/test_tushare_data_script.py"
+        "backend/tests/test_tushare_data_script.py",
+        "scripts/tests/test_knowledge_base.py"
       ],
       "related_configs": [
         "scripts/requirements-docs.txt",
-        ".github/workflows/documentation.yml"
+        ".github/workflows/documentation.yml",
+        ".gitignore"
       ],
       "risk_flags": [
         "staged_worktree_mismatch",
@@ -5320,7 +5358,10 @@
       "minimum_regression": [
         "python3 -m pytest scripts/tests/test_documentation.py -q",
         "python3 scripts/check_documentation.py",
-        "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py"
+        "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
+        "python3 -m pytest scripts/tests/test_knowledge_base.py -q",
+        "python3 scripts/knowledge_base.py check --summary",
+        "python3 scripts/knowledge_base.py coverage"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -5334,7 +5375,9 @@
           "scripts/check_documentation.py",
           "scripts/tests/test_documentation.py",
           "docs/governance/documentation.md",
-          ".github/workflows/documentation.yml"
+          ".github/workflows/documentation.yml",
+          "scripts/knowledge_base.py",
+          "scripts/tests/test_knowledge_base.py"
         ],
         "unsampled_paths": []
       }
@@ -5509,7 +5552,11 @@
         "modules": [
           "project_docs"
         ],
-        "read_when": "项目定位、快速开始及文档入口"
+        "read_when": "项目定位、快速开始及文档入口",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/README.md",
@@ -5522,7 +5569,11 @@
           "ai_routing_files",
           "documentation_maintenance"
         ],
-        "read_when": "查找主题、专业契约、历史证据和草稿"
+        "read_when": "查找主题、专业契约、历史证据和草稿",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "AGENTS.md",
@@ -5533,7 +5584,10 @@
         "modules": [
           "branch_submission_workflow"
         ],
-        "read_when": "智能体执行协议、必读条件与授权边界"
+        "read_when": "智能体执行协议、必读条件与授权边界",
+        "knowledge_domains": [
+          "developer"
+        ]
       },
       {
         "path": "docs/product/requirements.md",
@@ -5545,7 +5599,11 @@
           "frontend_investment_process_framework",
           "data_ingestion_config"
         ],
-        "read_when": "了解产品范围、当前能力和交付顺序"
+        "read_when": "了解产品范围、当前能力和交付顺序",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/product/accounting.md",
@@ -5556,7 +5614,11 @@
         "modules": [
           "frontend_investment_process_framework"
         ],
-        "read_when": "账户、组合分摊、账务与绩效模型变更前"
+        "read_when": "账户、组合分摊、账务与绩效模型变更前",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/product/domain-language.md",
@@ -5567,7 +5629,11 @@
         "modules": [
           "frontend_investment_process_framework"
         ],
-        "read_when": "业务设计或术语变更前：资产主体、账户、研究与真实组合边界"
+        "read_when": "业务设计或术语变更前：资产主体、账户、研究与真实组合边界",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/product/research-parameters.md",
@@ -5578,7 +5644,11 @@
         "modules": [
           "project_docs"
         ],
-        "read_when": "研究参数模板的目标设计；不视为已经交付"
+        "read_when": "研究参数模板的目标设计；不视为已经交付",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/pre-investment/README.md",
@@ -5591,7 +5661,11 @@
           "frontend_allocation_workflows",
           "strategic_allocation_policy"
         ],
-        "read_when": "开始或修改投前研究：先看完整链路与承接关系"
+        "read_when": "开始或修改投前研究：先看完整链路与承接关系",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/pre-investment/asset-classification.md",
@@ -5602,7 +5676,11 @@
         "modules": [
           "frontend_allocation_workflows"
         ],
-        "read_when": "产品聚类、大类候选、映射及局限"
+        "read_when": "产品聚类、大类候选、映射及局限",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/pre-investment/funding.md",
@@ -5614,7 +5692,11 @@
           "strategic_allocation_policy",
           "pre_investment_implementation"
         ],
-        "read_when": "资金流、月份窗口、负债及剩余资金模型"
+        "read_when": "资金流、月份窗口、负债及剩余资金模型",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/pre-investment/historical-frontier.md",
@@ -5624,9 +5706,14 @@
         "status": "active",
         "modules": [
           "backend_quant_core",
-          "backend_strategy_routes"
+          "backend_strategy_routes",
+          "backend_analytics_routes"
         ],
-        "read_when": "历史有效前沿、求解和诊断"
+        "read_when": "历史有效前沿、求解和诊断",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/pre-investment/implementation.md",
@@ -5637,7 +5724,11 @@
         "modules": [
           "pre_investment_implementation"
         ],
-        "read_when": "产品风险、成本、余款续算、研究包验证和定稿"
+        "read_when": "产品风险、成本、余款续算、研究包验证和定稿",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/pre-investment/ltcma.md",
@@ -5648,7 +5739,11 @@
         "modules": [
           "strategic_allocation_policy"
         ],
-        "read_when": "长期资本市场假设、模型与估计口径"
+        "read_when": "长期资本市场假设、模型与估计口径",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/pre-investment/versioning.md",
@@ -5661,7 +5756,11 @@
           "tactical_allocation_workbench",
           "pre_investment_implementation"
         ],
-        "read_when": "上游版本变更、系列删除、等价范围与下游可用性"
+        "read_when": "上游版本变更、系列删除、等价范围与下游可用性",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/pre-investment/mandate.md",
@@ -5672,7 +5771,11 @@
         "modules": [
           "strategic_allocation_policy"
         ],
-        "read_when": "目标约束、版本确认及适用边界"
+        "read_when": "目标约束、版本确认及适用边界",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/pre-investment/risk-scale.md",
@@ -5683,7 +5786,11 @@
         "modules": [
           "strategic_allocation_policy"
         ],
-        "read_when": "C1–C5 风险标尺、冻结输入与诊断"
+        "read_when": "C1–C5 风险标尺、冻结输入与诊断",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/pre-investment/saa.md",
@@ -5694,7 +5801,11 @@
         "modules": [
           "strategic_allocation_policy"
         ],
-        "read_when": "单/多 CMA 的战略配置与采纳规则"
+        "read_when": "单/多 CMA 的战略配置与采纳规则",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/pre-investment/taa-numeric-contract.md",
@@ -5705,7 +5816,11 @@
         "modules": [
           "tactical_allocation_workbench"
         ],
-        "read_when": "TAA 费用、时钟、持仓递推与数值边界"
+        "read_when": "TAA 费用、时钟、持仓递推与数值边界",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/pre-investment/taa.md",
@@ -5716,7 +5831,11 @@
         "modules": [
           "tactical_allocation_workbench"
         ],
-        "read_when": "基于 SAA 的战术偏离及用户操作"
+        "read_when": "基于 SAA 的战术偏离及用户操作",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/data/README.md",
@@ -5726,9 +5845,14 @@
         "status": "active",
         "modules": [
           "backend_data_model_catalog",
-          "backend_data_source_etl"
+          "backend_data_source_etl",
+          "market_data_snapshot_lifecycle"
         ],
-        "read_when": "配置来源、导入映射与标准数据的统一入口"
+        "read_when": "配置来源、导入映射与标准数据的统一入口",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/data/acquisition-protocol.md",
@@ -5739,7 +5863,11 @@
         "modules": [
           "data_ingestion_config"
         ],
-        "read_when": "下载变更前必读：技能、权限、限流、隔离 smoke 与同步要求"
+        "read_when": "下载变更前必读：技能、权限、限流、隔离 smoke 与同步要求",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/data/adjusted-price.md",
@@ -5750,7 +5878,11 @@
         "modules": [
           "backend_typed_indicator_v2"
         ],
-        "read_when": "价格复权、收益语义与覆盖"
+        "read_when": "价格复权、收益语义与覆盖",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/data/etl.md",
@@ -5762,7 +5894,11 @@
           "data_ingestion_config",
           "backend_data_source_etl"
         ],
-        "read_when": "执行图、增量/全量、检查点及恢复"
+        "read_when": "执行图、增量/全量、检查点及恢复",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/data/pit.md",
@@ -5773,7 +5909,11 @@
         "modules": [
           "backend_api_shell"
         ],
-        "read_when": "数据血缘、发布与时点可得性"
+        "read_when": "数据血缘、发布与时点可得性",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/data/storage.md",
@@ -5784,7 +5924,11 @@
         "modules": [
           "backend_data_storage"
         ],
-        "read_when": "共享数据目录、迁移、锁和只读边界"
+        "read_when": "共享数据目录、迁移、锁和只读边界",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/data/tushare-download.md",
@@ -5796,7 +5940,11 @@
           "backend_regime_research",
           "data_ingestion_config"
         ],
-        "read_when": "下载动作、输出文件、schema 与带日期的数据证据"
+        "read_when": "下载动作、输出文件、schema 与带日期的数据证据",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/indicators/README.md",
@@ -5811,7 +5959,11 @@
           "frontend_indicator_studio",
           "frontend_portfolio_research"
         ],
-        "read_when": "行情指标中心定义、运行及共享能力入口；持仓指标中心边界见领域语言"
+        "read_when": "行情指标中心定义、运行及共享能力入口；持仓指标中心边界见领域语言",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/indicators/canvas.md",
@@ -5822,7 +5974,11 @@
         "modules": [
           "frontend_indicator_studio"
         ],
-        "read_when": "画布节点、连线、展开及预览"
+        "read_when": "画布节点、连线、展开及预览",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/indicators/causality.md",
@@ -5833,7 +5989,11 @@
         "modules": [
           "backend_typed_indicator_v2"
         ],
-        "read_when": "因果性、知识可得时点与审核"
+        "read_when": "因果性、知识可得时点与审核",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/indicators/computation-graph.md",
@@ -5846,7 +6006,11 @@
           "backend_data_source_etl",
           "frontend_data_source_center"
         ],
-        "read_when": "DAG 类型、编译、执行与数据轴"
+        "read_when": "DAG 类型、编译、执行与数据轴",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/indicators/excel-export.md",
@@ -5857,7 +6021,11 @@
         "modules": [
           "backend_custom_indicator_service"
         ],
-        "read_when": "指标导出及公式、展示映射"
+        "read_when": "指标导出及公式、展示映射",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/indicators/parameters.md",
@@ -5868,7 +6036,11 @@
         "modules": [
           "backend_typed_indicator_v2"
         ],
-        "read_when": "运行参数、默认值及定义/实例边界"
+        "read_when": "运行参数、默认值及定义/实例边界",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/indicators/rolling-intervals.md",
@@ -5880,7 +6052,11 @@
           "backend_custom_indicator_service",
           "backend_typed_indicator_v2"
         ],
-        "read_when": "滚动、事件、区间及边界语义"
+        "read_when": "滚动、事件、区间及边界语义",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/product-research/README.md",
@@ -5889,9 +6065,15 @@
         "role": "topic",
         "status": "active",
         "modules": [
-          "frontend_metric_presentation"
+          "frontend_metric_presentation",
+          "backend_etf_product_api",
+          "backend_instrument_analytics"
         ],
-        "read_when": "产品研究表与指标消费的主要入口"
+        "read_when": "产品研究表与指标消费的主要入口",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/product-research/scenario-research.md",
@@ -5902,7 +6084,11 @@
         "modules": [
           "frontend_etf_research_pages"
         ],
-        "read_when": "产品在历史情景中的比较及统计"
+        "read_when": "产品在历史情景中的比较及统计",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/product-research/timing.md",
@@ -5913,7 +6099,11 @@
         "modules": [
           "product_timing_research"
         ],
-        "read_when": "ETF 择时图、训练/验证和版本绑定"
+        "read_when": "ETF 择时图、训练/验证和版本绑定",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/product-research/trend-chart.md",
@@ -5924,7 +6114,11 @@
         "modules": [
           "frontend_metric_presentation"
         ],
-        "read_when": "趋势图、指标叠加、轴和批量请求"
+        "read_when": "趋势图、指标叠加、轴和批量请求",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/regimes/README.md",
@@ -5936,7 +6130,11 @@
           "backend_regime_research",
           "frontend_regime_research"
         ],
-        "read_when": "历史/实时状态、研究工作台及证据承接入口"
+        "read_when": "历史/实时状态、研究工作台及证据承接入口",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/regimes/continuous-state.md",
@@ -5947,7 +6145,11 @@
         "modules": [
           "backend_regime_research"
         ],
-        "read_when": "连续状态与概率序列"
+        "read_when": "连续状态与概率序列",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/regimes/events.md",
@@ -5958,7 +6160,11 @@
         "modules": [
           "backend_regime_research"
         ],
-        "read_when": "事件类型、时间能力及区间消费"
+        "read_when": "事件类型、时间能力及区间消费",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/regimes/peak-trough.md",
@@ -5969,7 +6175,11 @@
         "modules": [
           "backend_regime_research"
         ],
-        "read_when": "峰谷识别、确认及边界"
+        "read_when": "峰谷识别、确认及边界",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/regimes/risk-models.md",
@@ -5980,7 +6190,11 @@
         "modules": [
           "published_risk_scenario_research"
         ],
-        "read_when": "发布风险模型、敏感性与压力期限"
+        "read_when": "发布风险模型、敏感性与压力期限",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/regimes/smoothing.md",
@@ -5992,7 +6206,11 @@
           "backend_regime_research",
           "frontend_regime_research"
         ],
-        "read_when": "状态平滑与迟滞规则"
+        "read_when": "状态平滑与迟滞规则",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/regimes/validation.md",
@@ -6003,7 +6221,11 @@
         "modules": [
           "backend_regime_research"
         ],
-        "read_when": "参考置信度、实时可靠性与前瞻资格"
+        "read_when": "参考置信度、实时可靠性与前瞻资格",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/factor-research.md",
@@ -6014,7 +6236,11 @@
         "modules": [
           "factor_research_center"
         ],
-        "read_when": "因子、暴露、收益归因与研究证据"
+        "read_when": "因子、暴露、收益归因与研究证据",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/frontend/README.md",
@@ -6025,7 +6251,10 @@
         "modules": [
           "frontend_app_shell"
         ],
-        "read_when": "修改视觉、交互或资产前必读的设计规范"
+        "read_when": "修改视觉、交互或资产前必读的设计规范",
+        "knowledge_domains": [
+          "developer"
+        ]
       },
       {
         "path": "docs/frontend/homepage.md",
@@ -6036,7 +6265,10 @@
         "modules": [
           "frontend_app_shell"
         ],
-        "read_when": "涉及首页时必读，区分首页与工作台规则"
+        "read_when": "涉及首页时必读，区分首页与工作台规则",
+        "knowledge_domains": [
+          "developer"
+        ]
       },
       {
         "path": "docs/frontend/i18n.md",
@@ -6047,7 +6279,10 @@
         "modules": [
           "frontend_app_shell"
         ],
-        "read_when": "语言、术语和业务翻译维护"
+        "read_when": "语言、术语和业务翻译维护",
+        "knowledge_domains": [
+          "developer"
+        ]
       },
       {
         "path": "docs/governance/branch-protection.md",
@@ -6058,7 +6293,10 @@
         "modules": [
           "branch_submission_workflow"
         ],
-        "read_when": "区分仓库规则、工作流配置和远端实际保护"
+        "read_when": "区分仓库规则、工作流配置和远端实际保护",
+        "knowledge_domains": [
+          "developer"
+        ]
       },
       {
         "path": "docs/governance/branch-submission-rules.md",
@@ -6069,7 +6307,10 @@
         "modules": [
           "branch_submission_workflow"
         ],
-        "read_when": "分支、提交、PR、审核、合并和发布前必须完整阅读"
+        "read_when": "分支、提交、PR、审核、合并和发布前必须完整阅读",
+        "knowledge_domains": [
+          "developer"
+        ]
       },
       {
         "path": "docs/governance/documentation.md",
@@ -6081,7 +6322,10 @@
           "project_docs",
           "documentation_maintenance"
         ],
-        "read_when": "文档变更与任务收尾：影响核对、计划结项和检查命令"
+        "read_when": "文档变更与任务收尾：影响核对、计划结项和检查命令",
+        "knowledge_domains": [
+          "developer"
+        ]
       },
       {
         "path": "docs/governance/numeric-computing.md",
@@ -6093,7 +6337,10 @@
           "backend_quant_core",
           "backend_indicator_runtime"
         ],
-        "read_when": "数值、窗口和内存改动前必读：NJIT、预热、零回退、零拷贝"
+        "read_when": "数值、窗口和内存改动前必读：NJIT、预热、零回退、零拷贝",
+        "knowledge_domains": [
+          "developer"
+        ]
       },
       {
         "path": "docs/governance/operator-contracts.md",
@@ -6104,7 +6351,10 @@
         "modules": [
           "backend_typed_indicator_v2"
         ],
-        "read_when": "算子/模板变更前必读：颗粒度、类型、时点和等价性"
+        "read_when": "算子/模板变更前必读：颗粒度、类型、时点和等价性",
+        "knowledge_domains": [
+          "developer"
+        ]
       },
       {
         "path": "docs/governance/submission-workflow.md",
@@ -6115,7 +6365,10 @@
         "modules": [
           "branch_submission_workflow"
         ],
-        "read_when": "提交工作流的执行顺序与异常处理；不另立规则"
+        "read_when": "提交工作流的执行顺序与异常处理；不另立规则",
+        "knowledge_domains": [
+          "developer"
+        ]
       },
       {
         "path": "docs/research/allocation-methods.md",
@@ -6126,7 +6379,11 @@
         "modules": [
           "strategic_allocation_policy"
         ],
-        "read_when": "配置方法的选择依据与尚未完成的扩展"
+        "read_when": "配置方法的选择依据与尚未完成的扩展",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/research/cma-model-decisions.md",
@@ -6137,7 +6394,11 @@
         "modules": [
           "strategic_allocation_policy"
         ],
-        "read_when": "CMA 数理勘误与实现取舍"
+        "read_when": "CMA 数理勘误与实现取舍",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/research/csi300-reference-recognition-study-2026-09-15.md",
@@ -6148,7 +6409,11 @@
         "modules": [
           "backend_regime_research"
         ],
-        "read_when": "沪深300特定样本的参考识别研究；不可外推为普遍验证"
+        "read_when": "沪深300特定样本的参考识别研究；不可外推为普遍验证",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/research/regime-methods.md",
@@ -6159,7 +6424,11 @@
         "modules": [
           "backend_regime_research"
         ],
-        "read_when": "状态识别方法、时点约束与取舍"
+        "read_when": "状态识别方法、时点约束与取舍",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/verification/allocation.md",
@@ -6174,7 +6443,11 @@
           "strategic_allocation_policy",
           "pre_investment_implementation"
         ],
-        "read_when": "配置研究历史证据、解析反例与资格边界"
+        "read_when": "配置研究历史证据、解析反例与资格边界",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/verification/engineering.md",
@@ -6186,7 +6459,11 @@
           "backend_typed_indicator_v2",
           "frontend_app_shell"
         ],
-        "read_when": "工程、指标与界面验收证据及适用版本"
+        "read_when": "工程、指标与界面验收证据及适用版本",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/verification/factors.md",
@@ -6197,7 +6474,11 @@
         "modules": [
           "factor_research_center"
         ],
-        "read_when": "因子研究验收及未闭合资格"
+        "read_when": "因子研究验收及未闭合资格",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/verification/regimes.md",
@@ -6211,19 +6492,27 @@
           "backend_regime_research",
           "frontend_regime_research"
         ],
-        "read_when": "情景研究验收、限制与待复验问题"
+        "read_when": "情景研究验收、限制与待复验问题",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/research/ai-functions-design.md",
         "title": "AI 功能设计",
         "topic": "研究草稿",
-        "role": "contract",
-        "status": "active",
+        "role": "research",
+        "status": "historical",
         "modules": [
           "project_docs",
           "portable_agent_integration"
         ],
-        "read_when": "AI Harness当前实现、数据准入、任务与记忆、页面范围和验证边界；真实模型效果与工程回归分开核对；平台能力目录、意图识别、中央入口与跨页任务交接"
+        "read_when": "迁移前Harness行为与历史验收基线；当前平台装配、业务权威和验证范围读取portable-agent-platform-integration.md",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/research/ai-agent-indicator-product-research-design-2026-09-18.md",
@@ -6235,7 +6524,11 @@
           "project_docs",
           "portable_agent_integration"
         ],
-        "read_when": "未采纳研究草稿；实施前重新核对需求、代码和证据"
+        "read_when": "早期设计稿，整体目标未验收；部分目标后续采用或替代，当前接入读取整体迁移设计，未采用目标保留",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/research/pre-investment-institutional-gap-analysis-2026-09-19.md",
@@ -6246,7 +6539,11 @@
         "modules": [
           "project_docs"
         ],
-        "read_when": "未采纳研究草稿；实施前重新核对需求、代码和证据"
+        "read_when": "未采纳研究草稿；实施前重新核对需求、代码和证据",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "deploy/README.md",
@@ -6258,7 +6555,10 @@
           "data_ingestion_config",
           "portable_agent_integration"
         ],
-        "read_when": "部署方式、运行环境与持久化要求"
+        "read_when": "部署方式、运行环境与持久化要求",
+        "knowledge_domains": [
+          "developer"
+        ]
       },
       {
         "path": "docs/indicators/cpp-aot-contracts.md",
@@ -6269,7 +6569,11 @@
         "modules": [
           "backend_typed_indicator_v2"
         ],
-        "read_when": "接入 C++ AOT：错误隔离、数据参数、历史 DSL、结果所有权及双后端门禁"
+        "read_when": "接入 C++ AOT：错误隔离、数据参数、历史 DSL、结果所有权及双后端门禁",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/verification/cpp-aot-contracts.md",
@@ -6280,7 +6584,11 @@
         "modules": [
           "backend_typed_indicator_v2"
         ],
-        "read_when": "核对 AOT 契约验证的版本、范围、命令及生产迁移边界"
+        "read_when": "核对 AOT 契约验证的版本、范围、命令及生产迁移边界",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/research/ai-agent-context-compaction-design-2026-09-20.md",
@@ -6292,7 +6600,11 @@
           "project_docs",
           "portable_agent_integration"
         ],
-        "read_when": "回溯早期压缩选择；当前实现及验证以 AI 功能设计为准"
+        "read_when": "回溯早期压缩选择；迁移前验收见AI功能设计，当前平台边界见整体迁移设计，外部框架能力单独核验",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/research/ai-agent-harness-progress-design-2026-09-20.md",
@@ -6304,7 +6616,11 @@
           "project_docs",
           "portable_agent_integration"
         ],
-        "read_when": "回溯停滞检测依据；当前门控、任务状态与验收以 AI 功能设计为准"
+        "read_when": "回溯停滞检测依据；迁移前门控与历史验收，不作为当前外部运行器实现证据",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/research/ai-agent-indicator-product-research-implementation-design-2026-09-19.md",
@@ -6316,19 +6632,27 @@
           "project_docs",
           "portable_agent_integration"
         ],
-        "read_when": "回溯初始实现契约；当前页面范围及接口以统一设计和代码为准"
+        "read_when": "回溯初始实现契约；当前页面范围与平台业务接口读取整体迁移设计和现行代码",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/research/ai-agent-reusable-architecture-design-2026-09-21.md",
         "title": "AI 助手共用架构与接入设计",
         "topic": "研究草稿",
-        "role": "contract",
-        "status": "active",
+        "role": "research",
+        "status": "historical",
         "modules": [
           "project_docs",
           "portable_agent_integration"
         ],
-        "read_when": "接入公共对话、页面证据及业务适配；配合 AI 功能设计核对已验收范围"
+        "read_when": "迁移前共用架构、CopilotKit及独立原型历史；旧路径不再是当前入口，现行接入读取整体迁移设计",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/research/ai-assistant-conversation-ui-design-2026-09-20.md",
@@ -6340,7 +6664,11 @@
           "project_docs",
           "portable_agent_integration"
         ],
-        "read_when": "回溯对话交互设计；当前视觉契约以 frontend/README.md 为准"
+        "read_when": "回溯对话交互设计；当前视觉契约以 frontend/README.md 为准",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       },
       {
         "path": "docs/research/portable-agent-platform-integration.md",
@@ -6351,7 +6679,468 @@
         "modules": [
           "portable_agent_integration"
         ],
-        "read_when": "独立智能体整体迁移的Dev候选、业务协议、离线验收证据与剩余正式发布/生产切换门槛"
+        "read_when": "独立智能体整体迁移的Dev候选、业务协议、离线验收证据与剩余正式发布/生产切换门槛",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/README.md",
+        "title": "项目知识 Wiki",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance",
+          "project_docs"
+        ],
+        "read_when": "项目全景主页：业务/开发两类高层主题、完整流程与证据入口",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/llm-wiki-design.md",
+        "title": "Obsidian LLM Wiki 详细设计",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance",
+          "project_docs"
+        ],
+        "read_when": "完整知识体系、来源闭环、可信度/增量/并发、CLI与跨机器设计",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/documentation-audit-2026-10-04.md",
+        "title": "2026-10-04 全量文档审核报告",
+        "topic": "知识 Wiki",
+        "role": "evidence",
+        "status": "historical",
+        "modules": [
+          "documentation_maintenance",
+          "project_docs"
+        ],
+        "read_when": "核对本轮文档修订、业务证据、技术四轴及未验证范围；不是当前全量测试通过证明",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/audit-files-2026-10-04.md",
+        "title": "2026-10-04 文档覆盖与归属台账",
+        "topic": "知识 Wiki",
+        "role": "evidence",
+        "status": "historical",
+        "modules": [
+          "documentation_maintenance",
+          "project_docs"
+        ],
+        "read_when": "123个原Docs文件及项目入口逐项归属与审核覆盖快照；不是长期目录的第二权威",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/catalog.md",
+        "title": "全项目知识与证据目录",
+        "topic": "知识 Wiki",
+        "role": "index",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/claims/adjustment-economic-evidence.md",
+        "title": "复权经济口径：恒等式证据与源码注释冲突",
+        "topic": "知识 Wiki",
+        "role": "evidence",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/claims/causal-budget-32.md",
+        "title": "因果审计：32节点预算不等于全图通过",
+        "topic": "知识 Wiki",
+        "role": "evidence",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/claims/cpp-local-coverage.md",
+        "title": "C++ AOT：局部标量适配不等于全平台迁移",
+        "topic": "知识 Wiki",
+        "role": "evidence",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/claims/niw-frequency.md",
+        "title": "NIW：当前日频252与先验信息量边界",
+        "topic": "知识 Wiki",
+        "role": "evidence",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/claims/portable-current.md",
+        "title": "当前助手：Portable宿主链与旧Harness边界",
+        "topic": "知识 Wiki",
+        "role": "evidence",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/claims/risk-scale-fx.md",
+        "title": "RiskScale：CNY标签不构成来源币种与FX证据",
+        "topic": "知识 Wiki",
+        "role": "evidence",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/navigation/business.md",
+        "title": "业务知识",
+        "topic": "知识 Wiki",
+        "role": "index",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business"
+        ]
+      },
+      {
+        "path": "docs/wiki/navigation/developer.md",
+        "title": "开发知识",
+        "topic": "知识 Wiki",
+        "role": "index",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/sources/project-evidence-baseline.md",
+        "title": "项目证据基线与历史审计范围",
+        "topic": "知识 Wiki",
+        "role": "evidence",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/templates.md",
+        "title": "来源、比较与主张模板",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/business-allocation.md",
+        "title": "目标、长期假设与配置决策怎样分工？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/business-decisions.md",
+        "title": "哪些能力已经接通，关键决定为什么这样做？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/business-evidence.md",
+        "title": "怎样读懂金融结果，并判断证据够不够？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/business-investment.md",
+        "title": "研究定稿之后，真实组合和核算怎样接上？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/business-process.md",
+        "title": "怎样从一个投资目标完成研究并交接？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/business-products.md",
+        "title": "怎样研究产品，并把大类预算落实为产品方案？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/business-purpose.md",
+        "title": "这个平台服务谁，解决什么问题？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/business-regimes.md",
+        "title": "市场状态、历史事件与压力情景如何使用？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/developer-architecture.md",
+        "title": "这个平台怎样分层，哪些能力属于谁？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "developer",
+          "business"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/developer-data-compute.md",
+        "title": "一份数据怎样成为可追溯的研究结果？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "developer",
+          "business"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/developer-decisions.md",
+        "title": "为什么采用这些架构决定，哪些旧设计已经被替代？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "developer",
+          "business"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/developer-delivery.md",
+        "title": "一次开发怎样交付，什么证据才算完成？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/developer-modules.md",
+        "title": "各研究模块怎样交接，前端怎样保持同一业务事实？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "developer",
+          "business"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/developer-operations.md",
+        "title": "怎样启动与部署，哪些门槛必须单独验证？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/topics/research-library.md",
+        "title": "怎样把研报、论文和竞品方案转成可复用的项目知识？",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
+      },
+      {
+        "path": "docs/wiki/workflow.md",
+        "title": "知识库操作手册与验收",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance"
+        ],
+        "read_when": "全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威",
+        "knowledge_domains": [
+          "business",
+          "developer"
+        ]
       }
     ]
   }

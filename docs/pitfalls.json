@@ -1632,7 +1632,18 @@
         "Default worktree path-only Git collection drops the source of staged renames.",
         "Valid GFM plan rows omit edge pipes and bypass checks that require raw leading pipes.",
         "A candidate checker raises SystemExit(0) before completing validation and the launcher reports success without a check report.",
-        "Worktree routing helper initialization can also raise SystemExit(0) outside the Git-candidate wrapper, skipping all checks."
+        "Worktree routing helper initialization can also raise SystemExit(0) outside the Git-candidate wrapper, skipping all checks.",
+        "Knowledge hashes match while readers mistake this for semantic proof or current production/test qualification.",
+        "Obsidian CLI 1.13.7 can print a missing-vault/file error with exit zero; native exit status alone is insufficient.",
+        "A watched rename out of a subtree remains current because Git name-only output omits the source path.",
+        "Whitespace-padded source versions bypass URI/version/content deduplication or persist duplicate logical versions.",
+        "Intake hashes a file after parsing older bytes, accepting an external edit as the replacement baseline and losing that edit.",
+        "Integration substring matches accept a different summary, reviewer or reason as an already persisted audit record; malformed or duplicate blocks can hide this mismatch.",
+        "An intact integration receipt bypasses the expected target hash after external topic edits.",
+        "An initial integration embeds reserved receipt markers or ambiguous field delimiters and writes a block that cannot be retried safely.",
+        "Duplicate feedback bypasses the current target hash and silently accepts an intervening note edit.",
+        "Queue or feedback resolution treats quoted, fenced, imported, malformed, or inline marker text as executable workflow state.",
+        "A claim changes to conflicting or unreviewed evidence after inspection, but a later hash binds those changed bytes to a receipt using the older reviewed metadata."
       ],
       "trigger_actions": [
         "finish a code, config or documentation milestone",
@@ -1643,7 +1654,10 @@
         "scripts/check_documentation.py",
         "scripts/tests/test_documentation.py",
         "docs/governance/documentation.md",
-        "docs/repo_map.json"
+        "docs/repo_map.json",
+        "scripts/knowledge_base.py",
+        "scripts/tests/test_knowledge_base.py",
+        "docs/wiki/workflow.md"
       ],
       "affected_modules": [
         "documentation_maintenance",
@@ -1670,11 +1684,25 @@
         "Use structured name-status diffs for both staged and unstaged worktree changes, retaining both rename paths and separately including untracked paths.",
         "Recognize plan header labels and rows with optional GFM edge pipes while retaining column, state and evidence checks.",
         "Convert SystemExit during candidate checker initialization or main execution into failure, including a zero exit code; verify staged and commit candidates with both entry points.",
-        "Catch SystemExit at the helper import boundary for worktree, staged and commit checks, and remove partially loaded helper modules on failure."
+        "Catch SystemExit at the helper import boundary for worktree, staged and commit checks, and remove partially loaded helper modules on failure.",
+        "Separate recorded result, review coverage, freshness and four evidence axes; propagate stale/uncertain sources and watch whole-tree additions/deletions.",
+        "Use an explicit vault/exact path, verify reported root, inspect both error channels and compare reads with the exact target; never fall back to an active note.",
+        "For evidence watch_globs, parse NUL-delimited name-status changes and retain both rename/copy paths; cover staged and committed moves out of the watched subtree.",
+        "Normalize source-version whitespace once before intake comparison and storage, including comparison with previously recorded padded versions.",
+        "Derive the intake replacement guard from the exact raw bytes parsed into metadata/body, never from a later read; inject an external edit after parsing and require preservation plus failure.",
+        "Integration idempotence must match exactly one bounded existing record and the requested summary/reviewer/reason plus bound claim evidence; preserve historical receipt date/hash, and reject ambiguous or malformed markers without writing.",
+        "Require the exact current target hash before both new integration and idempotent success; use the returned post-write hash for an unchanged retry, and fail on intervening edits.",
+        "Validate the initial rendered receipt and every interpolated field before writing, rejecting reserved integration markers and ambiguous delimiters; reuse the same bounded-record validator for retries.",
+        "Apply current-byte hash guards to duplicate feedback as well as integration, and preserve intervening edits.",
+        "Use one top-level bounded Markdown record parser for queue, integration retries, duplicate feedback and resolution; validate identities/audit fields, reject reserved markers at input boundaries, and surface ambiguous legacy text for review instead of promoting it.",
+        "Validate generated records in the complete candidate note before writing so fences, quoting or heading-like text cannot hide new or existing workflow records.",
+        "Bind claim promotion to the exact inspected claim bytes and recheck that snapshot before write or idempotent success; never combine an old reviewed result with a newer claim hash."
       ],
       "safe_observation_methods": [
         "python3 scripts/check_documentation.py --staged --json",
-        "python3 -m pytest scripts/tests/test_documentation.py -q"
+        "python3 -m pytest scripts/tests/test_documentation.py -q",
+        "python3 scripts/knowledge_base.py check --summary",
+        "python3 -m pytest scripts/tests/test_knowledge_base.py -q"
       ]
     },
     {
