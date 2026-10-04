@@ -1,6 +1,6 @@
 # Production deployment
 
-This application is deployed as one service: FastAPI serves both `/api/*` and
+The base deployment packages the application as one service: FastAPI serves both `/api/*` and
 the built React application. Keep the browser and API on the same public domain
 unless there is a deliberate need for cross-origin access.
 
@@ -8,13 +8,14 @@ unless there is a deliberate need for cross-origin access.
 
 1. Copy `.env.example` to `.env` and set only the values needed by your
    environment.
-2. Build and start the service:
+2. Before building, provide the controlled `data/` build input required by `Dockerfile` (`COPY data ./data`). A clean checkout at the reviewed baseline has no `data/` directory; running the build unchanged in that state fails before runtime storage setup. Follow the [storage](../docs/data/storage.md) and [acquisition](../docs/data/acquisition-protocol.md) contracts to prepare only authorized inputs, and review the build context for private data and credentials. Do not assume the Docker volume supplies a missing build-time directory. This documentation review did not build an image or validate production.
+3. Build and start the service:
 
    ```bash
    docker compose up --build
    ```
 
-3. Confirm `http://localhost:8000/api/health` returns `{"ok": true}` and load
+4. Confirm `http://localhost:8000/api/health` returns `{"ok": true}` and load
    `http://localhost:8000`.
 
 The `fund_data` volume persists ETF data plus any saved asset allocations and
@@ -115,7 +116,7 @@ retains the original request identity when versions differ.
 
 For development, run the independently installed agent on loopback and set
 `VITE_PORTABLE_AGENT_TARGET` before `./start_services.sh start`. That script
-owns only the platform processes; agent lifecycle remains independent.
+owns only the platform processes; agent lifecycle remains independent. The proxy URL alone does not enable authentication: the host identity authority, signing/service credentials and grants described above must be configured through the approved deployment flow. Never substitute demo credentials for production.
 
 The offline integration runner creates temporary business/agent data and a
 local deterministic OpenAI wire endpoint. It never contacts a model provider:

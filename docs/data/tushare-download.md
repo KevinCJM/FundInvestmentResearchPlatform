@@ -323,9 +323,9 @@ flowchart TD
 | `ingested_at` | 本地取得时间，UTC ISO 字符串 |
 | `revision` / `vintage` | 宏观同一自然键的修订序号和本地版本时间 |
 
-## 当前活跃文件的实际 Arrow schema
+## 2026-09-03 历史活跃快照的 Arrow schema
 
-以下 schema 直接读取自当前活跃 Parquet metadata。缩写：`s=string`、`f=double`、`i=int64`、`t=timestamp[ns]`、`n=null`。
+以下 schema 记录于2026-09-03，直接读取自当时活跃 Parquet metadata，本轮未重新读取当前数据。缩写：`s=string`、`f=double`、`i=int64`、`t=timestamp[ns]`、`n=null`。
 
 ### 基础与产品
 
@@ -367,9 +367,9 @@ etf_index.parquet
   base_date:s, bp:f, adj_circle:s
 ```
 
-当前 `trustee`、`exp_return`、场外基金的 `index_code/index_name` 等全空字段被 Arrow 推断为 `null`；后续出现非空值时 schema 会升级，消费代码不能硬编码为永久 null。
+当时 `trustee`、`exp_return`、场外基金的 `index_code/index_name` 等全空字段被 Arrow 推断为 `null`；后续出现非空值时 schema 会升级，消费代码不能硬编码为永久 null。
 
-上述 Arrow schema 是当前活跃快照的真实 metadata，因此尚不包含新代码定义的 `qdii_type`、`qdii_source`。在下一次 ETF/fund info 刷新前，产品 API 会对旧快照按显式名称标记补齐兼容字段；没有显式名称标记的旧 ETF 显示 `待确认`，不会被误报为非 QDII。刷新完成后，Parquet 本身应包含这两个字段，届时需重新审计本节 schema 和数量。
+上述 Arrow schema 是2026-09-03活跃快照的metadata，因此当时尚不包含随后代码定义的 `qdii_type`、`qdii_source`。对缺少这些列的旧快照，产品 API 会按显式名称标记补齐兼容字段；没有显式名称标记的旧 ETF 显示 `待确认`，不会被误报为非 QDII。刷新完成后，Parquet 本身应包含这两个字段，届时需重新审计本节 schema 和数量。
 
 ### 指数目录与行情
 

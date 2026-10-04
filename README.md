@@ -6,7 +6,7 @@
 
 - 了解范围和后续方向：[需求与路线图](docs/product/requirements.md)
 - 开始一次研究：[投前研究](docs/pre-investment/README.md)
-- 查找专业契约：[文档索引](docs/README.md)
+- 查找专业契约：[文档索引](docs/README.md)；知识归属及核验：[Wiki 入口](docs/wiki/README.md)
 - 开发前阅读：[AGENTS.md](AGENTS.md)、[领域语言](docs/product/domain-language.md)
 
 平台不提供基金募集、客户份额登记、法定基金会计或交易下单。研究定稿不等于交易授权或收益保证。
@@ -28,8 +28,8 @@ React + TypeScript + Vite 前端，FastAPI 模块化后端；数值计算使用�
 ### 环境要求
 
 - Python 3.12
-- Node.js 18 或更高版本
-- 本地开发建议使用 `/Users/chenjunming/Desktop/myenv_312/bin/python3.12`
+- Node.js 20 或更高版本（当前锁文件中的 React Router 和 Playwright 要求；Docker 构建也使用 Node 20）
+- 先激活安装了项目依赖的 Python 3.12 环境，确认 `python3 --version` 为 3.12；下文及路由中的 `python3` 均指该受控解释器，不能用系统默认版本代替。开发者已有本机环境可继续使用其原路径，云环境不依赖该绝对路径。
 
 ### 安装依赖
 

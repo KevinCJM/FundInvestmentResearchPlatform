@@ -9,6 +9,7 @@
 - 修改计算：[行情指标中心](indicators/README.md)、[数值规范](governance/numeric-computing.md)、[算子治理](governance/operator-contracts.md)。
 - 修改界面：[前端设计](frontend/README.md)；准备提交：[提交规范](governance/branch-submission-rules.md)及[执行流程](governance/submission-workflow.md)。
 - 任务收尾、更新计划或文档：[文档维护协议](governance/documentation.md)。
+- 知识归属、两类导航与本轮核验：[项目知识 Wiki](wiki/README.md)；原契约、路由和验收记录保持原位置。
 
 ## 完整目录
 
@@ -77,18 +78,22 @@
 | 验证证据 | [工程、指标与界面：验收纪要](verification/engineering.md) | 工程、指标与界面验收证据及适用版本 |
 | 验证证据 | [因子研究：有效历史证据](verification/factors.md) | 因子研究验收及未闭合资格 |
 | 验证证据 | [情景研究：决策与验收纪要](verification/regimes.md) | 情景研究验收、限制与待复验问题 |
-| 研究草稿 | [AI 功能设计](research/ai-functions-design.md) | AI Harness当前实现、数据准入、任务与记忆、页面范围和验证边界；真实模型效果与工程回归分开核对；平台能力目录、意图识别、中央入口与跨页任务交接 |
-| 研究草稿 | [指标中心 × 产品研究：AI 智能体详细设计](research/ai-agent-indicator-product-research-design-2026-09-18.md) | 未采纳研究草稿；实施前重新核对需求、代码和证据 |
+| 研究草稿 | [AI 功能设计](research/ai-functions-design.md) | 迁移前Harness行为与历史验收基线；当前平台装配、业务权威和验证范围读取portable-agent-platform-integration.md |
+| 研究草稿 | [指标中心 × 产品研究：AI 智能体详细设计](research/ai-agent-indicator-product-research-design-2026-09-18.md) | 早期设计稿，整体目标未验收；部分目标后续采用或替代，当前接入读取整体迁移设计，未采用目标保留 |
 | 研究草稿 | [投前研究流程与机构买方投研差距分析](research/pre-investment-institutional-gap-analysis-2026-09-19.md) | 未采纳研究草稿；实施前重新核对需求、代码和证据 |
 | 部署 | [Production deployment](../deploy/README.md) | 部署方式、运行环境与持久化要求 |
 | 指标与数值计算 | [C++ AOT 接入契约](indicators/cpp-aot-contracts.md) | 接入 C++ AOT：错误隔离、数据参数、历史 DSL、结果所有权及双后端门禁 |
 | 验收与证据 | [C++ AOT 契约验收记录](verification/cpp-aot-contracts.md) | 核对 AOT 契约验证的版本、范围、命令及生产迁移边界 |
-| 研究草稿 | [AI 上下文压缩早期设计](research/ai-agent-context-compaction-design-2026-09-20.md) | 回溯早期压缩选择；当前实现及验证以 AI 功能设计为准 |
-| 研究草稿 | [AI Harness 进展检测设计](research/ai-agent-harness-progress-design-2026-09-20.md) | 回溯停滞检测依据；当前门控、任务状态与验收以 AI 功能设计为准 |
-| 研究草稿 | [AI 指标与产品研究早期实现设计](research/ai-agent-indicator-product-research-implementation-design-2026-09-19.md) | 回溯初始实现契约；当前页面范围及接口以统一设计和代码为准 |
-| 研究草稿 | [AI 助手共用架构与接入设计](research/ai-agent-reusable-architecture-design-2026-09-21.md) | 接入公共对话、页面证据及业务适配；配合 AI 功能设计核对已验收范围 |
+| 研究草稿 | [AI 上下文压缩早期设计](research/ai-agent-context-compaction-design-2026-09-20.md) | 回溯早期压缩选择；迁移前验收见AI功能设计，当前平台边界见整体迁移设计，外部框架能力单独核验 |
+| 研究草稿 | [AI Harness 进展检测设计](research/ai-agent-harness-progress-design-2026-09-20.md) | 回溯停滞检测依据；迁移前门控与历史验收，不作为当前外部运行器实现证据 |
+| 研究草稿 | [AI 指标与产品研究早期实现设计](research/ai-agent-indicator-product-research-implementation-design-2026-09-19.md) | 回溯初始实现契约；当前页面范围与平台业务接口读取整体迁移设计和现行代码 |
+| 研究草稿 | [AI 助手共用架构与接入设计](research/ai-agent-reusable-architecture-design-2026-09-21.md) | 迁移前共用架构、CopilotKit及独立原型历史；旧路径不再是当前入口，现行接入读取整体迁移设计 |
 | 研究草稿 | [AI 对话界面设计依据](research/ai-assistant-conversation-ui-design-2026-09-20.md) | 回溯对话交互设计；当前视觉契约以 frontend/README.md 为准 |
 | 独立产品 | [投研平台接入独立智能体：整体迁移设计](research/portable-agent-platform-integration.md) | 独立智能体整体迁移的Dev候选、业务协议、离线验收证据与剩余正式发布/生产切换门槛 |
+| 知识 Wiki | [项目知识 Wiki](wiki/README.md) | 开发/业务两类派生导航与核验入口；原权威文档保持原位置，尚未启用vault/CLI |
+| 知识 Wiki | [Obsidian LLM Wiki 详细设计](wiki/llm-wiki-design.md) | 原位置与Wiki/私有库边界、Hermes权威、双类导航、主张核验及官方CLI待实施方案 |
+| 知识 Wiki | [2026-10-04 全量文档审核报告](wiki/documentation-audit-2026-10-04.md) | 核对本轮文档修订、业务证据、技术四轴及未验证范围；不是当前全量测试通过证明 |
+| 知识 Wiki | [2026-10-04 文档覆盖与归属台账](wiki/audit-files-2026-10-04.md) | 123个原Docs文件及项目入口逐项归属与审核覆盖快照；不是长期目录的第二权威 |
 <!-- DOCUMENT-INDEX:END -->
 
 ## 阅读与维护边界

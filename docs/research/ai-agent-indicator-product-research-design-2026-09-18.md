@@ -2,7 +2,7 @@
 
 > - 日期：2026-09-18（审核修订：编译预览、会话草稿、上下文、确认提交与 UI 动作闭环）
 > - 源码核对基线：`8a513575cda106ebdf433d6ac489b18def983fa1`；下文源码行号对应该基线，实现时须按符号重新核对。
-> - 状态：**设计稿，尚未实现。** 本文描述目标实现与验收方式，不代表任何代码已落地。
+> - 状态：**2026-09-18早期设计稿，整份目标未获整体实现验收。** 部分目标后来被采用、调整或被独立服务设计替代；本文不能证明其全部已完成，也不能解释为所有AI能力至今都未实现。当前接入读[整体迁移设计](portable-agent-platform-integration.md)，未采用目标保留供追溯。
 > - 2026-09-20 Harness 修订：[Harness 无默认上限与无进展检测设计](ai-agent-harness-progress-design-2026-09-20.md)；运行与恢复协议以该文为准；核心链路已实现，自审核与测试见其第 18 节。
 > - 实施级前后端设计：[ai-agent-indicator-product-research-implementation-design-2026-09-19.md](ai-agent-indicator-product-research-implementation-design-2026-09-19.md)。
 > - 范围：指标计算中心（IndicatorStudio / `backend/custom_indicators`）+ 产品研究模块（ProductDetail 等页面 / `backend/services/product_analysis.py`、`backend/research_series` 等）+ AI Harness + 前端对话面板。
