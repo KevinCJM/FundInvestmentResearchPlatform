@@ -11,7 +11,6 @@ from datetime import date
 import fcntl
 import fnmatch
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -19,10 +18,12 @@ import re
 import subprocess
 import sys
 import tempfile
+from types import ModuleType
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 WIKI = 'docs/wiki'
+WIKI_SKILL = '.agents/skills/obsidian-wiki/SKILL.md'
 KINDS = {'claim', 'source', 'topic'}
 DRAFT_KINDS = {'claim', 'source'}
 STATES = {'pending', 'partial', 'reviewed', 'stale'}
@@ -61,12 +62,12 @@ def safe_file(root: Path, relative: str, *, tracked: bool = False) -> Path:
     """Reject absolute/traversing paths, secrets/runtime folders and every symlink component."""
     p = Path(relative)
     if (not relative or not p.parts or p.is_absolute() or '\\' in relative or '..' in p.parts
-            or (any(x.startswith('.') for x in p.parts) and relative != '.gitmodules')):
+            or (any(x.startswith('.') for x in p.parts) and relative not in {'.gitmodules', WIKI_SKILL})):
         raise ValueError(f'unsafe path: {relative}')
     if any(x.casefold() in {'secrets', 'credentials', 'tokens'} for x in p.parts):
         raise ValueError(f'sensitive path rejected: {relative}')
     if p.as_posix() != relative or (p.parts[0] not in {'docs', 'backend', 'frontend', 'scripts', 'deploy', 'skills', 'images'}
-                                   and relative not in {'README.md', 'AGENTS.md'} and relative not in declared_paths(root)):
+                                   and relative not in {'README.md', 'AGENTS.md', WIKI_SKILL} and relative not in declared_paths(root)):
         raise ValueError(f'path outside knowledge/code scope: {relative}')
     if (p.suffix not in {'.md', '.py', '.ts', '.tsx', '.js', '.mjs', '.json', '.yml', '.yaml', '.toml', '.txt',
                          '.png', '.jpg', '.jpeg', '.webp', '.svg', '.html', '.pdf'}
@@ -886,11 +887,13 @@ def inventory(root: Path) -> dict:
     """Reuse the original managed-document definition and Markdown parser."""
     module_name = '_knowledge_documentation_parser'
     if module_name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(module_name, Path(__file__).with_name('check_documentation.py'))
-        module = importlib.util.module_from_spec(spec)
+        source = Path(__file__).with_name('check_documentation.py')
+        module = ModuleType(module_name)
+        module.__file__ = str(source)
         sys.modules[module_name] = module
         try:
-            spec.loader.exec_module(module)
+            # Discovery is read-only even in a fresh checkout: no local .pyc cache.
+            exec(compile(source.read_bytes(), str(source), 'exec'), module.__dict__)
         except BaseException:
             sys.modules.pop(module_name, None)
             raise
@@ -941,7 +944,8 @@ def inventory(root: Path) -> dict:
                                 'role': role, 'incoming': sorted(incoming.get(path, set()))})
     supporting_documents = []
     for path in sorted(candidate.paths):
-        if path.endswith('.md') and not parser.managed(path) and path.startswith(('skills/', 'deploy/')):
+        if (path.endswith('.md') and not parser.managed(path)
+                and (path.startswith(('skills/', 'deploy/')) or path == WIKI_SKILL)):
             try:
                 file = safe_file(root, path)
                 supporting_documents.append({'path': path, 'bytes': file.stat().st_size, 'role': '项目技能/操作说明；从原Hermes读取，不复制规则'})

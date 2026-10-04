@@ -57,6 +57,11 @@
 - Bot 未通过最新提交的审核时不得正常合并。AI 代 Owner 绕过 Bot 审核，必须先给出具体意见、代码/测试依据及拟回复，取得人类针对该 PR、完整 HEAD SHA 和争议项的明确允许，再逐条回复 Bot 说明理由，最后才可合并。普通“帮我合并”不等于绕过授权；新提交或新增争议不能沿用旧许可。此要求由 AI 自觉执行，不做 AI/人类身份的技术区分；细节以提交规范的 Owner 例外流程为准。
 - 按用户已经授权的任务范围执行，不重复询问已授权动作；写文档或修改代码本身不表示已获准提交、推送、合并或修改远端仓库设置。
 
+## 项目 Wiki 执行协议
+- 修改代码、测试、配置或文档前，按下方 Hermes 顺序读取路由，随后完整读取 [项目 Wiki 技能正本](skills/obsidian-wiki/SKILL.md)，查询相关知识并回到必要原文/代码取证。只加载本任务相关流程与证据，不要求整库全文加载。
+- 修改后按实际差异判断知识影响；有影响时同步权威文档与必要派生知识，再执行收尾验收；没有影响时说明具体理由。只读问答不制造笔记或查询日志。
+- 向子智能体交接时，明确技能正本、任务范围、可写路径及相关证据入口；入口文件存在不等于每个客户端会自动加载。发现入口仅指向正本，不维护重复实现或状态。
+
 ## 文档维护与任务收尾
 - 关键里程碑完成、结束含代码/测试/配置/文档变更的任务、或执行已获授权的提交前，必须按[文档维护协议](docs/governance/documentation.md)完成影响核对。
 - 依据本任务实际差异及 AI Hermes 路由定位主题、专业契约、计划和操作说明。行为变化同步更新权威文档；核对后无需修改时说明具体理由。不要机械改日期或每轮新增报告。
@@ -98,7 +103,8 @@ Machine-first routing protocol for downstream agents operating from the current 
 6. `docs/frontend/README.md` before frontend visual, interaction, or asset changes; also `docs/frontend/homepage.md` when the homepage is involved
 7. Domain terminology before business-scope changes: `docs/product/domain-language.md`; numerical and operator contracts before related computation changes
 8. `docs/governance/documentation.md` before documentation maintenance and at task closeout
-9. Routed code, tests, and configs
+9. `skills/obsidian-wiki/SKILL.md` before changes, then only task-relevant Wiki references and original evidence
+10. Routed code, tests, and configs
 
 ## Routing Ownership
 

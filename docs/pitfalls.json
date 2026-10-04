@@ -1616,7 +1616,9 @@
       "risk_codes": [
         "staged_worktree_mismatch",
         "historical_evidence_not_current_proof",
-        "documentation_semantic_drift"
+        "documentation_semantic_drift",
+        "skill_discovery_not_execution",
+        "read_only_workflow_hidden_writes"
       ],
       "symptoms": [
         "Routing coverage passes while a plan or operational instruction still needs semantic review.",
@@ -1643,7 +1645,9 @@
         "An initial integration embeds reserved receipt markers or ambiguous field delimiters and writes a block that cannot be retried safely.",
         "Duplicate feedback bypasses the current target hash and silently accepts an intervening note edit.",
         "Queue or feedback resolution treats quoted, fenced, imported, malformed, or inline marker text as executable workflow state.",
-        "A claim changes to conflicting or unreviewed evidence after inspection, but a later hash binds those changed bytes to a receipt using the older reviewed metadata."
+        "A claim changes to conflicting or unreviewed evidence after inspection, but a later hash binds those changed bytes to a receipt using the older reviewed metadata.",
+        "A skill discovery entry is mistaken for guaranteed loading in every client, or a context candidate list is cited as if the original evidence had been read.",
+        "Upstream query or lint instructions claim read-only operation but append a log, create bytecode, or automatically promote evidence; copied runtime/config creates a competing knowledge state."
       ],
       "trigger_actions": [
         "finish a code, config or documentation milestone",
@@ -1657,7 +1661,10 @@
         "docs/repo_map.json",
         "scripts/knowledge_base.py",
         "scripts/tests/test_knowledge_base.py",
-        "docs/wiki/workflow.md"
+        "docs/wiki/workflow.md",
+        "skills/obsidian-wiki/SKILL.md",
+        ".agents/skills/obsidian-wiki/SKILL.md",
+        "scripts/tests/test_wiki_skill_contract.py"
       ],
       "affected_modules": [
         "documentation_maintenance",
@@ -1696,7 +1703,9 @@
         "Apply current-byte hash guards to duplicate feedback as well as integration, and preserve intervening edits.",
         "Use one top-level bounded Markdown record parser for queue, integration retries, duplicate feedback and resolution; validate identities/audit fields, reject reserved markers at input boundaries, and surface ambiguous legacy text for review instead of promoting it.",
         "Validate generated records in the complete candidate note before writing so fences, quoting or heading-like text cannot hide new or existing workflow records.",
-        "Bind claim promotion to the exact inspected claim bytes and recheck that snapshot before write or idempotent success; never combine an old reviewed result with a newer claim hash."
+        "Bind claim promotion to the exact inspected claim bytes and recheck that snapshot before write or idempotent success; never combine an old reviewed result with a newer claim hash.",
+        "Explicitly read the canonical project Wiki skill, route only relevant references through Hermes, and pass the scoped entry/evidence to subagents; treat context output as discovery until original evidence is read.",
+        "Keep the discovery exception at the exact .agents/skills/obsidian-wiki/SKILL.md path, preserve hidden-path and symlink boundaries, and verify read-only CLI operations by filesystem snapshots. Adapt upstream procedures without their runtime, global config, log writes or automatic promotions."
       ],
       "safe_observation_methods": [
         "python3 scripts/check_documentation.py --staged --json",
