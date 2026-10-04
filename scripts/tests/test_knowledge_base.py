@@ -535,6 +535,84 @@ def test_integration_preserves_concurrent_edit_and_authorities(repo):
     assert 'KB-INTEGRATION' not in (repo / target).read_text()
 
 
+@pytest.mark.parametrize('changed', [
+    {'summary': 'thirty-two-node audit budget'},
+    {'summary': 'Static fixture only'},
+    {'reviewer': 'Other reviewer'},
+    {'reason': 'Different reason'},
+], ids=['summary-substring', 'summary-matches-scope', 'reviewer', 'reason'])
+def test_integration_retry_requires_exact_request_fields(repo, changed):
+    claim, target = card(repo), topic(repo)
+    before = kb.digest(repo / target)
+    fields = {'summary': 'Coverage has an explicit thirty-two-node audit budget.',
+              'reviewer': 'Reviewer', 'reason': 'Relevant result'}
+    kb.integrate(repo, claim, target, **fields, expected=before)
+    recorded = (repo / target).read_bytes()
+    with pytest.raises(ValueError, match='existing integration differs'):
+        kb.integrate(repo, claim, target, **(fields | changed), expected=before)
+    assert (repo / target).read_bytes() == recorded
+
+
+@pytest.mark.parametrize('damage', ['missing-end', 'duplicate-block', 'duplicate-begin', 'duplicate-end'])
+def test_integration_retry_rejects_ambiguous_or_incomplete_blocks(repo, damage):
+    claim, target = card(repo), topic(repo)
+    before = kb.digest(repo / target)
+    kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', before)
+    text = (repo / target).read_text()
+    begin = '<!-- KB-INTEGRATION:niw:BEGIN -->'
+    end = '<!-- KB-INTEGRATION:niw:END -->'
+    if damage == 'missing-end':
+        text = text.replace(end, '')
+    elif damage == 'duplicate-block':
+        text += '\n' + begin + text.split(begin, 1)[1]
+    else:
+        text += '\n' + (begin if damage == 'duplicate-begin' else end) + '\n'
+    (repo / target).write_text(text)
+    recorded = (repo / target).read_bytes()
+    with pytest.raises(ValueError, match='existing integration differs'):
+        kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', before)
+    assert (repo / target).read_bytes() == recorded
+
+
+def test_integration_exact_retry_preserves_original_date_hash_and_multiline_fields(repo, monkeypatch):
+    claim, target = card(repo), topic(repo)
+    real_date = kb.date
+
+    class EarlierDate(real_date):
+        @classmethod
+        def today(cls):
+            return cls(2001, 2, 3)
+
+    before = kb.digest(repo / target)
+    summary = 'First paragraph.\n\nSecond paragraph, with (parentheses) and [brackets].'
+    reviewer, reason = 'Reviewer\nTeam', 'Relevant result\nwith a bounded scope.'
+    monkeypatch.setattr(kb, 'date', EarlierDate)
+    kb.integrate(repo, claim, target, summary, reviewer, reason, before)
+    recorded = (repo / target).read_bytes()
+    monkeypatch.setattr(kb, 'date', real_date)
+    result = kb.integrate(repo, claim, target, ' \n' + summary + '\n ', reviewer, reason, before)
+    assert result['status'] == 'already_integrated'
+    assert (repo / target).read_bytes() == recorded
+
+
+@pytest.mark.parametrize('embedded_in', ['reviewer', 'reason'])
+def test_integration_retry_rejects_ambiguous_review_field_separators(repo, embedded_in):
+    claim, target = card(repo), topic(repo)
+    before = kb.digest(repo / target)
+    today = kb.date.today().isoformat()
+    if embedded_in == 'reason':
+        reviewer, reason = 'Reviewer', 'Reason；日期：2002-03-04；理由：Other reason'
+        retry_reviewer, retry_reason = f'Reviewer；日期：{today}；理由：Reason', 'Other reason'
+    else:
+        reviewer, reason = 'Reviewer；日期：2002-03-04；理由：Other reviewer', 'Reason'
+        retry_reviewer, retry_reason = 'Reviewer', f'Other reviewer；日期：{today}；理由：Reason'
+    kb.integrate(repo, claim, target, 'Bounded', reviewer, reason, before)
+    recorded = (repo / target).read_bytes()
+    with pytest.raises(ValueError, match='existing integration differs'):
+        kb.integrate(repo, claim, target, 'Bounded', retry_reviewer, retry_reason, before)
+    assert (repo / target).read_bytes() == recorded
+
+
 def test_feedback_is_idempotent_and_hash_guarded(repo):
     path = card(repo)
     before = kb.digest(repo / path)

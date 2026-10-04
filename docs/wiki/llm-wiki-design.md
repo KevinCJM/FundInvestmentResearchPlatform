@@ -130,7 +130,7 @@ fingerprint只输出已跟踪证据hash，不改状态；hash用于未提交笔�
 
 integrate仅把已审阅、证据current、无上游待核的claim以有界摘要纳入指定topics文件。必须提供目标、摘要、reviewer、理由及读取时的目标hash。记录scope、版本、claimhash、目标修改前hash，返回修改后hash，并建立依赖。
 
-重复相同整合不重复追加；目标/证据变化或既有块不同则停止。pending/conflict/stale/invalid不能被整合为确定知识。此命令不改原业务契约；正式设计变更仍需授权、diff审阅和原地维护。
+重复相同整合不重复追加：摘要、审阅人、理由及绑定claim证据须在唯一完整块中精确匹配；原日期和写前hash作为历史回执保留。目标/证据变化或既有块不同则停止。pending/conflict/stale/invalid不能被整合为确定知识。此命令不改原业务契约；正式设计变更仍需授权、diff审阅和原地维护。
 
 ### 反馈与修订
 

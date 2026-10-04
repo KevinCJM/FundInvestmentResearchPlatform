@@ -1637,7 +1637,8 @@
         "Obsidian CLI 1.13.7 can print a missing-vault/file error with exit zero; native exit status alone is insufficient.",
         "A watched rename out of a subtree remains current because Git name-only output omits the source path.",
         "Whitespace-padded source versions bypass URI/version/content deduplication or persist duplicate logical versions.",
-        "Intake hashes a file after parsing older bytes, accepting an external edit as the replacement baseline and losing that edit."
+        "Intake hashes a file after parsing older bytes, accepting an external edit as the replacement baseline and losing that edit.",
+        "Integration substring matches accept a different summary, reviewer or reason as an already persisted audit record; malformed or duplicate blocks can hide this mismatch."
       ],
       "trigger_actions": [
         "finish a code, config or documentation milestone",
@@ -1683,7 +1684,8 @@
         "Use an explicit vault/exact path, verify reported root, inspect both error channels and compare reads with the exact target; never fall back to an active note.",
         "For evidence watch_globs, parse NUL-delimited name-status changes and retain both rename/copy paths; cover staged and committed moves out of the watched subtree.",
         "Normalize source-version whitespace once before intake comparison and storage, including comparison with previously recorded padded versions.",
-        "Derive the intake replacement guard from the exact raw bytes parsed into metadata/body, never from a later read; inject an external edit after parsing and require preservation plus failure."
+        "Derive the intake replacement guard from the exact raw bytes parsed into metadata/body, never from a later read; inject an external edit after parsing and require preservation plus failure.",
+        "Integration idempotence must match exactly one bounded existing record and the requested summary/reviewer/reason plus bound claim evidence; preserve historical receipt date/hash, and reject ambiguous or malformed markers without writing."
       ],
       "safe_observation_methods": [
         "python3 scripts/check_documentation.py --staged --json",

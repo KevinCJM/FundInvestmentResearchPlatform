@@ -527,23 +527,34 @@ def integrate(root: Path, claim: str, topic: str, summary: str, reviewer: str,
         if source['needs_review'] or destination['needs_review']:
             raise ValueError('claim/topic needs review; pending, conflicting, stale or invalid evidence cannot be integrated')
         marker = '<!-- KB-INTEGRATION:' + source['metadata']['id'] + ':BEGIN -->'
+        end_marker = '<!-- KB-INTEGRATION:' + source['metadata']['id'] + ':END -->'
         target = safe_file(root, topic)
         meta, body = metadata(target.read_text(encoding='utf-8'))
-        if marker in body:
-            old_block = body.split(marker, 1)[1].split('<!-- KB-INTEGRATION:', 1)[0]
-            if summary.strip() not in old_block or digest(safe_file(root, claim)) not in old_block:
+        relative = os.path.relpath(claim, Path(topic).parent).replace(os.sep, '/')
+        claim_hash = digest(safe_file(root, claim))
+        evidence = (f'\n\n依据：[{source["metadata"]["title"]}]({relative})；范围：'
+                    f'{source["metadata"]["scope"]}\n\n整合审阅：')
+        content = f'\n### 整合记录：{source["metadata"]["title"]}\n\n{summary.strip()}{evidence}{reviewer}；日期：'
+        provenance = (f'；理由：{reason}\n\n记录版本：{source["metadata"]["source_revision"]}；'
+                      f'claim SHA-256：{claim_hash}；目标修改前 SHA-256：')
+        if marker in body or end_marker in body:
+            if body.count(marker) != 1 or body.count(end_marker) != 1:
+                raise ValueError('existing integration differs; review and revise that block explicitly')
+            old_block, closed, _ = body.split(marker, 1)[1].partition(end_marker)
+            # Receipt delimiters embedded in legacy text fields are ambiguous.
+            audit = old_block.partition(evidence)[2]
+            date_separator = r'；日期：\d{4}-\d{2}-\d{2}；理由：'
+            # Only the recorded date and pre-write hash vary across exact retries.
+            pattern = re.escape(content) + r'\d{4}-\d{2}-\d{2}' + re.escape(provenance) + r'[0-9a-f]{64}\n'
+            if (not closed or old_block.count(evidence) != 1
+                    or len(re.findall(date_separator, audit)) != 1
+                    or not re.fullmatch(pattern, old_block)):
                 raise ValueError('existing integration differs; review and revise that block explicitly')
             return {'status': 'already_integrated', 'topic': topic, 'claim': claim}
         before = digest(target)
         if before != expected:
             raise ValueError('concurrent change: re-read the target topic')
-        relative = os.path.relpath(claim, Path(topic).parent).replace(os.sep, '/')
-        claim_hash = digest(safe_file(root, claim))
-        block = (f'\n\n{marker}\n### 整合记录：{source["metadata"]["title"]}\n\n{summary.strip()}\n\n'
-                 f'依据：[{source["metadata"]["title"]}]({relative})；范围：{source["metadata"]["scope"]}\n\n'
-                 f'整合审阅：{reviewer}；日期：{date.today().isoformat()}；理由：{reason}\n\n'
-                 f'记录版本：{source["metadata"]["source_revision"]}；claim SHA-256：{claim_hash}；目标修改前 SHA-256：{before}\n'
-                 f'<!-- KB-INTEGRATION:{source["metadata"]["id"]}:END -->\n')
+        block = f'\n\n{marker}{content}{date.today().isoformat()}{provenance}{before}\n{end_marker}\n'
         meta['dependencies'] = [d for d in meta['dependencies'] if FINGERPRINT.fullmatch(d).group(1) != claim] + [claim + '::sha256:' + claim_hash]
         replace_note(root, topic, encode(meta, body + block), expected)
         return {'status': 'integrated', 'topic': topic, 'claim': claim, 'before_sha256': before,

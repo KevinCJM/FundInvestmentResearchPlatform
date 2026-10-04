@@ -85,7 +85,7 @@ python3 scripts/knowledge_base.py hash docs/wiki/topics/目标主题.md
 python3 scripts/knowledge_base.py integrate docs/wiki/claims/已核主张.md --topic docs/wiki/topics/目标主题.md --summary "有界整合摘要" --reviewer "实际审阅者" --reason "与本主题的关系" --expected-sha256 "当前完整hash"
 ```
 
-只写派生topic，不改原需求/算法。整合保存claim链接、scope、版本、reviewer、理由、目标修改前hash，返回修改后hash并绑定依赖。相同调用幂等；目标被改、依赖过期或既有块不同则停止重读。人工主题引用仍可用，不要求全部改成命令块；改变原权威另需授权和diff审阅。
+只写派生topic，不改原需求/算法。整合保存claim链接、scope、版本、reviewer、理由、目标修改前hash，返回修改后hash并绑定依赖。相同调用幂等：摘要、审阅人、理由及绑定的claim证据须精确一致，保留原日期和写前hash；目标被改、依赖过期或既有块不同则停止重读。人工主题引用仍可用，不要求全部改成命令块；改变原权威另需授权和diff审阅。
 
 ## 反馈修订与复核队列
 
@@ -184,3 +184,5 @@ python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R04 --mode
 2026-10-04核实Codex Bot的三项建议均为真实问题，已作最小修复：watch_globs保留改名/复制两端路径；来源版本在比较和保存前统一首尾空白，并兼容旧记录；intake使用同一次原始字节读取生成解析内容与预期hash，拒绝覆盖读取后发生的编辑。并发保护仍是乐观hash核对，不承诺对不遵守锁的外部编辑器提供原子事务。
 
 新增12项定点回归，前三问题在修复前已有失败反例；修复后190项离线测试通过（113知识库、76文档、1 Portable），含真实R100暂存/已提交改名、C100及特殊文件名、旧版空白来源身份、外部编辑插入和CRLF字节。Portable静态边界检查通过，22条记录保留原2项needs_review，invalid/stale/untracked仍为0。最新远端审核结论与合并状态仍以PR为准。
+
+后续审核核实整合幂等的子串判断会误认不同摘要或审阅记录，现改为唯一BEGIN/END边界内的整块精确比较，拒绝不完整、重复或审阅字段边界多解的块，保持旧块格式与原历史日期/hash。新增11项回归在修复前10失败、1通过，修复后201项通过（124知识库、76文档、1 Portable）；不因此宣称金融冲突或生产状态已通过。
