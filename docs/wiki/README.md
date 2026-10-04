@@ -1,23 +1,38 @@
-# 项目知识 Wiki
+# 项目知识库
 
-这里保存派生导航、解释和核验记录。项目入口、智能体协议、业务/技术契约、Hermes JSON 和原验收记录继续保留原位置；本目录不替代它们。未来以仓库根目录打开 Obsidian，可同时阅读这些原文件；本次仅交付文档，尚未创建或启用 vault/CLI。
+理解资产配置投研与组合管理平台的业务逻辑、系统结构和设计来由，并把新的研究变成有出处、可复核、能持续维护的知识。
 
-## 开发知识
+## 两个入口
 
-- [项目入口](../../README.md)、[智能体协议](../../AGENTS.md)、[完整文档目录](../README.md)
-- [前端设计](../frontend/README.md)、[数据与接口](../data/README.md)、[指标与计算图](../indicators/README.md)
-- [独立助手接入](../research/portable-agent-platform-integration.md)、[部署](../../deploy/README.md)、[文档维护](../governance/documentation.md)
+### [业务知识](navigation/business.md)
 
-## 业务知识
+从“服务谁、解决什么问题”出发，理解产品研究、目标与约束、长期假设、资产配置、产品实施、验证和真实投资管理的完整关系。
 
-- [领域语言](../product/domain-language.md)、[需求与路线图](../product/requirements.md)
-- [投前研究](../pre-investment/README.md)、[产品研究](../product-research/README.md)、[因子研究](../factor-research.md)
-- [市场状态](../regimes/README.md)、[PIT](../data/pit.md)、[配置方法依据](../research/allocation-methods.md)
+### [开发知识](navigation/developer.md)
 
-业务与开发是两种视图，混合文档保存一份。当前范围、草稿、历史结果、已验证部分和实际部署必须分别阅读；无源内容保留为假设，不能因被收入 Wiki 就升级成事实。
+从系统分层、模块职责、数据与计算链出发，理解当前实现、架构决定、前端交互、研发约束和运行交付条件。
 
-## 本次交付
+## 按你现在的问题进入
 
-- [Obsidian LLM Wiki 详细设计](llm-wiki-design.md)：明确原位置、派生 Wiki、独立私有库三条边界
-- [文档审核报告](documentation-audit-2026-10-04.md)：本轮发现、修订、证据及未核范围
-- [123 个原文件与项目入口覆盖台账](audit-files-2026-10-04.md)：按文件给出归属及审核覆盖，不是新的长期文件映射
+- **先了解项目全貌**：[平台定位与边界](topics/business-purpose.md) → [完整投研流程](topics/business-process.md) → [系统怎样分层](topics/developer-architecture.md)
+- **开展一次资产配置研究**：[目标与配置对象](topics/business-allocation.md) → [产品研究与实施](topics/business-products.md) → [金融口径和证据资格](topics/business-evidence.md)
+- **理解市场状态和风险研究**：[状态、历史事件与情景](topics/business-regimes.md) → [数据生命周期与计算](topics/developer-data-compute.md)
+- **判断研究以后还缺什么**：[真实组合、运营与核算](topics/business-investment.md) → [运行与生产门槛](topics/developer-operations.md)
+- **回溯为什么这样设计**：[业务决定与当前能力](topics/business-decisions.md) · [技术决定与历史演进](topics/developer-decisions.md)
+- **着手开发或修改模块**：[模块与前端交接](topics/developer-modules.md) → [研发、验证与交付](topics/developer-delivery.md)
+- **加入研报、论文或竞品研究**：[研究资料怎样变成知识](topics/research-library.md) → [来源与比较模板](templates.md) → [完整操作手册](workflow.md)
+
+## 找全原文、证据和状态
+
+[全项目知识与附档目录](catalog.md)覆盖所有受管文档、Hermes模块及相关图片、原型、JSON和benchmark材料；[原文档索引](../README.md)继续作为原项目入口。目录中的active是文档生命周期，不能读作功能已交付。
+
+主题页是有源解释，原需求、专业契约、代码和验收仍在原处。具体风险、反例与核验卡放在各主题的证据层；历史记录、未采纳草稿和未知项均保留身份，不组成另一套当前设计。
+
+## 检索与维护
+
+- 在Obsidian全文搜索关键词，从主题回原文；反向链接查看某项证据被哪里使用
+- AI问答按[取证协议](workflow.md#ai问答与按需取证)区分全局、模块、历史原因和外部对照，只取必要材料
+- 新来源经入库去重→未核草稿→证据审阅→主题整合；更正经反馈→复核→修订，步骤和命令见[运行手册](workflow.md)
+- 用check/queue检查过期依赖、冲突、待核及未整合材料；hash未变不证明事实正确，历史测试不代表现在重跑
+
+知识文件随Git共享，机器配置独立；云端和本机都以各自项目根打开vault。完整方案和交付范围见[设计](llm-wiki-design.md)，两端实际验收分别记录。

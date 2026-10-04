@@ -90,10 +90,37 @@
 | 研究草稿 | [AI 助手共用架构与接入设计](research/ai-agent-reusable-architecture-design-2026-09-21.md) | 迁移前共用架构、CopilotKit及独立原型历史；旧路径不再是当前入口，现行接入读取整体迁移设计 |
 | 研究草稿 | [AI 对话界面设计依据](research/ai-assistant-conversation-ui-design-2026-09-20.md) | 回溯对话交互设计；当前视觉契约以 frontend/README.md 为准 |
 | 独立产品 | [投研平台接入独立智能体：整体迁移设计](research/portable-agent-platform-integration.md) | 独立智能体整体迁移的Dev候选、业务协议、离线验收证据与剩余正式发布/生产切换门槛 |
-| 知识 Wiki | [项目知识 Wiki](wiki/README.md) | 开发/业务两类派生导航与核验入口；原权威文档保持原位置，尚未启用vault/CLI |
-| 知识 Wiki | [Obsidian LLM Wiki 详细设计](wiki/llm-wiki-design.md) | 原位置与Wiki/私有库边界、Hermes权威、双类导航、主张核验及官方CLI待实施方案 |
+| 知识 Wiki | [项目知识 Wiki](wiki/README.md) | 项目全景主页：业务/开发两类高层主题、完整流程与证据入口 |
+| 知识 Wiki | [Obsidian LLM Wiki 详细设计](wiki/llm-wiki-design.md) | 完整知识体系、来源闭环、可信度/增量/并发、CLI与跨机器设计 |
 | 知识 Wiki | [2026-10-04 全量文档审核报告](wiki/documentation-audit-2026-10-04.md) | 核对本轮文档修订、业务证据、技术四轴及未验证范围；不是当前全量测试通过证明 |
 | 知识 Wiki | [2026-10-04 文档覆盖与归属台账](wiki/audit-files-2026-10-04.md) | 123个原Docs文件及项目入口逐项归属与审核覆盖快照；不是长期目录的第二权威 |
+| 知识 Wiki | [全项目知识与证据目录](wiki/catalog.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [复权经济口径：恒等式证据与源码注释冲突](wiki/claims/adjustment-economic-evidence.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [因果审计：32节点预算不等于全图通过](wiki/claims/causal-budget-32.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [C++ AOT：局部标量适配不等于全平台迁移](wiki/claims/cpp-local-coverage.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [NIW：当前日频252与先验信息量边界](wiki/claims/niw-frequency.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [当前助手：Portable宿主链与旧Harness边界](wiki/claims/portable-current.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [RiskScale：CNY标签不构成来源币种与FX证据](wiki/claims/risk-scale-fx.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [业务知识](wiki/navigation/business.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [开发知识](wiki/navigation/developer.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [项目证据基线与历史审计范围](wiki/sources/project-evidence-baseline.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [来源、比较与主张模板](wiki/templates.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [目标、长期假设与配置决策怎样分工？](wiki/topics/business-allocation.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [哪些能力已经接通，关键决定为什么这样做？](wiki/topics/business-decisions.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [怎样读懂金融结果，并判断证据够不够？](wiki/topics/business-evidence.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [研究定稿之后，真实组合和核算怎样接上？](wiki/topics/business-investment.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [怎样从一个投资目标完成研究并交接？](wiki/topics/business-process.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [怎样研究产品，并把大类预算落实为产品方案？](wiki/topics/business-products.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [这个平台服务谁，解决什么问题？](wiki/topics/business-purpose.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [市场状态、历史事件与压力情景如何使用？](wiki/topics/business-regimes.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [这个平台怎样分层，哪些能力属于谁？](wiki/topics/developer-architecture.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [一份数据怎样成为可追溯的研究结果？](wiki/topics/developer-data-compute.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [为什么采用这些架构决定，哪些旧设计已经被替代？](wiki/topics/developer-decisions.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [一次开发怎样交付，什么证据才算完成？](wiki/topics/developer-delivery.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [各研究模块怎样交接，前端怎样保持同一业务事实？](wiki/topics/developer-modules.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [怎样启动与部署，哪些门槛必须单独验证？](wiki/topics/developer-operations.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [怎样把研报、论文和竞品方案转成可复用的项目知识？](wiki/topics/research-library.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
+| 知识 Wiki | [知识库操作手册与验收](wiki/workflow.md) | 全项目有源主题/来源/证据与操作；先看scope、版本和边界，再回原权威 |
 <!-- DOCUMENT-INDEX:END -->
 
 ## 阅读与维护边界

@@ -185,7 +185,13 @@
         "check_documentation",
         "documentation lifecycle",
         "documentation index",
-        "文档同步"
+        "文档同步",
+        "Obsidian",
+        "知识库",
+        "第二大脑",
+        "主张核验",
+        "knowledge_base",
+        "Wiki"
       ],
       "negative_keywords": [],
       "route_priority": 104,

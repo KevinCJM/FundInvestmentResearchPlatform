@@ -1632,7 +1632,9 @@
         "Default worktree path-only Git collection drops the source of staged renames.",
         "Valid GFM plan rows omit edge pipes and bypass checks that require raw leading pipes.",
         "A candidate checker raises SystemExit(0) before completing validation and the launcher reports success without a check report.",
-        "Worktree routing helper initialization can also raise SystemExit(0) outside the Git-candidate wrapper, skipping all checks."
+        "Worktree routing helper initialization can also raise SystemExit(0) outside the Git-candidate wrapper, skipping all checks.",
+        "Knowledge hashes match while readers mistake this for semantic proof or current production/test qualification.",
+        "Obsidian CLI 1.13.7 can print a missing-vault/file error with exit zero; native exit status alone is insufficient."
       ],
       "trigger_actions": [
         "finish a code, config or documentation milestone",
@@ -1643,7 +1645,10 @@
         "scripts/check_documentation.py",
         "scripts/tests/test_documentation.py",
         "docs/governance/documentation.md",
-        "docs/repo_map.json"
+        "docs/repo_map.json",
+        "scripts/knowledge_base.py",
+        "scripts/tests/test_knowledge_base.py",
+        "docs/wiki/workflow.md"
       ],
       "affected_modules": [
         "documentation_maintenance",
@@ -1670,11 +1675,15 @@
         "Use structured name-status diffs for both staged and unstaged worktree changes, retaining both rename paths and separately including untracked paths.",
         "Recognize plan header labels and rows with optional GFM edge pipes while retaining column, state and evidence checks.",
         "Convert SystemExit during candidate checker initialization or main execution into failure, including a zero exit code; verify staged and commit candidates with both entry points.",
-        "Catch SystemExit at the helper import boundary for worktree, staged and commit checks, and remove partially loaded helper modules on failure."
+        "Catch SystemExit at the helper import boundary for worktree, staged and commit checks, and remove partially loaded helper modules on failure.",
+        "Separate recorded result, review coverage, freshness and four evidence axes; propagate stale/uncertain sources and watch whole-tree additions/deletions.",
+        "Use an explicit vault/exact path, verify reported root, inspect both error channels and compare reads with the exact target; never fall back to an active note."
       ],
       "safe_observation_methods": [
         "python3 scripts/check_documentation.py --staged --json",
-        "python3 -m pytest scripts/tests/test_documentation.py -q"
+        "python3 -m pytest scripts/tests/test_documentation.py -q",
+        "python3 scripts/knowledge_base.py check --summary",
+        "python3 -m pytest scripts/tests/test_knowledge_base.py -q"
       ]
     },
     {

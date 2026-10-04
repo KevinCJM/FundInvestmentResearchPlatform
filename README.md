@@ -11,6 +11,23 @@
 
 平台不提供基金募集、客户份额登记、法定基金会计或交易下单。研究定稿不等于交易授权或收益保证。
 
+## 项目知识库与 Obsidian
+
+项目 Wiki 支持通过 Obsidian 管理和浏览，入口是 **[项目知识库](docs/wiki/README.md)**，按[业务知识](docs/wiki/navigation/business.md)和[开发知识](docs/wiki/navigation/developer.md)组织。主题页解释项目全貌、模块关系与设计理由，并链接原契约、代码和证据；完整操作见[知识库手册](docs/wiki/workflow.md)。
+
+协作者可在 Obsidian 选择 **Open folder as vault**，打开本仓库根目录，再打开 `docs/wiki/README.md`。不需要移动或复制文档；未安装 Obsidian 时仍可直接阅读这些 Markdown。
+
+辅助自己的 Vibe Coding 时，先按 [AGENTS](AGENTS.md) 和 Hermes 路由确认任务范围，再从主题/检索结果读取原文，给 AI 提供必要段落、来源路径、版本和未验证边界。Obsidian 不会自动把整个知识库注入任意 AI 客户端；也不能把历史测试、草稿或 `current` 指纹状态当作当前实现/生产通过。
+
+```bash
+# 在已满足项目 Python 3.12 要求的仓库根执行
+python3 scripts/knowledge_base.py search "计算" --domain developer --limit 5
+python3 scripts/knowledge_base.py context "配置" --intent overview --domain business
+python3 scripts/knowledge_base.py check --summary
+```
+
+知识文件由 Git 共享，各机 `.obsidian/` 配置、工作区、缓存和 CLI 注册独立且不提交。官方 Obsidian CLI 需在本机单独启用并验证目标 vault；同步前保护本地改动，凭据、私人原件和受限资料不进入项目 Wiki。
+
 ## 结构与运行
 
 React + TypeScript + Vite 前端，FastAPI 模块化后端；数值计算使用启动预热的 Numba NJIT。研究输入以本地 Parquet、版本化 JSON 和不可变运行制品为主。`backend/app.py` 是 API 入口，`frontend/src/app/processRegistry.ts` 管理业务流程与能力状态；生产构建由后端同源托管。

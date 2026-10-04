@@ -9,6 +9,7 @@
 - `governance/` 保存开发、计算、文档及提交规范；`research/` 保存方法依据和明确标为草稿的研究；`verification/` 按主题保留关键证据、决定及未解决问题。
 - 当前功能以源码、测试及实际运行证据核实；文档描述不能代替执行事实。业务要求与授权也不能因实现偏离而被自动改写。核对时分别记录批准目标、当前实现、已验证范围和实际部署，不能以最新修改日期推定哪份设计已获采纳。
 - `docs/wiki/` 仅保存新派生导航、术语、来源摘要、跨文档关联及核验记录；原入口、契约、Hermes JSON 和 verification 保留原位置。Obsidian 可展示这些原文件，但不成为另一权威来源。敏感、受限版权或私人研究原件放在仓库外独立私有库，默认不公开、不复制进项目 Wiki。具体方案见 [LLM Wiki 设计](../wiki/llm-wiki-design.md)。
+- 派生知识的来源入库、按需检索和复核使用 [知识库运行手册](../wiki/workflow.md)。改动已有核验卡的依赖后，运行 `python3 scripts/knowledge_base.py check`，保留失效/冲突与四轴限制；不能自动刷新指纹制造“已复核”。这个检查不改变原契约权威或提交授权。
 - 全文阅读、主张核验、数学复算、代码静态核对、实际测试及部署观察分别说明覆盖；未核内容保留假设/待核状态，不因纳入索引而自动放行。历史审核台账是带版本的快照，不替代 repo_map 的长期目录。
 - 文档角色、模块归属和读取场景只登记在 `docs/repo_map.json` 的 `documentation.documents`。模块代码/测试路径仍由同一文件的 modules 维护，任务匹配在 task_routes，坑点事实在 pitfalls。不要另建一套文件映射。
 - 索引表由目录元数据生成，修改目录后运行 `python3 scripts/check_documentation.py --print-index`，仅替换索引的标记区；其余导航说明手工维护。不要在索引复制算法、回归命令或实施状态。
@@ -68,6 +69,9 @@ python3 scripts/check_documentation.py --staged --json
 python3 scripts/check_documentation.py --base-ref origin/Dev --head-ref HEAD --json
 # 检查工具自身的离线回归
 python3 -m pytest scripts/tests/test_documentation.py -q
+# 核验卡依赖与知识工作流；current不是语义/生产通过
+python3 scripts/knowledge_base.py check
+python3 -m pytest scripts/tests/test_knowledge_base.py -q
 ```
 
 报告包含当前候选 fingerprint、受影响文档和触发路径。删除或迁移的受管文档即使已从目录移除，也保留旧路径作为 `role=deleted` 的审核项；须核对替代契约、路由和源码引用，不能靠删除目录项跳过审核。该值只用于影响报告，不是目录角色。每个审核项需人工或智能体审核并给出 `updated / reviewed_no_change / needs_review`。不要仅改日期或随意改字满足检查。
