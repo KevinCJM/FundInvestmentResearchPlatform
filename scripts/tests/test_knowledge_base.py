@@ -229,6 +229,50 @@ def test_tree_watch_detects_new_files_without_reading_them(repo):
     assert kb.search(repo, 'NIW')[0]['needs_review']
 
 
+@pytest.mark.parametrize('committed', [False, True], ids=['staged', 'committed'])
+@pytest.mark.parametrize('watched_path', ['backend/only.py', 'shared/only.py'])
+def test_tree_watch_preserves_both_rename_paths(repo, committed, watched_path):
+    (repo / 'backend').mkdir()
+    (repo / 'backend/only.py').write_text('value = 1\n')
+    kb.git(repo, 'add', 'backend/only.py')
+    kb.git(repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+           'commit', '-qm', 'source before rename')
+    path = card(repo)
+    meta, body = kb.metadata((repo / path).read_text())
+    meta['watch_globs'] = [str(Path(watched_path).parent) + '/**']
+    (repo / path).write_text(kb.encode(meta, body))
+    (repo / 'shared').mkdir()
+    kb.git(repo, 'mv', 'backend/only.py', 'shared/only.py')
+    if committed:
+        kb.git(repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+               'commit', '-qm', 'move source outside watched tree')
+    assert kb.git(repo, 'diff', '--name-status', '-z', meta['source_revision'], '--') == (
+        'R100\0backend/only.py\0shared/only.py\0')
+    record = kb.inspect(repo)['records'][0]
+    assert record['freshness'] == 'stale'
+    assert record['changed_watch_paths'] == [watched_path]
+
+
+def test_tree_watch_parses_copy_status_and_nul_delimited_paths(repo, monkeypatch):
+    path = card(repo)
+    meta, body = kb.metadata((repo / path).read_text())
+    meta['watch_globs'] = ['backend/**', 'shared/**']
+    (repo / path).write_text(kb.encode(meta, body))
+    run_git = kb.git
+
+    def copy_diff(root, *args):
+        if args[0] == 'diff':
+            assert '--name-status' in args and '-z' in args
+            return 'C100\0backend/source\tname\n.py\0shared/copy name.py\0M\0backend/changed.py\0'
+        return run_git(root, *args)
+
+    monkeypatch.setattr(kb, 'git', copy_diff)
+    record = kb.inspect(repo)['records'][0]
+    assert record['freshness'] == 'stale'
+    assert record['changed_watch_paths'] == [
+        'backend/changed.py', 'backend/source\tname\n.py', 'shared/copy name.py']
+
+
 def test_bad_tree_watch_baseline_fails_closed(repo):
     path = card(repo)
     meta, body = kb.metadata((repo / path).read_text())
@@ -376,6 +420,62 @@ def test_same_source_version_different_content_never_overwrites(repo):
     with pytest.raises(ValueError, match='different text'):
         ingest(repo, 'another-slug', summary='Changed excerpt')
     assert (repo / first['path']).read_bytes() == before
+
+
+def test_intake_normalizes_version_in_metadata_and_body(repo):
+    first = ingest(repo, version=' \tv1\n ')
+    meta, body = kb.metadata((repo / first['path']).read_text())
+    assert meta['source_version'] == 'v1'
+    assert '来源版本：v1\n\n以下是获准记录的摘要' in body
+
+
+@pytest.mark.parametrize('existing_version', ['v1', ' \tv1\n '], ids=['canonical', 'legacy-padded'])
+@pytest.mark.parametrize('incoming_version', ['v1', ' \tv1\n '], ids=['canonical', 'padded'])
+def test_intake_version_whitespace_cannot_bypass_identity(repo, existing_version, incoming_version):
+    first = ingest(repo, version='v1')
+    target = repo / first['path']
+    meta, body = kb.metadata(target.read_text())
+    meta['source_version'] = existing_version
+    target.write_text(kb.encode(meta, body))
+    before = target.read_bytes()
+    same = ingest(repo, 'another-slug', version=incoming_version)
+    assert same['status'] == 'duplicate' and same['path'] == first['path']
+    with pytest.raises(ValueError, match='different text'):
+        ingest(repo, 'changed-slug', version=incoming_version, summary='Changed excerpt')
+    assert target.read_bytes() == before
+    assert kb.note_paths(repo) == [first['path']]
+
+
+def test_intake_preserves_edit_after_draft_read(repo, monkeypatch):
+    parse = kb.metadata
+    target = repo / 'docs/wiki/sources/source-a.md'
+    edited_bytes = None
+
+    def edit_after_parse(text):
+        nonlocal edited_bytes
+        result = parse(text)
+        if target.exists() and edited_bytes is None:
+            edited_bytes = target.read_bytes() + b'\nExternal editor note.\n'
+            target.write_bytes(edited_bytes)
+        return result
+
+    monkeypatch.setattr(kb, 'metadata', edit_after_parse)
+    with pytest.raises(ValueError, match='concurrent change'):
+        ingest(repo)
+    assert target.read_bytes() == edited_bytes
+
+
+def test_intake_expected_hash_uses_exact_draft_bytes(repo, monkeypatch):
+    create = kb.draft
+
+    def crlf_draft(*args, **kwargs):
+        path = create(*args, **kwargs)
+        target = repo / path
+        target.write_bytes(target.read_bytes().replace(b'\n', b'\r\n'))
+        return path
+
+    monkeypatch.setattr(kb, 'draft', crlf_draft)
+    assert ingest(repo)['created']
 
 
 @pytest.mark.parametrize('uri', ['https://name:password@example.invalid/a', 'https://example.invalid/a?token=x', 'https://example.invalid/?X-Amz-Signature=x', 'file:///private/account.pdf', 'private:/path/to/account', 'https://example.invalid/\nsecret'])

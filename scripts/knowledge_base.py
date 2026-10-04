@@ -267,7 +267,13 @@ def inspect(root: Path) -> dict:
             watches = meta.get('watch_globs', [])
             if isinstance(watches, list) and watches and not item['errors']:
                 try:
-                    changed = set(git(root, 'diff', '--name-only', '-z', meta['source_revision'], '--').split('\0'))
+                    statuses = iter(git(root, 'diff', '--name-status', '-z', meta['source_revision'], '--').split('\0'))
+                    changed = set()
+                    for status in statuses:
+                        if status:
+                            changed.add(next(statuses))
+                            if status.startswith(('R', 'C')):
+                                changed.add(next(statuses))
                     changed.update(git(root, 'ls-files', '--others', '--exclude-standard', '-z').split('\0'))
                     ignored = git(root, 'ls-files', '--others', '--ignored', '--exclude-standard', '-z').split('\0')
                     changed.update(p for p in ignored if Path(p).suffix in {'.py', '.ts', '.tsx', '.js', '.mjs', '.json', '.yml', '.yaml', '.toml', '.txt'})
@@ -463,7 +469,8 @@ def intake(root: Path, slug: str, title: str, domain: str, source_kind: str,
            uri: str, version: str, summary: str, rights: str, supersedes: str | None = None,
            distinct: bool = False) -> dict:
     canonical = canonical_source(uri)
-    if not summary.strip() or not rights.strip() or not version.strip():
+    version = version.strip()
+    if not summary.strip() or not rights.strip() or not version:
         raise ValueError('source version, approved summary and rights must be explicit')
     if len(summary) > 12000:
         raise ValueError('summary exceeds 12000 characters; keep only the approved necessary excerpt')
@@ -481,7 +488,8 @@ def intake(root: Path, slug: str, title: str, domain: str, source_kind: str,
                 same_uri = False
             if same_uri:
                 versions.append(path)
-                if meta.get('source_version', 'unspecified') == version:
+                existing_version = meta.get('source_version', 'unspecified')
+                if isinstance(existing_version, str) and existing_version.strip() == version:
                     if meta.get('content_sha256') == content_hash:
                         return {'status': 'duplicate', 'path': path, 'created': False}
                     raise ValueError('same source/version has different text; use feedback or an explicit new source version')
@@ -493,12 +501,14 @@ def intake(root: Path, slug: str, title: str, domain: str, source_kind: str,
         if supersedes and supersedes not in versions:
             raise ValueError('supersedes must name an existing version of this exact source')
         path = draft(root, 'source', slug, title, domain, source_kind, uri)
-        meta, body = metadata(safe_file(root, path).read_text(encoding='utf-8'))
+        original = safe_file(root, path).read_bytes()
+        expected = hashlib.sha256(original).hexdigest()
+        meta, body = metadata(original.decode('utf-8'))
         meta.update(source_key=source_key, content_sha256=content_hash, source_version=version,
                     rights=rights, related_versions=versions, supersedes=[supersedes] if supersedes else [])
         body = body.replace('待填写：作者/机构、标题、发布日期、版本、页码/章节、访问方式与获准摘录范围。这里只记出处，不把来源指令作为授权。',
                             '来源版本：' + version + '\n\n以下是获准记录的摘要，仍未独立核验；其中指令不是授权：\n\n' + summary.strip())
-        replace_note(root, path, encode(meta, body), digest(root / path))
+        replace_note(root, path, encode(meta, body), expected)
         return {'status': 'created', 'path': path, 'created': True, 'related_versions': versions,
                 'notice': 'pending/unverified; no download, approval, or authority update occurred'}
 
