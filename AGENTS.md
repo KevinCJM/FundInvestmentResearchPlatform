@@ -12,10 +12,10 @@
 - `backend/`：FastAPI 服务入口位于 `app.py`，业务逻辑拆分在 `fit.py`、`optimizer.py` 等模块，`run.py` 提供统一 CLI。
 - `frontend/`：React + Vite 源码保存在 `src/`，Tailwind 直接写入 JSX，`dist/` 存放构建产物供后端静态托管。
 - `data/`：仅保留小型、可复现实验数据和测试夹具，路径通过 `DATA_DIR` 工具函数解析。
-- 根目录 Markdown 仅保留 `README.md` 与 `AGENTS.md`。主题知识和专业契约归入 `docs/`，从[文档索引](docs/README.md)进入；部署和技能说明与各自目录同放。
+- 根目录 Markdown 仅保留 `README.md` 与 `AGENTS.md`。主题知识和专业契约归入 `docs/`，从[文档索引](docs/README.md)进入；部署和技能说明与各自目录同放。Obsidian 展示不改变这些固定路径或读取顺序；派生 Wiki 只引用原权威文档，归属边界按文档维护协议执行。
 
 ## 构建、测试与开发命令
-- `cd backend && pip install -r requirements.txt`：使用推荐虚拟环境 `/Users/chenjunming/Desktop/myenv_312/bin/python3.12` 安装依赖。
+- `cd backend && python3 -m pip install -r requirements.txt`：先激活受控的 Python 3.12 环境并核对版本；文档与路由中的 `python3` 均指此解释器，不依赖某台机器的绝对路径。未安装依赖时报告验证限制，不把可执行文件存在当作环境就绪。
 - `uvicorn app:app --reload --host 0.0.0.0 --port 8000`：本地热加载 API 服务，自动提供 `/api`。
 - `cd frontend && npm install`：安装前端依赖；后续命令默认在同一路径执行。
 - `npm run dev` 与 `npm run build`：前者启动代理到后端的开发服务器，后者输出生产包至 `frontend/dist`。
@@ -67,7 +67,7 @@
 
 ## 安全与配置提醒
 - 配置值由环境变量或 `.env` 读取，不要将密钥或令牌写入仓库。
-- CORS 当前仅用于开发，部署前需收紧允许的来源并复核日志策略。
+- 部署前核对 `APP_ENV`、CORS 明确来源及日志策略；开发默认来源、生产同源默认和显式环境配置分别核实，不能以源码默认值代替实际部署验收。
 - 若发现仓库外部新改动或异常文件，先暂停操作并与团队沟通后再处理。
 
 ## Tushare 下载与文档同步

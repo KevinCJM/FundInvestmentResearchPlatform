@@ -31,9 +31,9 @@
 | FR5 | 不可变运行 | 锁定方案版本、因子版本、原始输入快照、数据指纹、计算版本、日期口径 |
 | FR6 | 发布与监控 | 从成功运行发布研究版本；可停用；覆盖、失效日期及最新运行相对发布的变化可检查 |
 | FR7 | 产品池 | 选定发布与产品池执行入池；保存发布/运行标识、分数和排名，保留人工审核 |
-| FR8 | 全流程引用 | 产品研究及投前、投后页面可查看发布证据，显式绑定研究上下文；持仓权重可用于加权因子画像 |
+| FR8 | 已有引用与后端证据能力 | 全局页面新增绑定面板已于2026-09-21移除；独立因子中心保留已登记引用的查看，后端引用/画像能力不等于当前各页均有绑定入口 |
 | FR9 | 数据能力限制 | 缺失 NAV/公告日、市场币种不匹配、未预热、空截面、无有效标签均返回可操作错误 |
-| FR10 | 真实因子套件 | 使用当前本地数据创建三因子研究方案，运行并保存结果与研究发布；报告真实样本外表现 |
+| FR10 | 历史真实因子实验 | 2026-09-06记录曾用当时本地数据创建、运行和发布三因子方案；结果及限制见验收纪要，本轮未重跑原数据 |
 
 ## 信息架构与交互
 
@@ -95,7 +95,9 @@ FF3：产品超额收益 = 截距 + βMKT_RF + βSMB + βHML + 残差，RF 来�
 
 ## 投研全流程落点
 
-| 环节 | 本版结合方式 | 决策边界 |
+下表保留业务承接关系与历史结合方式。2026-09-21已移除各投研页面的全局“参考：因子证据”面板和新增绑定入口；不能用本表宣称当前所有页面仍可绑定发布。独立因子中心、后端能力和已有引用的只读查看保留，具体去除决定见[工程纪要](verification/engineering.md)。
+
+| 环节 | 业务关系/历史结合方式 | 决策边界 |
 | --- | --- | --- |
 | 产品研究/评价 | 发布版本的产品得分、因子贡献和数据日期 | 评价辅助证据 |
 | 产品池 | 因子发布适配 EvaluationPlanGateway，Top N 导入待审核，人工批准后发布池版本 | 不越过准入与禁用规则 |
@@ -120,7 +122,7 @@ FF3：产品超额收益 = 截距 + βMKT_RF + βSMB + βHML + 残差，RF 来�
 - GET/POST /bindings；POST /releases/{id}/portfolio-profile。
 - 产品池使用既有 attach_evaluation_plan API，以 factor-release- 前缀分派到只读适配器。
 
-新增 backend/factor_research/{contracts,catalog,data,numba_kernels,repository,service}.py 和 services/factor_research_routes.py；前端 FactorResearchCenter、factorResearch service、FactorEvidencePanel。引用与计算分层，避免在已有巨型指标页面堆代码。
+新增 backend/factor_research/{contracts,catalog,data,numba_kernels,repository,service}.py 和 services/factor_research_routes.py；前端当前保留 FactorResearchCenter 和 factorResearch service；原 FactorEvidencePanel 已移除，不列为当前入口。引用与计算分层，避免在已有巨型指标页面堆代码。
 
 ## 需求与概念
 

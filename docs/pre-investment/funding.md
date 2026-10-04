@@ -381,3 +381,17 @@ V_end = max(0, V_available - required_payment)
 选优与验证使用不同随机流，保留 seed、路径数、候选数量和统计区间；预算不足显式失败，不自动缩小模拟规模。模式 B 必须逐源验证，模式 A 按融合矩的声明语义验证。
 
 历史修复与验收见[配置验收纪要](../verification/allocation.md)，定稿绑定见[研究包](implementation.md)。原生情景／Markov、真实交收容量及未来基金持有期费率仍列为待扩展或未验证。
+
+## 来源编号与追溯
+
+以下恢复本页沿用的来源编号，映射取自整理前提交 `a9dd01bd143e7634a1a6436d69be8d25f2744f85` 中原综合设计的第22章，并非猜测新增出处。恢复引用只解决来源可定位，不代表每篇来源全文或本页所有推论本轮均已复验；逐项核验范围见[2026-10-04审核报告](../wiki/documentation-audit-2026-10-04.md)。
+
+- [Wilson 1927：Probable Inference, the Law of Succession, and Statistical Inference][R7]
+- [Rockafellar/Uryasev 2000：Optimization of Conditional Value-at-Risk][R8]
+- [Hoeffding 1963：Probability Inequalities for Sums of Bounded Random Variables][R13]
+- [CFA Institute：Overview of Private Wealth Management（2026）][R15]
+
+[R7]: https://www.jstor.org/stable/2276774
+[R8]: https://www.risk.net/journal-risk/2161159/optimization-conditional-value-risk
+[R13]: https://www.tandfonline.com/doi/abs/10.1080/01621459.1963.10500830
+[R15]: https://www.cfainstitute.org/insights/professional-learning/refresher-readings/2026/overview-private-wealth-management

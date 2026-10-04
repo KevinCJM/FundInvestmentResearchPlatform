@@ -3,9 +3,9 @@
 ## 0. 一句话
 
 PIT 封版管住了**能看到哪些数据**；本模块管住**公式有没有偷看**。两者正交，缺一不可：
-一个用了 `shift(-1)` 的公式，跑在最严格的 PIT 封版下，依然是错的。
+一个把未来值用于当时决策的 `shift(-1)` 公式，不能因数据已PIT封版而获得时点资格。明确事后标签或评估目标可以使用未来数据，但不得再当作历史决策输入。
 
-适用范围：141 个内置算子 + 用户在指标计算中心自建的公式 + 情景研究中心的情景定义。
+适用范围：当前注册表中的内置算子、用户在行情指标中心自建的公式及情景研究中心定义。2026-10-04静态读取 `backend/causality/baseline.json` 含120项 operators 记录；这不等于本轮重新执行全部算子审计，注册表别名数与去重算子数也须分别统计。
 
 ---
 
@@ -22,7 +22,7 @@ PIT 封版管住了**能看到哪些数据**；本模块管住**公式有没有�
 
 | | 说明 | 例子 | 是不是缺陷 |
 |---|---|---|---|
-| **读取未来点** | 输出 t 依赖 x[t+1..] | `shift(-1)`、`ZIG` | 是，永远是 |
+| **读取未来点** | 输出 t 依赖 x[t+1..] | `shift(-1)`、`ZIG` | 若声称t时已可得或用于当时决策则违反要求；事后标签另行标明 |
 | **消费整窗** | 输出是整段窗口的函数 | `mean_time`、`max_value` | 否——取决于窗口是谁切的 |
 
 `MEAN(过去 36 个月)` 正确，`MEAN(全期)` 错误，**同一个算子**。所以算子级审计
@@ -40,13 +40,11 @@ x' = x.copy(); x'[t+1:] = 另一组完全不同的值
 ```
 
 这是 §1 判据的**直接翻译**，也是首选探针。相比截断法的关键优势：**序列长度不变**。
-截断法会把「预热不足」和「未来函数」混成同一个信号——Freqtrade 正是因此不得不把
-`lookahead-analysis` 和 `recursive-analysis` 拆成两个命令。扰动法天然分开，误报低得多。
+截断会同时改变历史长度和预热条件，因此本项目优先用同长度扰动来隔离这一变化。Freqtrade分别提供lookahead与recursive分析，可作为区分问题的参考；没有本项目对比实验时，不宣称误报率更低或推断对方拆分命令的原因。
 
-扰动值的选取要**对抗性**：取 `x'[t+1:] = -3 * x[t+1:] + 7`（保号性破坏 + 量级改变 +
-排序改变），而不是置零或置常数——置常数会让 `max`/`argmax` 这类算子在巧合下仍然一致。
+扰动值需覆盖不同变化并保持被测函数定义域；当前实际采用下述三组正系数扰动。早期负系数示意不用于净值等要求正数的输入。任何有限扰动仍可能产生数据相关的假阴性。
 
-扰动方式用**三种**（倒序×1.9、放大×6、缩小×0.013；掩码则取反 / 全真 / 全假），
+扰动方式用**三种**（倒序×1.9、放大×6、倒序缩小×0.013；掩码则取反 / 全真 / 全假），
 不是一种。单一扰动会产生**数据相关的假阴性**：`max_consecutive_true` 只在最长
 真值段恰好落在头部时才「看起来」不依赖尾部，换一种扰动就露馅。实测中它正是
 先被误判为因果、加上多扰动后才纠正的。所有系数取正以保号——净值类输入变负会让
@@ -58,7 +56,7 @@ x' = x.copy(); x'[t+1:] = 另一组完全不同的值
 `first(x)` 只用 `x[0]`，改动尾部它纹丝不动。所以这里实际测一次——改了未来，
 输出变不变：
 
-* 不变 → `CAUSAL`（只吃了窗口前段）
+* 不变 → `CAUSAL`（本次有限探针未观察到尾部依赖，不证明所有输入都只用前段）
 * 变了 → `WINDOW_CONSUMING`（真的吃整窗，需在公式层确认窗口右端）
 
 不做这一步的代价是 `first`、`max_consecutive_true`、`last` 全被塞进同一档，
@@ -76,9 +74,7 @@ P1 管不到标量输出的算子（整窗归约按定义依赖全窗）。P2 �
 指标计算中心的真实语义（每个 as-of 日出一个值）。
 
 **实现状态**：截断的机制（`SyntheticPanel.context_asof`，含 `T`/`L` 长度差的
-唯一处理点）已落地并有测试，但 `audit_expression` 目前不用它下裁决——P1 加
-尾部依赖已经是决定性的，而截断会把预热条件一起改掉，反而引入 P1 专门避开的
-混淆。`context_asof` 留作滚动求值接入时的接缝（行情指标中心按 as-of 日逐日算值的
+唯一处理点）已落地并有测试，但 `audit_expression` 目前不用它下裁决。当前采用P1、尾部依赖及作用域审计；有限样本、截点和扰动下未发现反例不构成全部输入的因果性证明。截断还会改变预热条件，需独立解释。`context_asof` 留作滚动求值接入时的接缝（行情指标中心按 as-of 日逐日算值的
 那条路径），不是死代码，但现在还没有调用方。
 
 ### 2.3 预热敏感性 P3（不是泄露，是可复现性）
@@ -98,7 +94,7 @@ P1 管不到标量输出的算子（整窗归约按定义依赖全窗）。P2 �
 
 ```python
 class Verdict(StrEnum):
-    CAUSAL            = "causal"             # 通过全部适用探针
+    CAUSAL            = "causal"             # 已执行的适用探针未发现反例，不是形式证明
     WINDOW_CONSUMING  = "window_consuming"   # 归约类，按定义吃整窗；公式层需确认右端
     LEAK              = "leak"               # 前缀被改写，附首个失配 t 与数值差
     WARMUP_SENSITIVE  = "warmup_sensitive"   # P3 超阈；可复现性风险
@@ -113,14 +109,13 @@ class Verdict(StrEnum):
 
 截断后浮点求和顺序会变，`sum`/`variance` 可能产生 1e-15 级差异。双阈值：
 
-| 相对差 | 裁决 |
+| 比较规则 | 裁决 |
 |---|---|
-| ≤ `rtol=1e-9, atol=1e-12` | 一致 |
-| 1e-9 ~ 1e-6 | `UNKNOWN`（灰区，人工看） |
-| > 1e-6 | `LEAK` |
+| 所有比较点满足 tight：`rtol=1e-9, atol=1e-12` | 一致 |
+| 不全满足 tight，但全部满足 loose：`rtol=1e-6, atol=1e-9` | `UNKNOWN`（灰区，人工看） |
+| 至少一点不满足 loose | `LEAK` |
 
-真实泄露是**宏观**的（值整个变掉），不是 1e-10 级的，所以结论对阈值不敏感。灰区
-留给人，是因为灰区里真的可能藏着病态数值问题——那也值得知道。
+`probes._closeness` 使用逐元素 `np.isclose(a,b,equal_nan=True)`，有限值条件为 `abs(a-b) <= atol + rtol*abs(b)`；不是单独按相对误差划三段。微小泄露可能低于容差，未触发行为也可能漏检；报告必须保留样本、截点、扰动和容差，不能声称阈值与结论无关。
 
 ---
 
@@ -166,8 +161,7 @@ CI 断言：喂 `KNOWN_LEAKY` 必须报 `LEAK`，喂 `KNOWN_CAUSAL` 必须报 `C
 
 ## 5. 算子级审计（L1，一次性 + CI 守门）
 
-`get_typed_operator_registry()` 有 141 个键，但其中含别名；按 `operator_id`
-去重后是**104 个算子**。不去重会把算子审两遍，基线里出现重复条目。
+早期记录曾为141个注册键、按 `operator_id` 去重后104个算子；这组数量是历史基线。当前数量应从指定版本的注册表/基线读取并区分别名，不能继续作为现行覆盖统计。
 
 输入不靠解析 `signature.inputs` 那些人类可读的字符串（`'series<time>[T] | vector<asset>[N]'`
 这种带联合类型的），而是拿**类型系统自己当预言机**：从内置数据集构造一个候选
@@ -189,7 +183,7 @@ CI 断言：喂 `KNOWN_LEAKY` 必须报 `LEAK`，喂 `KNOWN_CAUSAL` 必须报 `C
 | 输出有时间轴且只有一个时间轴入参 | 附加 P3 | 另一个字段，**不并入裁决** |
 
 驱动用 `TypedOperatorSpec.evaluate` —— 这个字段的 docstring 写明就是给一致性测试用的
-NumPy 参照实现（生产路径走 NJIT，不受影响）。**不碰 numba、不碰编译器、不要夹具。**
+NumPy 参照实现（生产路径走 NJIT，不受影响）。这只描述普通算子参考路径；当前 `rolling_scope.py` 会调用 `compile_numba_plan` 对完整滚动子图执行已编译P1，不能再把整个审计模块描述为“不碰Numba或编译器”。本轮仅静态核对调用链，未重新执行数值审计。
 
 结果落 `backend/causality/baseline.json`：算子 id → 裁决 + 人工核定说明。CI 比对，
 **新增算子无裁决即测试失败**（fail-closed，与现有 NJIT 预热约定一致）。这条守门
@@ -205,27 +199,17 @@ def audit_expression(
     expression: str,
     *,
     variable_types: Mapping[str, ValueType] | None = None,
-    decision_dates: Sequence[int] | None = None,   # 默认在预热后均匀取 12 个
+    decision_dates: Sequence[int] | None = None,   # default_decision_dates 默认 count=8
 ) -> ExpressionReport
 ```
 
-走已有入口，不需要改编译器：
+当前 `audit_expression` 编译表达式后逐个检查滚动作用域之外、具有时间轴的中间节点，用 `_probe_plan` → `run_tail_probe` 检查未来扰动是否改变历史前缀；滚动作用域另由编译子图审计。无时间轴根输出不会被直接当作前缀比较，整窗归约需保留 `WINDOW_CONSUMING` 和窗口右端解释。
 
-```python
-runtime = TypedIndicatorRuntime.from_expression(expression, variable_types=..., output_contract=...)
-full  = runtime.compute(panel.context())
-for t in decision_dates:
-    sliced = runtime.compute(panel.context_asof(t))   # 按 T/L 语义一致地截断
-    ...比对...
-```
+- P1 出现超出容差的前缀失配时报告节点与差异；当前是逐节点审计，不是二分定位。
+- `SyntheticPanel.context_asof` 的截断机制有独立测试，但当前生产公式审计不调用P2。旧稿的“同时跑P1/P2、P2失配即LEAK”不是当前实现，截断差异也可能来自预热，不能直接等同泄露。
+- 将来如接入按决策日截断重算，须明确其窗口/预热语义和批准范围，并单独补运行证据；本次不替实现新增这一能力。
 
-`panel.context_asof(t)` 是全模块唯一处理 `T` / `L` 长度差的地方——集中一处，
-新增变量时不会有人忘记。
-
-同时跑 P1 与 P2：
-- **P2 失配** → 归约窗口伸到了决策日之后 → `LEAK`，报出首个失配的 t 与两个值。
-- **P1 失配** → 公式里有算子直接读了未来点 → `LEAK`，并回溯到具体是哪个 DAG 节点
-  （`TypedExpressionPlan` 的节点可逐个求值，二分定位到最小出问题的子表达式）。
+**覆盖缺口待专项复验**：当前 `audit_expression` 的 `max_nodes=32`，达到节点预算后写入“其余节点未审计”warning并停止循环，汇总仍可能为 `CAUSAL`。因此调用方不能只看该枚举就宣称全图完整审计。是否将覆盖不完整纳入强制UNKNOWN/阻断须另行决定并验证实际入口；本次静态发现不等于已经证明某生产入口可绕过，也未修改裁决代码。
 
 报错文案给**具体位置**，不给布尔值：「第 128 个观测点的历史值在数据延长后从 0.0312
 变为 0.0455，责任节点：`mean_time(returns)`」。「有偏 / 无偏」这种结论对用户没有用。
@@ -240,7 +224,7 @@ backend/causality/
     synthetic.py      # §4 内置数据集 + 对照组
     probes.py         # §2 三个探针 + §3 容差判定
     audit.py          # §5 算子扫描 + §6 公式审计
-    baseline.json     # 141 个算子的已核定裁决
+    baseline.json     # 带版本的算子裁决基线；数量从文件读取
 backend/tests/test_causality.py
 ```
 
@@ -273,11 +257,11 @@ backend/tests/test_causality.py
 ## 9. 明确不做
 
 - **静态代码扫描**（LeakageDetector / NBLyzer 那一路）。用户公式是自研 typed DSL，
-  最终降为 NJIT 内核，静态分析既没有现成工具认得，行为测试也已经覆盖同样的缺陷。
+  最终降为 NJIT 内核，本项目当前不接入这些外部静态分析工具；现有行为探针只覆盖已执行样本和扰动，不声称与静态方法等价或覆盖所有缺陷。
 - **接入 Freqtrade**。它是交易机器人不是库：`lookahead-analysis` 要求完整的
   `IStrategy` + 回测引擎 + ccxt 行情，数据模型是「每交易对一张 OHLCV」，表达不了
   本系统的 asset 轴与矩阵算子。方法论照抄（P1/P3 的分层来自它），代码不接。
-- **真实行情夹具**。合成数据的对抗性强于真实行情，且不联网、可复现、可任意调 T 和 N。
+- **真实行情夹具**。当前审计优先采用可控合成数据，便于构造反例、离线复现和调整T/N；这不证明其对所有真实行情缺陷更强，也不替代后续实际数据场景验证。
 
 ---
 
@@ -324,3 +308,7 @@ adjusted_nav / max_value(adjusted_nav)       → LEAK
 无法执行或缺少充分证据时返回 UNKNOWN，不能把数值错误当作通过或已证实泄露。
 
 算子目录、注册版本和接入程度随代码演进；初始交付顺序不再作为现状列表。历史基线及后来跨中心作用域修复见[工程纪要](../verification/engineering.md)，发布门禁另见[情景验证](../regimes/validation.md)。
+
+### 方法核验边界（2026-10-04）
+
+有限行为测试可以发现反例，但没有穷尽所有输入、节点和数据时点。[Freqtrade lookahead caveats](https://www.freqtrade.io/en/stable/lookahead-analysis/#caveats)也明确提示未触发情形可能带来假阴性；[recursive analysis](https://www.freqtrade.io/en/stable/recursive-analysis/)讨论历史长度敏感性。这些来源支持分别处理问题和保留限制，不证明本项目探针完备或实现已通过。

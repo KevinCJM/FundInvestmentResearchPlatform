@@ -437,7 +437,7 @@ r_t\mid\mu_p,\Sigma_p\sim N(\mu_p,\Sigma_p),\quad
 
 界面算例：旧年化算术收益 6%，本次 100 个日观察的样本均值按同一 252 期口径年化为 10%；均值强度 100 时更新为 8%，300 时为 7%。这只是公式 B3 的算术例子，不是投资预测。风险参数不会直接进入 B3，但均值强度会通过 B4 的差异项影响风险，两者并非完全独立。界面同时提醒数据复用限制：重新建先验时若有重叠须确认，续更时勾选确认也不能放行重叠样本。方法依据为 [Murphy 的 NIW 解析更新，第 9 节](https://www.cs.ubc.ca/~murphyk/Papers/bayesGauss.pdf)；项目映射已按 `recenter_niw_prior`、`niw_update` 和 `statistical_result` 核对。
 
-“24 个等效月”不是 24 条日观察；更不能仅把 kappa0 乘一个交易日数，就声称 NIW 先验在不同频率下完全等价。第一版采用 **先验拟合频率与似然频率一致** 的门禁。已有 NIW 后验续更锁定原频率；需要切换日／月频时，从已确认的长期中心参数按新频率重新建立先验版本，并显式选择该频率的强度模板。只转换收益矩的单位，不自动恢复原先验的信息量或分布。
+“24 个等效月”不是 24 条日观察；更不能仅把 kappa0 乘一个交易日数，就声称 NIW 先验在不同频率下完全等价。第一版采用 **先验拟合频率与似然频率一致** 的门禁。当前已实现的 NIW 样本和续更使用日频/252口径，且没有强度模板或日/月频切换入口。若未来支持换频，须按新频率重新建立并明确核验先验信息量；该扩展尚待设计/实现，不能将其描述为当前可选能力。只转换收益矩的单位，不自动恢复原先验的信息量或分布。
 
 若使用上一版 NIW 后验续更，新似然默认只包含上次样本截止后的新增证据。若需要衰减，使用明确 d∈(0,1]：
 
@@ -778,3 +778,19 @@ BL 支持绝对、相对及篮子观点，均进入同一更新内核。单 CMA 
 状态转移和持续期诊断不等于已实现多年 Markov 资金模型。人工年度情景不得通过每月重抽伪装成同一分布。Building-block、跨币种／频率适配及多 CMA 联合均值误差仍是后续能力。
 
 数值计算复用固定签名 NJIT，发布冻结来源与数组；只读历史不重新训练。技术证据见[配置验收纪要](../verification/allocation.md)。
+
+## 来源编号与追溯
+
+以下恢复本页沿用的来源编号，映射取自整理前提交 `a9dd01bd143e7634a1a6436d69be8d25f2744f85` 中原综合设计的第22章，并非猜测新增出处。恢复引用只解决来源可定位，不代表每篇来源全文或本页所有推论本轮均已复验；逐项核验范围见[2026-10-04审核报告](../wiki/documentation-audit-2026-10-04.md)。
+
+- [CFA Institute：Capital Market Expectations Part II（2026）][R1]
+- [Murphy：Conjugate Bayesian analysis of the Gaussian distribution，§9][R4]
+- [Black/Litterman 1992：Global Portfolio Optimization][R5]
+- [PyPortfolioOpt 官方 Black-Litterman 文档][R6]
+- [Tushare 官方 index_weight 接口][R12]
+
+[R1]: https://www.cfainstitute.org/insights/professional-learning/refresher-readings/2026/capital-market-expectations-part-ii
+[R4]: https://www.cs.ubc.ca/~murphyk/Papers/bayesGauss.pdf
+[R5]: https://rpc.cfainstitute.org/research/financial-analysts-journal/1992/faj-v48-n5-28
+[R6]: https://pyportfolioopt.readthedocs.io/en/latest/BlackLitterman.html
+[R12]: https://tushare.pro/document/2?doc_id=96

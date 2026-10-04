@@ -7,7 +7,8 @@
     "notes": [
       "AI Hermes routing layer for the Fund Investment Research Platform.",
       "Backend strategy, analytics, backtest, and math facts were verified by code reads plus selected pytest smoke runs.",
-      "Frontend behavior is covered by Vitest and Vite production-build regression commands in this workspace."
+      "Frontend behavior is covered by Vitest and Vite production-build regression commands in this workspace.",
+      "Regression commands use python3 from an explicitly activated project Python 3.12 environment; verify version and dependencies before execution. Routing validation does not run the regression or certify the interpreter."
     ]
   },
   "modules": [
@@ -642,7 +643,7 @@
         "P15"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_data_storage.py backend/tests/test_market_data.py backend/tests/test_etl_executor.py backend/tests/test_tushare_data_script.py -q",
+        "python3 -m pytest backend/tests/test_data_storage.py backend/tests/test_market_data.py backend/tests/test_etl_executor.py backend/tests/test_tushare_data_script.py -q",
         "/bin/sh -c 'cd frontend && npm run test -- --run src/components/data-sources/DataStoragePanel.test.tsx src/pages/DataManagement.test.tsx'",
         "bash -n start_services.sh"
       ],
@@ -1024,11 +1025,11 @@
         "P11"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/app.py backend/run.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_pit_startup.py backend/tests/test_pit_workflow.py -q",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_start_services.py -q",
+        "python3 -m py_compile backend/app.py backend/run.py",
+        "python3 -m pytest backend/tests/test_pit_startup.py backend/tests/test_pit_workflow.py -q",
+        "python3 -m pytest backend/tests/test_start_services.py -q",
         "bash -n start_services.sh",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q",
+        "python3 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q",
         "python3 -m pytest backend/tests/test_pit_decision_clock.py -q"
       ],
       "routing_confidence": "high",
@@ -1176,9 +1177,9 @@
         "P21"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q",
+        "python3 -m pytest backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q",
         "python3 -m pytest backend/tests/test_frontier_grid.py backend/tests/test_optimizer_strategy_numba.py backend/tests/test_strategy_research_dates.py -q",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_frontier_sampling.py backend/tests/test_frontier_grid.py backend/tests/test_optimizer_strategy_numba.py -q"
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_frontier_sampling.py backend/tests/test_frontier_grid.py backend/tests/test_optimizer_strategy_numba.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1275,7 +1276,7 @@
         "P08"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py -q"
+        "python3 -m pytest backend/tests/test_strategy_api.py backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1368,7 +1369,7 @@
       ],
       "minimum_regression": [
         "python3 -m pytest backend/tests/test_research_input_checks.py -q",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_analytics_routes.py -q"
+        "python3 -m pytest backend/tests/test_analytics_routes.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1482,8 +1483,8 @@
         "P15"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/app.py backend/services/instrument_routes.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_routes.py -q",
+        "python3 -m py_compile backend/app.py backend/services/instrument_routes.py",
+        "python3 -m pytest backend/tests/test_instrument_routes.py -q",
         "env CUSTOM_INDICATOR_DATA_DIR=\"$(mktemp -d)\" python3 -m pytest backend/tests/test_legacy_etf_njit.py -q"
       ],
       "routing_confidence": "medium",
@@ -1599,9 +1600,9 @@
         "P16"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/services/instrument_analytics.py backend/services/instrument_routes.py backend/series_quality.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_analytics.py backend/tests/test_series_quality.py backend/tests/test_instrument_routes.py -q",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_product_analysis_numba.py tests/test_product_analysis_routes.py -q'"
+        "python3 -m py_compile backend/services/instrument_analytics.py backend/services/instrument_routes.py backend/series_quality.py",
+        "python3 -m pytest backend/tests/test_instrument_analytics.py backend/tests/test_series_quality.py backend/tests/test_instrument_routes.py -q",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_product_analysis_numba.py tests/test_product_analysis_routes.py -q'"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1703,8 +1704,8 @@
         "P15"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/market_data.py backend/market_data_validation.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_market_data.py backend/tests/test_market_data_readers.py backend/tests/test_market_data_validation.py -q"
+        "python3 -m py_compile backend/market_data.py backend/market_data_validation.py",
+        "python3 -m pytest backend/tests/test_market_data.py backend/tests/test_market_data_readers.py backend/tests/test_market_data_validation.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1800,7 +1801,7 @@
         "P06"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_numba_finance_math.py tests/test_numba_finance_indicators.py -q'"
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_numba_finance_math.py tests/test_numba_finance_indicators.py -q'"
       ],
       "routing_confidence": "medium",
       "scope_flags": [
@@ -1996,8 +1997,8 @@
         "P18"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_custom_indicator_variables.py tests/test_numba_finance_indicators.py tests/test_indicator_parallel_engine.py tests/test_evaluation_run_results.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/custom_indicators/service.py backend/custom_indicators/presentation.py backend/custom_indicators/repository.py backend/custom_indicators/periods.py backend/custom_indicators/series_provider.py backend/custom_indicators/parallel_engine.py backend/custom_indicators/run_result_repository.py backend/custom_indicators/variable_registry.py backend/cal_indicators/builtin_batch_kernel.py backend/services/custom_indicator_routes.py backend/benchmark_indicator_engine.py",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_custom_indicator_variables.py tests/test_numba_finance_indicators.py tests/test_indicator_parallel_engine.py tests/test_evaluation_run_results.py -q'",
+        "python3 -m py_compile backend/custom_indicators/service.py backend/custom_indicators/presentation.py backend/custom_indicators/repository.py backend/custom_indicators/periods.py backend/custom_indicators/series_provider.py backend/custom_indicators/parallel_engine.py backend/custom_indicators/run_result_repository.py backend/custom_indicators/variable_registry.py backend/cal_indicators/builtin_batch_kernel.py backend/services/custom_indicator_routes.py backend/benchmark_indicator_engine.py",
         "python3 -m pytest backend/tests/test_audit_regressions.py -q"
       ],
       "routing_confidence": "high",
@@ -2222,8 +2223,8 @@
         "P13"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_typed_indicator_types.py tests/test_typed_indicator_catalog.py tests/test_typed_indicator_compiler.py tests/test_typed_indicator_runtime.py tests/test_typed_numeric_backend.py tests/test_typed_numba_v22.py tests/test_typed_indicator_product_service.py tests/test_custom_indicator_variables.py tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_causality.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/cal_indicators/typed_numba_kernels.py backend/cal_indicators/typed_numba_plan.py backend/cal_indicators/typed_dsl.py backend/cal_indicators/typed_operators.py",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_typed_indicator_types.py tests/test_typed_indicator_catalog.py tests/test_typed_indicator_compiler.py tests/test_typed_indicator_runtime.py tests/test_typed_numeric_backend.py tests/test_typed_numba_v22.py tests/test_typed_indicator_product_service.py tests/test_custom_indicator_variables.py tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_causality.py -q'",
+        "python3 -m py_compile backend/cal_indicators/typed_numba_kernels.py backend/cal_indicators/typed_numba_plan.py backend/cal_indicators/typed_dsl.py backend/cal_indicators/typed_operators.py",
         "python3 -m pytest backend/tests/test_rolling_interval_graph.py backend/tests/test_rolling_interval_safety.py backend/tests/test_rolling_interval_service.py backend/tests/test_builtin_series_indicators.py backend/tests/test_cross_center_rolling.py -q",
         "python3 -m pytest backend/tests/test_cpp_aot_contracts.py backend/tests/test_compute_policy.py -q"
       ],
@@ -2347,8 +2348,8 @@
         "P15"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_portfolio_research.py tests/test_portfolio_regime_backtest.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/custom_indicators/portfolio_service.py backend/custom_indicators/portfolio_repository.py backend/services/portfolio_routes.py backend/portfolio_regime.py"
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_portfolio_research.py tests/test_portfolio_regime_backtest.py -q'",
+        "python3 -m py_compile backend/custom_indicators/portfolio_service.py backend/custom_indicators/portfolio_repository.py backend/services/portfolio_routes.py backend/portfolio_regime.py"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -2608,17 +2609,17 @@
       ],
       "minimum_regression": [
         "python3 -m pytest backend/tests/test_regime_granularity.py backend/tests/test_regime_segments.py -q",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_historical_regime_numba.py tests/test_historical_regime_trend.py tests/test_historical_regime_peak_trough.py tests/test_historical_regime_v2.py tests/test_historical_regime_v2_p1.py tests/test_research_series_numba.py tests/test_research_series_routes.py tests/test_scenario_stress.py tests/test_scenario_stress_routes.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/historical_regimes/v2_contracts.py backend/historical_regimes/v2_registry.py backend/historical_regimes/v2_service.py backend/historical_regimes/numba_kernels.py backend/historical_regimes/repository.py backend/research_series/service.py backend/scenario_stress/service.py backend/historical_regimes/trend_numba.py backend/historical_regimes/v2_numba.py backend/historical_regimes/v2_templates.py backend/historical_regimes/peak_trough_numba.py backend/historical_regimes/segment_numba.py backend/historical_regimes/authoring.py",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_series_builder.py tests/test_regime_segments.py tests/test_regime_authoring.py tests/test_indicator_graph.py tests/test_indicator_formula_roundtrip.py -q'",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_math_presentation.py tests/test_regime_authoring.py tests/test_regime_series_builder.py -q'",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_node_preview.py -q'",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_chart_normalization.py -q'",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_research_series_import.py -q'",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_indicator_nodes.py -q'",
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_product_sources.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_merrill_clock.py -q",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_regime_research_versions.py -q",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_historical_regime_numba.py tests/test_historical_regime_trend.py tests/test_historical_regime_peak_trough.py tests/test_historical_regime_v2.py tests/test_historical_regime_v2_p1.py tests/test_research_series_numba.py tests/test_research_series_routes.py tests/test_scenario_stress.py tests/test_scenario_stress_routes.py -q'",
+        "python3 -m py_compile backend/historical_regimes/v2_contracts.py backend/historical_regimes/v2_registry.py backend/historical_regimes/v2_service.py backend/historical_regimes/numba_kernels.py backend/historical_regimes/repository.py backend/research_series/service.py backend/scenario_stress/service.py backend/historical_regimes/trend_numba.py backend/historical_regimes/v2_numba.py backend/historical_regimes/v2_templates.py backend/historical_regimes/peak_trough_numba.py backend/historical_regimes/segment_numba.py backend/historical_regimes/authoring.py",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_regime_series_builder.py tests/test_regime_segments.py tests/test_regime_authoring.py tests/test_indicator_graph.py tests/test_indicator_formula_roundtrip.py -q'",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_regime_math_presentation.py tests/test_regime_authoring.py tests/test_regime_series_builder.py -q'",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_regime_node_preview.py -q'",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_regime_chart_normalization.py -q'",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_research_series_import.py -q'",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_regime_indicator_nodes.py -q'",
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_regime_product_sources.py -q'",
+        "python3 -m pytest backend/tests/test_merrill_clock.py -q",
+        "python3 -m pytest backend/tests/test_regime_research_versions.py -q",
         "python3 -m pytest backend/tests/test_manual_historical_events.py backend/tests/test_regime_event_library.py backend/tests/test_regime_temporal_capability.py -q",
         "python3 -m pytest backend/tests/test_scenario_audit_remediation.py backend/tests/test_recommended_prospective_workflow.py -q",
         "python3 -m pytest backend/tests/test_regime_completion_quality.py backend/tests/test_regime_completion_bootstrap.py backend/tests/test_regime_reliability_consumer.py -q",
@@ -3986,7 +3987,7 @@
         "/bin/sh -c 'cd frontend && npm run test -- --run src/components/HorizontalMetricComparison.test.tsx src/app/allocationJourney.test.tsx src/layouts/StageLayout.test.tsx src/pages/ManualConstruction.test.tsx src/pages/ProductPoolSelection.test.tsx src/pages/ProductPoolWorkspacePage.test.tsx src/pages/ProductPools.test.tsx src/pages/ClassAllocation.test.tsx src/pages/PortfolioConstruction.test.tsx'",
         "npm run test --prefix frontend -- --run",
         "npm run build --prefix frontend",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
+        "python3 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
       ],
       "routing_confidence": "medium",
       "scope_flags": [
@@ -4194,14 +4195,14 @@
         "P15"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile config.py T01_get_data.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/services/index_data.py backend/services/index_routes.py backend/services/data_refresh.py backend/services/data_routes.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_tushare_data_script.py backend/tests/test_data_refresh.py backend/tests/test_index_data.py -q",
+        "python3 -m py_compile config.py T01_get_data.py",
+        "python3 -m py_compile backend/services/index_data.py backend/services/index_routes.py backend/services/data_refresh.py backend/services/data_routes.py",
+        "python3 -m pytest backend/tests/test_tushare_data_script.py backend/tests/test_data_refresh.py backend/tests/test_index_data.py -q",
         "/bin/sh -c 'cd frontend && npm run test -- --run src/pages/IndexData.test.tsx src/components/dashboard/DataHealthRefreshPanel.test.tsx'",
         "/bin/sh -c 'cd frontend && npm run test:e2e -- e2e/index-data.spec.ts'",
         "npm run test --prefix frontend -- --run",
         "npm run build --prefix frontend",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
+        "python3 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -4302,8 +4303,8 @@
         "P07"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_data_model_catalog.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/data_model/catalog.py backend/data_model/types.py backend/services/data_model_routes.py"
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_data_model_catalog.py -q'",
+        "python3 -m py_compile backend/data_model/catalog.py backend/data_model/types.py backend/services/data_model_routes.py"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -4466,12 +4467,12 @@
         "P15"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_akshare_adapter.py tests/test_data_source_center.py tests/test_etl_snapshot.py tests/test_etl_workflows.py tests/test_multi_source_resolution.py tests/test_resolution_routes.py tests/test_source_sync_jobs.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_etl_executor.py -q",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_constituent_download.py backend/tests/test_constituent_recovery.py backend/tests/test_source_db_retry.py backend/tests/test_etl_run_view.py -q",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_etl_failure_isolation.py backend/tests/test_weight_recovery.py -q",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_fund_event_conflicts.py backend/tests/test_fund_event_download.py backend/tests/test_fund_event_recovery.py -q",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/data_sources/service.py backend/data_sources/etl_service.py backend/services/data_source_routes.py backend/services/etl_routes.py"
+        "/bin/sh -c 'cd backend && python3 -m pytest tests/test_akshare_adapter.py tests/test_data_source_center.py tests/test_etl_snapshot.py tests/test_etl_workflows.py tests/test_multi_source_resolution.py tests/test_resolution_routes.py tests/test_source_sync_jobs.py -q'",
+        "python3 -m pytest backend/tests/test_etl_executor.py -q",
+        "python3 -m pytest backend/tests/test_constituent_download.py backend/tests/test_constituent_recovery.py backend/tests/test_source_db_retry.py backend/tests/test_etl_run_view.py -q",
+        "python3 -m pytest backend/tests/test_etl_failure_isolation.py backend/tests/test_weight_recovery.py -q",
+        "python3 -m pytest backend/tests/test_fund_event_conflicts.py backend/tests/test_fund_event_download.py backend/tests/test_fund_event_recovery.py -q",
+        "python3 -m py_compile backend/data_sources/service.py backend/data_sources/etl_service.py backend/services/data_source_routes.py backend/services/etl_routes.py"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -5020,7 +5021,7 @@
         "npm run test --prefix frontend -- --run StrategicAllocationWorkspace.test.tsx ClassAllocation.test.tsx FrontierGrid.test.tsx",
         "npm run build --prefix frontend",
         "npm run test:e2e --prefix frontend -- --config=playwright.strategic.config.ts",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_investment_mandate.py backend/tests/test_mandate_diagnostic_integrity.py backend/tests/test_strategic_allocation.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_investment_mandate.py backend/tests/test_mandate_diagnostic_integrity.py backend/tests/test_strategic_allocation.py -q",
         "npm run test --prefix frontend -- --run InvestmentObjectivesWorkspace.test.tsx StrategicAllocationWorkspace.test.tsx strategicAllocation.test.ts",
         "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_bettersaataa_m1.py backend/tests/test_bettersaataa_scope_journey.py backend/tests/test_cma_models.py backend/tests/test_cma_model_integration.py backend/tests/test_strategic_risk_budget.py backend/tests/test_bettersaataa_final_audit.py -q",
         "npm run test --prefix frontend -- --run StrategicAllocationModels.test.tsx CmaModelEditor.test.tsx PolicyCandidatesM2.test.tsx StrategicScopeWorkspace.test.tsx StageLayout.test.tsx",
@@ -5032,16 +5033,16 @@
         "npm run test:e2e --prefix frontend -- --config=playwright.mandate.config.ts",
         "/usr/bin/env PYTHONPATH=.:backend python3 scripts/export_mandate_contracts.py --check",
         "/usr/bin/env PYTHONPATH=.:backend python3 scripts/export_risk_scale_contracts.py --check",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_multi_cma.py backend/tests/test_cma_model_integration.py backend/tests/test_strategic_allocation.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_multi_cma.py backend/tests/test_cma_model_integration.py backend/tests/test_strategic_allocation.py -q",
         "npm run test --prefix frontend -- --run MultiCmaWorkspace.test.tsx StrategicAllocationWorkspace.test.tsx StrategicAllocationModels.test.tsx LtcmaHandoff.test.tsx",
         "npm run test:e2e --prefix frontend -- --config=playwright.multi-cma.config.ts",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 scripts/export_ltcma_contracts.py --check",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_multi_cma_compatibility.py backend/tests/test_multi_cma.py backend/tests/test_optimizer_strategy_numba.py backend/tests/test_frontier_grid.py -q",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 backend/tests/benchmark_multi_cma_compatibility.py",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_cma_review.py backend/tests/test_cma_uncertainty.py backend/tests/test_cma_diagnostics.py backend/tests/test_cma_models.py backend/tests/test_cma_model_integration.py backend/tests/test_ltcma_statistics.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 scripts/export_ltcma_contracts.py --check",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_multi_cma_compatibility.py backend/tests/test_multi_cma.py backend/tests/test_optimizer_strategy_numba.py backend/tests/test_frontier_grid.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 backend/tests/benchmark_multi_cma_compatibility.py",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_cma_review.py backend/tests/test_cma_uncertainty.py backend/tests/test_cma_diagnostics.py backend/tests/test_cma_models.py backend/tests/test_cma_model_integration.py backend/tests/test_ltcma_statistics.py -q",
         "npm run test --prefix frontend -- --run CmaReview.test.tsx StrategicAllocationWorkspace.test.tsx StrategicAllocationModels.test.tsx",
         "npm run test:e2e --prefix frontend -- --config=playwright.ltcma.config.ts",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_ltcma_scenarios.py backend/tests/test_ltcma_scenario_evidence.py backend/tests/test_ltcma_regime_intervals.py backend/tests/test_cma_scenario_selection.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_ltcma_scenarios.py backend/tests/test_ltcma_scenario_evidence.py backend/tests/test_ltcma_regime_intervals.py backend/tests/test_cma_scenario_selection.py -q",
         "npm run test --prefix frontend -- --run LtcmaScenarioFields.test.tsx LtcmaScenarioSelect.test.tsx LtcmaStatisticsFields.test.tsx LtcmaCenter.test.tsx LtcmaHandoff.test.tsx",
         "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_scope_feasibility.py backend/tests/test_scope_lifecycle.py -q",
         "npm run test --prefix frontend -- --run ScopeFeasibility.test.tsx ScopeFrontierChart.test.tsx ProductPoolWorkspacePage.test.tsx",
@@ -5208,11 +5209,11 @@
         "backend/tests/implementation_app.py"
       ],
       "minimum_regression": [
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_implementation_kernels.py backend/tests/test_implementation_packages.py backend/tests/test_implementation_paths.py backend/tests/test_implementation_scenarios.py backend/tests/test_implementation_service.py backend/tests/test_funding_continuation.py backend/tests/test_implementation_continuation.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_implementation_kernels.py backend/tests/test_implementation_packages.py backend/tests/test_implementation_paths.py backend/tests/test_implementation_scenarios.py backend/tests/test_implementation_service.py backend/tests/test_funding_continuation.py backend/tests/test_implementation_continuation.py -q",
         "npm run test --prefix frontend -- --run PreInvestmentImplementation.test.tsx StrategicAllocationWorkspace.test.tsx TacticalAllocationWorkspace.test.tsx",
         "npm run build --prefix frontend",
         "npm run test:e2e --prefix frontend -- --config=playwright.implementation.config.ts",
-        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 backend/tests/benchmark_implementation.py"
+        "/usr/bin/env PYTHONPATH=.:backend python3 backend/tests/benchmark_implementation.py"
       ],
       "pitfall_ids": [
         "P24",
@@ -5279,7 +5280,11 @@
         "scripts/tests/test_documentation.py",
         "scripts/requirements-docs.txt",
         ".github/workflows/documentation.yml",
-        "docs/repo_map.json"
+        "docs/repo_map.json",
+        "docs/wiki/README.md",
+        "docs/wiki/llm-wiki-design.md",
+        "docs/wiki/documentation-audit-2026-10-04.md",
+        "docs/wiki/audit-files-2026-10-04.md"
       ],
       "upstream_dependencies": [
         "ai_routing_files"
@@ -6217,13 +6222,13 @@
         "path": "docs/research/ai-functions-design.md",
         "title": "AI 功能设计",
         "topic": "研究草稿",
-        "role": "contract",
-        "status": "active",
+        "role": "research",
+        "status": "historical",
         "modules": [
           "project_docs",
           "portable_agent_integration"
         ],
-        "read_when": "AI Harness当前实现、数据准入、任务与记忆、页面范围和验证边界；真实模型效果与工程回归分开核对；平台能力目录、意图识别、中央入口与跨页任务交接"
+        "read_when": "迁移前Harness行为与历史验收基线；当前平台装配、业务权威和验证范围读取portable-agent-platform-integration.md"
       },
       {
         "path": "docs/research/ai-agent-indicator-product-research-design-2026-09-18.md",
@@ -6235,7 +6240,7 @@
           "project_docs",
           "portable_agent_integration"
         ],
-        "read_when": "未采纳研究草稿；实施前重新核对需求、代码和证据"
+        "read_when": "早期设计稿，整体目标未验收；部分目标后续采用或替代，当前接入读取整体迁移设计，未采用目标保留"
       },
       {
         "path": "docs/research/pre-investment-institutional-gap-analysis-2026-09-19.md",
@@ -6292,7 +6297,7 @@
           "project_docs",
           "portable_agent_integration"
         ],
-        "read_when": "回溯早期压缩选择；当前实现及验证以 AI 功能设计为准"
+        "read_when": "回溯早期压缩选择；迁移前验收见AI功能设计，当前平台边界见整体迁移设计，外部框架能力单独核验"
       },
       {
         "path": "docs/research/ai-agent-harness-progress-design-2026-09-20.md",
@@ -6304,7 +6309,7 @@
           "project_docs",
           "portable_agent_integration"
         ],
-        "read_when": "回溯停滞检测依据；当前门控、任务状态与验收以 AI 功能设计为准"
+        "read_when": "回溯停滞检测依据；迁移前门控与历史验收，不作为当前外部运行器实现证据"
       },
       {
         "path": "docs/research/ai-agent-indicator-product-research-implementation-design-2026-09-19.md",
@@ -6316,19 +6321,19 @@
           "project_docs",
           "portable_agent_integration"
         ],
-        "read_when": "回溯初始实现契约；当前页面范围及接口以统一设计和代码为准"
+        "read_when": "回溯初始实现契约；当前页面范围与平台业务接口读取整体迁移设计和现行代码"
       },
       {
         "path": "docs/research/ai-agent-reusable-architecture-design-2026-09-21.md",
         "title": "AI 助手共用架构与接入设计",
         "topic": "研究草稿",
-        "role": "contract",
-        "status": "active",
+        "role": "research",
+        "status": "historical",
         "modules": [
           "project_docs",
           "portable_agent_integration"
         ],
-        "read_when": "接入公共对话、页面证据及业务适配；配合 AI 功能设计核对已验收范围"
+        "read_when": "迁移前共用架构、CopilotKit及独立原型历史；旧路径不再是当前入口，现行接入读取整体迁移设计"
       },
       {
         "path": "docs/research/ai-assistant-conversation-ui-design-2026-09-20.md",
@@ -6352,6 +6357,54 @@
           "portable_agent_integration"
         ],
         "read_when": "独立智能体整体迁移的Dev候选、业务协议、离线验收证据与剩余正式发布/生产切换门槛"
+      },
+      {
+        "path": "docs/wiki/README.md",
+        "title": "项目知识 Wiki",
+        "topic": "知识 Wiki",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "documentation_maintenance",
+          "project_docs"
+        ],
+        "read_when": "开发/业务两类派生导航与核验入口；原权威文档保持原位置，尚未启用vault/CLI"
+      },
+      {
+        "path": "docs/wiki/llm-wiki-design.md",
+        "title": "Obsidian LLM Wiki 详细设计",
+        "topic": "知识 Wiki",
+        "role": "draft",
+        "status": "draft",
+        "modules": [
+          "documentation_maintenance",
+          "project_docs"
+        ],
+        "read_when": "原位置与Wiki/私有库边界、Hermes权威、双类导航、主张核验及官方CLI待实施方案"
+      },
+      {
+        "path": "docs/wiki/documentation-audit-2026-10-04.md",
+        "title": "2026-10-04 全量文档审核报告",
+        "topic": "知识 Wiki",
+        "role": "evidence",
+        "status": "historical",
+        "modules": [
+          "documentation_maintenance",
+          "project_docs"
+        ],
+        "read_when": "核对本轮文档修订、业务证据、技术四轴及未验证范围；不是当前全量测试通过证明"
+      },
+      {
+        "path": "docs/wiki/audit-files-2026-10-04.md",
+        "title": "2026-10-04 文档覆盖与归属台账",
+        "topic": "知识 Wiki",
+        "role": "evidence",
+        "status": "historical",
+        "modules": [
+          "documentation_maintenance",
+          "project_docs"
+        ],
+        "read_when": "123个原Docs文件及项目入口逐项归属与审核覆盖快照；不是长期目录的第二权威"
       }
     ]
   }
