@@ -529,7 +529,14 @@ def integrate(root: Path, claim: str, topic: str, summary: str, reviewer: str,
         marker = '<!-- KB-INTEGRATION:' + source['metadata']['id'] + ':BEGIN -->'
         end_marker = '<!-- KB-INTEGRATION:' + source['metadata']['id'] + ':END -->'
         target = safe_file(root, topic)
-        meta, body = metadata(target.read_text(encoding='utf-8'))
+        original = target.read_bytes()
+        before = hashlib.sha256(original).hexdigest()
+        if before != expected:
+            raise ValueError('concurrent change: re-read the target topic')
+        meta, body = metadata(original.decode('utf-8'))
+        fields = (summary, reviewer, reason, source['metadata']['title'], source['metadata']['scope'])
+        if any('<!-- KB-INTEGRATION:' in field for field in fields):
+            raise ValueError('reserved integration marker in receipt fields')
         relative = os.path.relpath(claim, Path(topic).parent).replace(os.sep, '/')
         claim_hash = digest(safe_file(root, claim))
         evidence = (f'\n\n依据：[{source["metadata"]["title"]}]({relative})；范围：'
@@ -537,24 +544,30 @@ def integrate(root: Path, claim: str, topic: str, summary: str, reviewer: str,
         content = f'\n### 整合记录：{source["metadata"]["title"]}\n\n{summary.strip()}{evidence}{reviewer}；日期：'
         provenance = (f'；理由：{reason}\n\n记录版本：{source["metadata"]["source_revision"]}；'
                       f'claim SHA-256：{claim_hash}；目标修改前 SHA-256：')
+        date_separator = r'；日期：\d{4}-\d{2}-\d{2}；理由：'
+        # Recorded date and pre-write hash are audit text, not the current guard.
+        pattern = re.escape(content) + r'\d{4}-\d{2}-\d{2}' + re.escape(provenance) + r'[0-9a-f]{64}\n'
+
+        def matches_receipt(receipt: str) -> bool:
+            audit = receipt.partition(evidence)[2]
+            return (receipt.count(evidence) == 1
+                    and len(re.findall(date_separator, audit)) == 1
+                    and re.fullmatch(pattern, receipt) is not None)
+
         if marker in body or end_marker in body:
             if body.count(marker) != 1 or body.count(end_marker) != 1:
                 raise ValueError('existing integration differs; review and revise that block explicitly')
             old_block, closed, _ = body.split(marker, 1)[1].partition(end_marker)
             # Receipt delimiters embedded in legacy text fields are ambiguous.
-            audit = old_block.partition(evidence)[2]
-            date_separator = r'；日期：\d{4}-\d{2}-\d{2}；理由：'
-            # Only the recorded date and pre-write hash vary across exact retries.
-            pattern = re.escape(content) + r'\d{4}-\d{2}-\d{2}' + re.escape(provenance) + r'[0-9a-f]{64}\n'
-            if (not closed or old_block.count(evidence) != 1
-                    or len(re.findall(date_separator, audit)) != 1
-                    or not re.fullmatch(pattern, old_block)):
+            if not closed or not matches_receipt(old_block):
                 raise ValueError('existing integration differs; review and revise that block explicitly')
+            if digest(safe_file(root, topic)) != expected:
+                raise ValueError('concurrent change: re-read the target topic')
             return {'status': 'already_integrated', 'topic': topic, 'claim': claim}
-        before = digest(target)
-        if before != expected:
-            raise ValueError('concurrent change: re-read the target topic')
-        block = f'\n\n{marker}{content}{date.today().isoformat()}{provenance}{before}\n{end_marker}\n'
+        receipt = f'{content}{date.today().isoformat()}{provenance}{before}\n'
+        if not matches_receipt(receipt):
+            raise ValueError('integration fields contain ambiguous receipt delimiters')
+        block = f'\n\n{marker}{receipt}{end_marker}\n'
         meta['dependencies'] = [d for d in meta['dependencies'] if FINGERPRINT.fullmatch(d).group(1) != claim] + [claim + '::sha256:' + claim_hash]
         replace_note(root, topic, encode(meta, body + block), expected)
         return {'status': 'integrated', 'topic': topic, 'claim': claim, 'before_sha256': before,

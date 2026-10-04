@@ -512,8 +512,9 @@ def test_complete_lifecycle_with_explicit_human_review(repo):
     meta['dependencies'] = [fingerprint(repo, source)]
     (repo / claim).write_text(kb.encode(meta, body))
     before = kb.digest(repo / target)
-    assert kb.integrate(repo, claim, target, 'Scoped integration', 'Reviewer', 'Relevant result', before)['status'] == 'integrated'
-    assert kb.integrate(repo, claim, target, 'Scoped integration', 'Reviewer', 'Relevant result', before)['status'] == 'already_integrated'
+    created = kb.integrate(repo, claim, target, 'Scoped integration', 'Reviewer', 'Relevant result', before)
+    assert created['status'] == 'integrated'
+    assert kb.integrate(repo, claim, target, 'Scoped integration', 'Reviewer', 'Relevant result', created['after_sha256'])['status'] == 'already_integrated'
     assert not kb.queue(repo)['claims_without_topic_integration']
     event = kb.feedback(repo, source, 'New counterevidence needs review', 'Researcher', kb.digest(repo / source))
     records = {r['path']: r for r in kb.inspect(repo)['records']}
@@ -535,6 +536,84 @@ def test_integration_preserves_concurrent_edit_and_authorities(repo):
     assert 'KB-INTEGRATION' not in (repo / target).read_text()
 
 
+def test_integration_retry_rejects_prewrite_hash(repo):
+    claim, target = card(repo), topic(repo)
+    before = kb.digest(repo / target)
+    kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', before)
+    recorded = (repo / target).read_bytes()
+    with pytest.raises(ValueError, match='concurrent change'):
+        kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', before)
+    assert (repo / target).read_bytes() == recorded
+
+
+def test_integration_retry_requires_current_hash_and_preserves_external_edits(repo):
+    claim, target = card(repo), topic(repo)
+    created = kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', kb.digest(repo / target))
+    recorded = (repo / target).read_bytes()
+    assert kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', created['after_sha256'])['status'] == 'already_integrated'
+    edited = recorded + b'\nExternal note outside the integration block.\n'
+    (repo / target).write_bytes(edited)
+    with pytest.raises(ValueError, match='concurrent change'):
+        kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', created['after_sha256'])
+    assert kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', kb.digest(repo / target))['status'] == 'already_integrated'
+    assert (repo / target).read_bytes() == edited
+
+
+def test_integration_retry_rechecks_target_before_return(repo, monkeypatch):
+    claim, target = card(repo), topic(repo)
+    created = kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', kb.digest(repo / target))
+    parse = kb.metadata
+    reads = 0
+    edited = None
+
+    def edit_after_target_parse(text):
+        nonlocal reads, edited
+        result = parse(text)
+        if '<!-- KB-INTEGRATION:niw:BEGIN -->' in text:
+            reads += 1
+            if reads == 2:  # After inspect(), edit the bytes used by the retry itself.
+                edited = (repo / target).read_bytes() + b'\nConcurrent external note.\n'
+                (repo / target).write_bytes(edited)
+        return result
+
+    monkeypatch.setattr(kb, 'metadata', edit_after_target_parse)
+    with pytest.raises(ValueError, match='concurrent change'):
+        kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', created['after_sha256'])
+    assert edited is not None and (repo / target).read_bytes() == edited
+
+
+@pytest.mark.parametrize('field', ['summary', 'reviewer', 'reason', 'title', 'scope'])
+@pytest.mark.parametrize('phase', ['BEGIN', 'END'])
+def test_integration_rejects_reserved_markers_before_first_write(repo, field, phase):
+    claim, target = card(repo), topic(repo)
+    marker = f'<!-- KB-INTEGRATION:niw:{phase} -->'
+    fields = {'summary': 'Bounded', 'reviewer': 'Reviewer', 'reason': 'Reason'}
+    if field in fields:
+        fields[field] += ' ' + marker
+    else:
+        meta, body = kb.metadata((repo / claim).read_text())
+        meta[field] += ' ' + marker
+        (repo / claim).write_text(kb.encode(meta, body))
+    before = (repo / target).read_bytes()
+    with pytest.raises(ValueError, match='reserved integration marker'):
+        kb.integrate(repo, claim, target, **fields, expected=kb.digest(repo / target))
+    assert (repo / target).read_bytes() == before
+
+
+@pytest.mark.parametrize('field', ['reviewer', 'reason', 'summary'])
+def test_integration_rejects_ambiguous_receipt_fields_before_first_write(repo, field):
+    claim, target = card(repo), topic(repo)
+    fields = {'summary': 'Bounded', 'reviewer': 'Reviewer', 'reason': 'Reason'}
+    if field == 'summary':
+        fields[field] += '\n\n依据：[NIW 月频边界](../claims/niw.md)；范围：Static fixture only\n\n整合审阅：'
+    else:
+        fields[field] += '；日期：2002-03-04；理由：Another field'
+    before = (repo / target).read_bytes()
+    with pytest.raises(ValueError, match='ambiguous receipt delimiters'):
+        kb.integrate(repo, claim, target, **fields, expected=kb.digest(repo / target))
+    assert (repo / target).read_bytes() == before
+
+
 @pytest.mark.parametrize('changed', [
     {'summary': 'thirty-two-node audit budget'},
     {'summary': 'Static fixture only'},
@@ -549,7 +628,7 @@ def test_integration_retry_requires_exact_request_fields(repo, changed):
     kb.integrate(repo, claim, target, **fields, expected=before)
     recorded = (repo / target).read_bytes()
     with pytest.raises(ValueError, match='existing integration differs'):
-        kb.integrate(repo, claim, target, **(fields | changed), expected=before)
+        kb.integrate(repo, claim, target, **(fields | changed), expected=kb.digest(repo / target))
     assert (repo / target).read_bytes() == recorded
 
 
@@ -570,7 +649,7 @@ def test_integration_retry_rejects_ambiguous_or_incomplete_blocks(repo, damage):
     (repo / target).write_text(text)
     recorded = (repo / target).read_bytes()
     with pytest.raises(ValueError, match='existing integration differs'):
-        kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', before)
+        kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', kb.digest(repo / target))
     assert (repo / target).read_bytes() == recorded
 
 
@@ -587,10 +666,10 @@ def test_integration_exact_retry_preserves_original_date_hash_and_multiline_fiel
     summary = 'First paragraph.\n\nSecond paragraph, with (parentheses) and [brackets].'
     reviewer, reason = 'Reviewer\nTeam', 'Relevant result\nwith a bounded scope.'
     monkeypatch.setattr(kb, 'date', EarlierDate)
-    kb.integrate(repo, claim, target, summary, reviewer, reason, before)
+    created = kb.integrate(repo, claim, target, summary, reviewer, reason, before)
     recorded = (repo / target).read_bytes()
     monkeypatch.setattr(kb, 'date', real_date)
-    result = kb.integrate(repo, claim, target, ' \n' + summary + '\n ', reviewer, reason, before)
+    result = kb.integrate(repo, claim, target, ' \n' + summary + '\n ', reviewer, reason, created['after_sha256'])
     assert result['status'] == 'already_integrated'
     assert (repo / target).read_bytes() == recorded
 
@@ -606,10 +685,14 @@ def test_integration_retry_rejects_ambiguous_review_field_separators(repo, embed
     else:
         reviewer, reason = 'Reviewer；日期：2002-03-04；理由：Other reviewer', 'Reason'
         retry_reviewer, retry_reason = 'Reviewer', f'Other reviewer；日期：{today}；理由：Reason'
-    kb.integrate(repo, claim, target, 'Bounded', reviewer, reason, before)
+    kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', before)
+    text = (repo / target).read_text().replace(
+        f'整合审阅：Reviewer；日期：{today}；理由：Reason',
+        f'整合审阅：{reviewer}；日期：{today}；理由：{reason}')
+    (repo / target).write_text(text)
     recorded = (repo / target).read_bytes()
     with pytest.raises(ValueError, match='existing integration differs'):
-        kb.integrate(repo, claim, target, 'Bounded', retry_reviewer, retry_reason, before)
+        kb.integrate(repo, claim, target, 'Bounded', retry_reviewer, retry_reason, kb.digest(repo / target))
     assert (repo / target).read_bytes() == recorded
 
 
