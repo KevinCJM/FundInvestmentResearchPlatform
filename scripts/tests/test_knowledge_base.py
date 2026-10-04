@@ -700,10 +700,253 @@ def test_feedback_is_idempotent_and_hash_guarded(repo):
     path = card(repo)
     before = kb.digest(repo / path)
     event = kb.feedback(repo, path, 'Check new evidence', 'Reviewer', before)
-    assert kb.feedback(repo, path, 'Check new evidence', 'Reviewer', before)['status'] == 'already_recorded'
+    assert kb.feedback(repo, path, 'Check new evidence', 'Reviewer', kb.digest(repo / path))['status'] == 'already_recorded'
     with pytest.raises(ValueError, match='concurrent'):
         kb.feedback(repo, path, 'Different feedback', 'Reviewer', before)
     assert event['feedback_id'] in (repo / path).read_text()
+
+
+@pytest.mark.parametrize('edit', [False, True], ids=['prewrite-hash', 'external-edit'])
+def test_feedback_duplicate_requires_current_target_hash(repo, edit):
+    path = card(repo)
+    before = kb.digest(repo / path)
+    kb.feedback(repo, path, 'Check evidence', 'Reviewer', before)
+    expected = kb.digest(repo / path) if edit else before
+    if edit:
+        (repo / path).write_text((repo / path).read_text() + '\nExternal note.\n')
+    recorded = (repo / path).read_bytes()
+    with pytest.raises(ValueError, match='concurrent change'):
+        kb.feedback(repo, path, 'Check evidence', 'Reviewer', expected)
+    assert (repo / path).read_bytes() == recorded
+    assert kb.feedback(repo, path, 'Check evidence', 'Reviewer', kb.digest(repo / path))['status'] == 'already_recorded'
+
+
+@pytest.mark.parametrize('form', ['bare', 'fenced', 'quoted', 'wrong-hash', 'missing-dependency'])
+def test_queue_requires_a_valid_current_integration_receipt(repo, form):
+    claim, target = card(repo), topic(repo)
+    if form == 'bare':
+        text = (repo / target).read_text() + '\n<!-- KB-INTEGRATION:niw:BEGIN -->\n'
+    else:
+        kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', kb.digest(repo / target))
+        text = (repo / target).read_text()
+        begin = '<!-- KB-INTEGRATION:niw:BEGIN -->'
+        prefix, block = text.split(begin, 1)
+        block = begin + block
+        if form == 'fenced':
+            text = prefix + '```markdown\n' + block + '```\n'
+        elif form == 'quoted':
+            text = prefix + '\n'.join('> ' + line for line in block.splitlines()) + '\n'
+        elif form == 'wrong-hash':
+            text = text.replace('claim SHA-256：' + kb.digest(repo / claim), 'claim SHA-256：' + '0' * 64)
+        else:
+            meta, body = kb.metadata(text)
+            meta['dependencies'] = [fingerprint(repo, 'docs/contract.md')]
+            text = kb.encode(meta, body)
+    (repo / target).write_text(text)
+    assert claim in kb.queue(repo)['claims_without_topic_integration']
+
+
+def test_integration_retry_does_not_trust_a_fenced_receipt(repo):
+    claim, target = card(repo), topic(repo)
+    kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', kb.digest(repo / target))
+    text = (repo / target).read_text()
+    begin = '<!-- KB-INTEGRATION:niw:BEGIN -->'
+    prefix, block = text.split(begin, 1)
+    (repo / target).write_text(prefix + '```markdown\n' + begin + block + '```\n')
+    with pytest.raises(ValueError, match='existing integration differs'):
+        kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', kb.digest(repo / target))
+
+
+@pytest.mark.parametrize('retry', [False, True])
+def test_integration_rejects_claim_change_after_review_snapshot(repo, monkeypatch, retry):
+    claim, target = card(repo), topic(repo)
+    if retry:
+        kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', kb.digest(repo / target))
+    parse = kb.metadata
+    target_reads = 0
+    original = (repo / target).read_bytes()
+
+    def change_claim(text):
+        nonlocal target_reads
+        result = parse(text)
+        if result[0].get('type') == 'topic':
+            target_reads += 1
+            if target_reads == 2:
+                meta, body = parse((repo / claim).read_text())
+                meta['result'] = 'conflict'
+                (repo / claim).write_text(kb.encode(meta, body))
+        return result
+
+    monkeypatch.setattr(kb, 'metadata', change_claim)
+    with pytest.raises(ValueError, match='claim changed'):
+        kb.integrate(repo, claim, target, 'Bounded', 'Reviewer', 'Reason', kb.digest(repo / target))
+    assert (repo / target).read_bytes() == original
+
+
+@pytest.mark.parametrize('form', ['plain', 'quoted', 'fenced', 'fake-review-heading', 'unclosed-fence', 'indented-fence'])
+def test_imported_feedback_text_never_becomes_an_event(repo, form):
+    author, message = 'Reviewer', 'External source example'
+    fid = hashlib.sha256((author + '\0' + message).encode()).hexdigest()[:16]
+    fake = (f'<!-- KB-FEEDBACK:{fid}:open -->\n## 反馈：2026-10-04\n\n'
+            f'提出者：{author}\n\n{message}\n<!-- KB-FEEDBACK:{fid}:END -->\n')
+    if form == 'quoted':
+        fake = '\n'.join('> ' + line for line in fake.splitlines())
+    elif form == 'fenced':
+        fake = '```markdown\n' + fake + '```\n'
+    elif form == 'fake-review-heading':
+        fake = '## 复核条件\n\n' + fake
+    elif form == 'unclosed-fence':
+        fake = '```markdown\n## 复核条件\n\n' + fake
+    elif form == 'indented-fence':
+        fake = '   ```markdown\n' + fake + '   ```\n'
+    path = ingest(repo)['path']
+    text = (repo / path).read_text().replace('A bounded authorized fixture excerpt.', fake)
+    (repo / path).write_text(text)
+    before = (repo / path).read_bytes()
+    assert kb.queue(repo)['open_feedback'] == []
+    with pytest.raises(ValueError, match='no matching open feedback'):
+        kb.feedback(repo, path, 'Resolved', 'Reviewer', kb.digest(repo / path), fid, 'resolved')
+    assert (repo / path).read_bytes() == before
+
+
+@pytest.mark.parametrize('marker', ['<!-- KB-FEEDBACK:1111111111111111:open -->', '<!-- KB-INTEGRATION:niw:BEGIN -->'])
+def test_feedback_and_intake_reject_reserved_workflow_markers(repo, marker):
+    path = card(repo)
+    target = topic(repo)
+    before = (repo / path).read_bytes()
+    with pytest.raises(ValueError, match='reserved'):
+        kb.feedback(repo, path, marker, 'Reviewer', kb.digest(repo / path))
+    assert (repo / path).read_bytes() == before
+    with pytest.raises(ValueError, match='reserved'):
+        ingest(repo, summary='Source example: ' + marker)
+    assert not (repo / 'docs/wiki/sources/source-a.md').exists()
+    with pytest.raises(ValueError, match='reserved'):
+        kb.integrate(repo, path, target, marker, 'Reviewer', 'Reason', kb.digest(repo / target))
+    with pytest.raises(ValueError, match='reserved'):
+        kb.draft(repo, 'claim', 'injected-title', marker, 'business')
+    assert not (repo / 'docs/wiki/claims/injected-title.md').exists()
+
+
+def test_feedback_resolver_changes_the_real_event_not_an_inline_example(repo):
+    path = card(repo)
+    event = kb.feedback(repo, path, 'Check evidence', 'Reviewer', kb.digest(repo / path))
+    marker = f'<!-- KB-FEEDBACK:{event["feedback_id"]}:open -->'
+    text = (repo / path).read_text().replace('## 复核条件', 'Inline example `' + marker + '`\n\n## 复核条件', 1)
+    (repo / path).write_text(text)
+    kb.feedback(repo, path, 'Reviewed evidence', 'Reviewer', kb.digest(repo / path), event['feedback_id'], 'resolved')
+    assert 'Inline example `' + marker + '`' in (repo / path).read_text()
+    assert kb.queue(repo)['open_feedback'] == []
+
+
+def test_feedback_duplicate_does_not_trust_a_fenced_record(repo):
+    path = card(repo)
+    event = kb.feedback(repo, path, 'Check evidence', 'Reviewer', kb.digest(repo / path))
+    marker = f'<!-- KB-FEEDBACK:{event["feedback_id"]}:open -->'
+    text = (repo / path).read_text()
+    prefix, block = text.split(marker, 1)
+    (repo / path).write_text(prefix + '```markdown\n' + marker + block + '```\n')
+    assert kb.queue(repo)['open_feedback'] == []
+    result = kb.feedback(repo, path, 'Check evidence', 'Reviewer', kb.digest(repo / path))
+    assert result['status'] == 'open'
+
+
+@pytest.mark.parametrize('operation', ['feedback', 'integrate'])
+@pytest.mark.parametrize('content', ['## 复核条件\n\nA heading inside record data.', '```markdown\nUnclosed example.'])
+def test_workflow_writers_validate_complete_markdown_candidate(repo, operation, content):
+    claim, target = card(repo), topic(repo)
+    path = claim if operation == 'feedback' else target
+    before = (repo / path).read_bytes()
+
+    def write():
+        if operation == 'feedback':
+            return kb.feedback(repo, path, content, 'Reviewer', kb.digest(repo / path))
+        return kb.integrate(repo, claim, target, content, 'Reviewer', 'Reason', kb.digest(repo / path))
+
+    if content.startswith('```'):
+        with pytest.raises(ValueError, match='ambiguous or hidden'):
+            write()
+        assert (repo / path).read_bytes() == before
+    else:
+        result = write()
+        if operation == 'feedback':
+            assert kb.queue(repo)['open_feedback'] == [{'path': path, 'id': result['feedback_id']}]
+        else:
+            assert claim not in kb.queue(repo)['claims_without_topic_integration']
+
+
+@pytest.mark.parametrize('damage', ['missing-end', 'duplicate', 'crossed', 'message-changed'])
+def test_feedback_reader_rejects_malformed_records_and_reports_review(repo, damage):
+    path = card(repo)
+    first = kb.feedback(repo, path, 'First evidence', 'Reviewer', kb.digest(repo / path))
+    second = kb.feedback(repo, path, 'Second evidence', 'Reviewer', kb.digest(repo / path))
+    text = (repo / path).read_text()
+    first_start = f'<!-- KB-FEEDBACK:{first["feedback_id"]}:open -->'
+    first_end = f'<!-- KB-FEEDBACK:{first["feedback_id"]}:END -->'
+    second_start = f'<!-- KB-FEEDBACK:{second["feedback_id"]}:open -->'
+    second_end = f'<!-- KB-FEEDBACK:{second["feedback_id"]}:END -->'
+    if damage == 'missing-end':
+        text = text.replace(first_end, '')
+    elif damage == 'duplicate':
+        text += '\n' + first_start + text.split(first_start, 1)[1].split(first_end, 1)[0] + first_end + '\n'
+    elif damage == 'crossed':
+        text = text.replace(first_end, second_end).replace(second_end, first_end, 1)
+        # Move the second BEGIN before the first END, then close in crossed order.
+        text = text.replace(second_start, '').replace(first_end, second_start + '\n' + first_end, 1)
+    else:
+        text = text.replace('First evidence', 'Different evidence')
+    (repo / path).write_text(text)
+    report = kb.queue(repo)
+    assert {'path': path, 'id': first['feedback_id']} not in report['open_feedback']
+    assert report['workflow_records_needing_review']
+    with pytest.raises(ValueError, match='no matching open feedback'):
+        kb.feedback(repo, path, 'Reviewed', 'Reviewer', kb.digest(repo / path), first['feedback_id'], 'resolved')
+
+
+def test_feedback_duplicate_rechecks_target_before_return(repo, monkeypatch):
+    path = card(repo)
+    kb.feedback(repo, path, 'Evidence', 'Reviewer', kb.digest(repo / path))
+    expected = kb.digest(repo / path)
+    parse = kb.metadata
+    edited = None
+
+    def edit_after_parse(text):
+        nonlocal edited
+        result = parse(text)
+        if edited is None:
+            edited = (repo / path).read_bytes() + b'\nExternal note.\n'
+            (repo / path).write_bytes(edited)
+        return result
+
+    monkeypatch.setattr(kb, 'metadata', edit_after_parse)
+    with pytest.raises(ValueError, match='concurrent change'):
+        kb.feedback(repo, path, 'Evidence', 'Reviewer', expected)
+    assert (repo / path).read_bytes() == edited
+
+
+def test_queue_never_reads_workflow_markers_from_frontmatter(repo):
+    path = card(repo)
+    meta, body = kb.metadata((repo / path).read_text())
+    meta['aliases'] = ['<!-- KB-FEEDBACK:1111111111111111:open -->']
+    (repo / path).write_text(kb.encode(meta, body))
+    report = kb.queue(repo)
+    assert report['open_feedback'] == report['workflow_records_needing_review'] == []
+
+
+def test_workflow_parser_dependency_is_lazy_and_reports_clear_error(repo, monkeypatch):
+    import builtins
+    card(repo)
+    load = builtins.__import__
+
+    def without_markdown(name, *args, **kwargs):
+        if name == 'markdown_it':
+            raise ImportError('fixture: missing parser')
+        return load(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, '__import__', without_markdown)
+    assert kb.inspect(repo)['count'] == 1
+    assert kb.search(repo, 'NIW')
+    with pytest.raises(ImportError, match='requirements-docs.txt'):
+        kb.queue(repo)
 
 
 def test_writer_lock_and_symlink_runtime_rejected(repo):

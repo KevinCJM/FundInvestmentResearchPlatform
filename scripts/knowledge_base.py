@@ -241,7 +241,9 @@ def inspect(root: Path) -> dict:
     for path in note_paths(root):
         item = {'path': path, 'metadata': {}, 'errors': [], 'changed_dependencies': [], 'freshness': 'untracked'}
         try:
-            meta, body = metadata(safe_file(root, path).read_text(encoding='utf-8'))
+            original = safe_file(root, path).read_bytes()
+            item['content_sha256'] = hashlib.sha256(original).hexdigest()
+            meta, body = metadata(original.decode('utf-8'))
             item['metadata'] = meta
             item['errors'] = validate(meta, body, path)
             revision = meta.get('source_revision')
@@ -399,6 +401,7 @@ def draft(root: Path, kind: str, slug: str, title: str, domain: str, source_kind
         raise ValueError('invalid kind, id, domain, or source kind')
     if not title.strip() or '\n' in title or '\r' in title:
         raise ValueError('title must be one nonempty line')
+    reject_workflow_text(title)
     if kind == 'source' and uri != '未提供':
         canonical_source(uri)
     meta = {'id': slug, 'type': kind, 'title': title, 'domains': [domain], 'review_state': 'pending',
@@ -474,6 +477,7 @@ def intake(root: Path, slug: str, title: str, domain: str, source_kind: str,
         raise ValueError('source version, approved summary and rights must be explicit')
     if len(summary) > 12000:
         raise ValueError('summary exceeds 12000 characters; keep only the approved necessary excerpt')
+    reject_workflow_text(title, version, summary)
     source_key = hashlib.sha256(canonical.encode()).hexdigest()
     content_hash = hashlib.sha256(summary.strip().encode()).hexdigest()
     with write_lock(root):
@@ -513,6 +517,149 @@ def intake(root: Path, slug: str, title: str, domain: str, source_kind: str,
                 'notice': 'pending/unverified; no download, approval, or authority update occurred'}
 
 
+def reject_workflow_text(*values: str) -> None:
+    if any('<!-- KB-' in value for value in values):
+        raise ValueError('reserved integration marker or workflow marker in text fields')
+
+
+def workflow_records(body: str) -> tuple[list[dict], list[str]]:
+    """Recognize bounded, top-level records after the note's final review section."""
+    try:
+        from markdown_it import MarkdownIt
+    except ImportError as exc:
+        raise ImportError('workflow records require scripts/requirements-docs.txt (markdown-it-py)') from exc
+    tokens = MarkdownIt('commonmark').parse(body)
+    lines = body.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+    marker = re.compile(r'<!-- KB-(INTEGRATION|FEEDBACK):([a-z0-9]+(?:-[a-z0-9]+)*):(BEGIN|open|resolved|deferred|END) -->\Z')
+    markers, headings = [], []
+    for index, token in enumerate(tokens):
+        if token.level != 0 or not token.map:
+            continue
+        if token.type == 'heading_open' and token.tag == 'h2' and tokens[index + 1].content == '复核条件':
+            headings.append((offsets[token.map[0]], offsets[token.map[1]]))
+        if token.type != 'html_block' or not lines[token.map[0]].startswith('<!-- KB-'):
+            continue
+        match = marker.fullmatch(token.content.rstrip('\n'))
+        if match:
+            kind, identifier, state = match.groups()
+            markers.append({'kind': kind, 'id': identifier, 'state': state,
+                            'start': offsets[token.map[0]], 'content_start': offsets[token.map[0]] + len(match.group()),
+                            'end': offsets[token.map[1]]})
+    stack, blocks, invalid, counts = [], [], set(), {}
+    warnings = []
+    for token in markers:
+        key = token['kind'], token['id']
+        counts.setdefault(key, [0, 0])[token['state'] == 'END'] += 1
+        if token['state'] != 'END':
+            if stack:
+                invalid.update((entry['kind'], entry['id']) for entry in stack)
+                invalid.add(key)
+            stack.append(token)
+        elif not stack or (stack[-1]['kind'], stack[-1]['id']) != key:
+            invalid.add(key)
+            invalid.update((entry['kind'], entry['id']) for entry in stack)
+            stack.clear()
+        else:
+            opening = stack.pop()
+            blocks.append({**opening, 'end': token['end'], 'body': body[opening['content_start']:token['start']]})
+    invalid.update((entry['kind'], entry['id']) for entry in stack)
+    invalid.update(key for key, count in counts.items() if count != [1, 1])
+    # A heading inside an actual bounded record is its data, not the note boundary.
+    sections = [end for start, end in headings if not any(b['start'] <= start < b['end'] for b in blocks)]
+    boundary = max(sections, default=len(body) + 1)
+    valid = []
+    for block in blocks:
+        if ((block['kind'], block['id']) in invalid or block['start'] < boundary
+                or (block['kind'] == 'INTEGRATION' and block['state'] != 'BEGIN')
+                or (block['kind'] == 'FEEDBACK' and block['state'] not in {'open', 'resolved', 'deferred'})):
+            warnings.append('ambiguous or misplaced workflow record requires review')
+        else:
+            valid.append(block)
+    if invalid:
+        warnings.append('unbounded, duplicate or crossed workflow markers require review')
+    if len(re.findall(r'<!-- KB-(?:INTEGRATION|FEEDBACK):', body)) > len(markers):
+        warnings.append('quoted, fenced or non-record workflow marker text is inactive')
+    return valid, sorted(set(warnings))
+
+
+def integration_layout(meta: dict, claim: str, topic: str, claim_hash: str) -> tuple[str, str, str]:
+    relative = os.path.relpath(claim, Path(topic).parent).replace(os.sep, '/')
+    heading = f'\n### 整合记录：{meta["title"]}\n\n'
+    evidence = f'\n\n依据：[{meta["title"]}]({relative})；范围：{meta["scope"]}\n\n整合审阅：'
+    provenance = f'\n\n记录版本：{meta["source_revision"]}；claim SHA-256：{claim_hash}；目标修改前 SHA-256：'
+    return heading, evidence, provenance
+
+
+def integration_record(block: dict, meta: dict, claim: str, topic: str, claim_hash: str) -> dict | None:
+    heading, evidence, provenance = integration_layout(meta, claim, topic, claim_hash)
+    pattern = (re.escape(heading) + r'(?P<summary>.+?)' + re.escape(evidence)
+               + r'(?P<reviewer>.+?)；日期：(?P<date>\d{4}-\d{2}-\d{2})；理由：(?P<reason>.+?)'
+               + re.escape(provenance) + r'(?P<before>[0-9a-f]{64})\n')
+    receipt = block['body']
+    match = re.fullmatch(pattern, receipt, re.S)
+    if (not match or receipt.count(evidence) != 1
+            or len(re.findall(r'；日期：\d{4}-\d{2}-\d{2}；理由：', receipt.partition(evidence)[2])) != 1):
+        return None
+    fields = match.groupdict()
+    try:
+        date.fromisoformat(fields['date'])
+        reject_workflow_text(fields['summary'], fields['reviewer'], fields['reason'], meta['title'], meta['scope'])
+    except ValueError:
+        return None
+    return fields if all(fields[key].strip() for key in ('summary', 'reviewer', 'reason')) else None
+
+
+def feedback_record(block: dict) -> dict | None:
+    receipt, resolution = block['body'], None
+    trailer = re.search(r'\n<!-- KB-FEEDBACK-RESOLUTION:(.+) -->\n\Z', receipt)
+    try:
+        if trailer:
+            resolution = json.loads(trailer.group(1))
+            receipt = receipt[:trailer.start()]
+            if (not isinstance(resolution, dict) or set(resolution) != {'decision', 'author', 'message', 'date'}
+                    or resolution['decision'] != block['state'] or block['state'] == 'open'
+                    or any(not isinstance(resolution[key], str) or not resolution[key].strip() for key in ('author', 'message', 'date'))):
+                return None
+            date.fromisoformat(resolution['date'])
+            reject_workflow_text(resolution['author'], resolution['message'])
+        elif block['state'] != 'open':
+            return None
+        match = re.fullmatch(r'\n## 反馈：(?P<date>\d{4}-\d{2}-\d{2})\n\n提出者：(?P<author>[^\n]+)\n\n(?P<message>.+)\n', receipt, re.S)
+        if not match:
+            return None
+        fields = match.groupdict()
+        date.fromisoformat(fields['date'])
+        reject_workflow_text(fields['author'], fields['message'])
+        if not all(fields[key].strip() for key in ('author', 'message')):
+            return None
+        identity = hashlib.sha256((fields['author'] + '\0' + fields['message']).encode()).hexdigest()[:16]
+        return {**block, **fields, 'resolution': resolution} if identity == block['id'] else None
+    except (ValueError, TypeError):
+        return None
+
+
+def render_feedback(event: dict) -> str:
+    text = (f'<!-- KB-FEEDBACK:{event["id"]}:{event["state"]} -->\n## 反馈：{event["date"]}\n\n'
+            f'提出者：{event["author"]}\n\n{event["message"]}\n')
+    if event.get('resolution'):
+        text += '\n<!-- KB-FEEDBACK-RESOLUTION:' + json.dumps(event['resolution'], ensure_ascii=False) + ' -->\n'
+    return text + f'<!-- KB-FEEDBACK:{event["id"]}:END -->\n'
+
+
+def workflow_update(previous: list[dict], body: str, kind: str, identifier: str) -> dict:
+    records, _ = workflow_records(body)
+    matches = [r for r in records if (r['kind'], r['id']) == (kind, identifier)]
+    signatures = {(r['kind'], r['id'], r['state'], r['body']) for r in records}
+    if len(matches) != 1 or any(
+            (r['kind'], r['id'], r['state'], r['body']) not in signatures
+            for r in previous if (r['kind'], r['id']) != (kind, identifier)):
+        raise ValueError('workflow record is ambiguous or hidden by Markdown; review the note before writing')
+    return matches[0]
+
+
 def integrate(root: Path, claim: str, topic: str, summary: str, reviewer: str,
               reason: str, expected: str) -> dict:
     if not claim.startswith(WIKI + '/claims/') or not topic.startswith(WIKI + '/topics/'):
@@ -534,42 +681,36 @@ def integrate(root: Path, claim: str, topic: str, summary: str, reviewer: str,
         if before != expected:
             raise ValueError('concurrent change: re-read the target topic')
         meta, body = metadata(original.decode('utf-8'))
-        fields = (summary, reviewer, reason, source['metadata']['title'], source['metadata']['scope'])
-        if any('<!-- KB-INTEGRATION:' in field for field in fields):
-            raise ValueError('reserved integration marker in receipt fields')
-        relative = os.path.relpath(claim, Path(topic).parent).replace(os.sep, '/')
-        claim_hash = digest(safe_file(root, claim))
-        evidence = (f'\n\n依据：[{source["metadata"]["title"]}]({relative})；范围：'
-                    f'{source["metadata"]["scope"]}\n\n整合审阅：')
-        content = f'\n### 整合记录：{source["metadata"]["title"]}\n\n{summary.strip()}{evidence}{reviewer}；日期：'
-        provenance = (f'；理由：{reason}\n\n记录版本：{source["metadata"]["source_revision"]}；'
-                      f'claim SHA-256：{claim_hash}；目标修改前 SHA-256：')
-        date_separator = r'；日期：\d{4}-\d{2}-\d{2}；理由：'
-        # Recorded date and pre-write hash are audit text, not the current guard.
-        pattern = re.escape(content) + r'\d{4}-\d{2}-\d{2}' + re.escape(provenance) + r'[0-9a-f]{64}\n'
-
-        def matches_receipt(receipt: str) -> bool:
-            audit = receipt.partition(evidence)[2]
-            return (receipt.count(evidence) == 1
-                    and len(re.findall(date_separator, audit)) == 1
-                    and re.fullmatch(pattern, receipt) is not None)
-
+        reject_workflow_text(summary, reviewer, reason, source['metadata']['title'], source['metadata']['scope'])
+        claim_hash = source['content_sha256']
+        heading, evidence, provenance = integration_layout(source['metadata'], claim, topic, claim_hash)
+        previous, _ = workflow_records(body)
+        fields = {'summary': summary.strip(), 'reviewer': reviewer, 'reason': reason}
         if marker in body or end_marker in body:
-            if body.count(marker) != 1 or body.count(end_marker) != 1:
+            matches = [r for r in previous if r['kind'] == 'INTEGRATION' and r['id'] == source['metadata']['id']]
+            parsed = integration_record(matches[0], source['metadata'], claim, topic, claim_hash) if len(matches) == 1 else None
+            if (not parsed or any(parsed[key] != value for key, value in fields.items())
+                    or claim + '::sha256:' + claim_hash not in meta['dependencies']):
                 raise ValueError('existing integration differs; review and revise that block explicitly')
-            old_block, closed, _ = body.split(marker, 1)[1].partition(end_marker)
-            # Receipt delimiters embedded in legacy text fields are ambiguous.
-            if not closed or not matches_receipt(old_block):
-                raise ValueError('existing integration differs; review and revise that block explicitly')
+            if digest(safe_file(root, claim)) != claim_hash:
+                raise ValueError('claim changed after review; re-read its evidence')
             if digest(safe_file(root, topic)) != expected:
                 raise ValueError('concurrent change: re-read the target topic')
             return {'status': 'already_integrated', 'topic': topic, 'claim': claim}
-        receipt = f'{content}{date.today().isoformat()}{provenance}{before}\n'
-        if not matches_receipt(receipt):
+        receipt = (f'{heading}{summary.strip()}{evidence}{reviewer}；日期：{date.today().isoformat()}；理由：'
+                   f'{reason}{provenance}{before}\n')
+        if not integration_record({'body': receipt}, source['metadata'], claim, topic, claim_hash):
             raise ValueError('integration fields contain ambiguous receipt delimiters')
         block = f'\n\n{marker}{receipt}{end_marker}\n'
         meta['dependencies'] = [d for d in meta['dependencies'] if FINGERPRINT.fullmatch(d).group(1) != claim] + [claim + '::sha256:' + claim_hash]
-        replace_note(root, topic, encode(meta, body + block), expected)
+        rendered = encode(meta, body + block)
+        candidate = workflow_update(previous, metadata(rendered)[1], 'INTEGRATION', source['metadata']['id'])
+        parsed = integration_record(candidate, source['metadata'], claim, topic, claim_hash)
+        if not parsed or any(parsed[key] != value for key, value in fields.items()):
+            raise ValueError('integration fields contain ambiguous receipt delimiters')
+        if digest(safe_file(root, claim)) != claim_hash:
+            raise ValueError('claim changed after review; re-read its evidence')
+        replace_note(root, topic, rendered, expected)
         return {'status': 'integrated', 'topic': topic, 'claim': claim, 'before_sha256': before,
                 'after_sha256': digest(target), 'notice': 'derived topic only; original business authority unchanged'}
 
@@ -578,24 +719,44 @@ def feedback(root: Path, path: str, message: str, author: str, expected: str,
              feedback_id: str | None = None, decision: str | None = None) -> dict:
     if path not in note_paths(root) or not message.strip() or not author.strip():
         raise ValueError('feedback requires an exact source/claim/topic, message and author')
+    reject_workflow_text(message, author)
     with write_lock(root):
         target = safe_file(root, path)
-        meta, body = metadata(target.read_text(encoding='utf-8'))
+        original = target.read_bytes()
+        if hashlib.sha256(original).hexdigest() != expected:
+            raise ValueError('concurrent change: re-read the feedback note')
+        meta, body = metadata(original.decode('utf-8'))
+        previous, _ = workflow_records(body)
+        events = [event for block in previous if block['kind'] == 'FEEDBACK'
+                  if (event := feedback_record(block)) is not None]
         if decision:
             if decision not in {'resolved', 'deferred'} or not feedback_id or not re.fullmatch('[0-9a-f]{16}', feedback_id):
                 raise ValueError('resolution needs a feedback ID and resolved/deferred decision')
-            marker = f'<!-- KB-FEEDBACK:{feedback_id}:open -->'
-            if marker not in body:
+            matches = [event for event in events if event['id'] == feedback_id and event['state'] == 'open']
+            if len(matches) != 1:
                 raise ValueError('no matching open feedback to resolve')
-            body = body.replace(marker, f'<!-- KB-FEEDBACK:{feedback_id}:{decision} -->', 1)
-            body += f'\n\n反馈处理 {feedback_id}：{decision}；{author}；{date.today().isoformat()}\n\n{message}\n'
+            event = matches[0]
+            updated = {**event, 'state': decision, 'resolution': {
+                'decision': decision, 'author': author, 'message': message, 'date': date.today().isoformat()}}
+            body = body[:event['start']] + render_feedback(updated) + body[event['end']:]
         else:
             feedback_id = hashlib.sha256((author + '\0' + message).encode()).hexdigest()[:16]
-            if f'<!-- KB-FEEDBACK:{feedback_id}:' in body:
+            matches = [event for event in events if event['id'] == feedback_id
+                       and event['author'] == author and event['message'] == message]
+            if len(matches) == 1:
+                if digest(safe_file(root, path)) != expected:
+                    raise ValueError('concurrent change: re-read the feedback note')
                 return {'status': 'already_recorded', 'path': path, 'feedback_id': feedback_id}
-            body += f'\n\n<!-- KB-FEEDBACK:{feedback_id}:open -->\n## 反馈：{date.today().isoformat()}\n\n提出者：{author}\n\n{message}\n'
+            updated = {'id': feedback_id, 'state': 'open', 'author': author, 'message': message,
+                       'date': date.today().isoformat(), 'resolution': None}
+            body += '\n\n' + render_feedback(updated)
         meta['review_state'] = 'stale'
-        replace_note(root, path, encode(meta, body), expected)
+        rendered = encode(meta, body)
+        candidate = workflow_update(previous, metadata(rendered)[1], 'FEEDBACK', feedback_id)
+        parsed = feedback_record(candidate)
+        if not parsed or any(parsed[key] != updated[key] for key in ('state', 'author', 'message', 'date', 'resolution')):
+            raise ValueError('feedback fields contain ambiguous record delimiters; use a one-line author')
+        replace_note(root, path, rendered, expected)
         return {'status': decision or 'open', 'path': path, 'feedback_id': feedback_id,
                 'notice': 'old result preserved; explicit evidence review is still required before clearing stale'}
 
@@ -611,22 +772,51 @@ def queue(root: Path) -> dict:
             match = FINGERPRINT.fullmatch(dep) if isinstance(dep, str) else None
             if match:
                 dependencies.add(match.group(1))
-    result = {'needs_review': [], 'sources_without_claims': [], 'claims_without_topic_integration': [], 'open_feedback': []}
+    result = {'needs_review': [], 'sources_without_claims': [], 'claims_without_topic_integration': [],
+              'open_feedback': [], 'workflow_records_needing_review': []}
+    parsed_records = {}
+    by_path = {item['path']: item for item in report['records']}
+    for item in report['records']:
+        try:
+            original = safe_file(root, item['path']).read_bytes()
+            if hashlib.sha256(original).hexdigest() != item.get('content_sha256'):
+                raise ValueError('note changed while reading queue; retry the snapshot')
+            _, body = metadata(original.decode('utf-8'))
+            blocks, warnings = workflow_records(body)
+        except (ValueError, OSError, UnicodeError) as exc:
+            blocks, warnings = [], [str(exc)]
+        parsed_records[item['path']] = blocks
+        for block in blocks:
+            if block['kind'] == 'FEEDBACK':
+                event = feedback_record(block)
+                if event and event['state'] == 'open':
+                    result['open_feedback'].append({'path': item['path'], 'id': event['id']})
+                elif not event:
+                    warnings.append('invalid feedback identity or receipt requires review')
+            else:
+                claim = WIKI + '/claims/' + block['id'] + '.md'
+                source = by_path.get(claim)
+                if (item['metadata'].get('type') != 'topic' or not source or source['errors']
+                        or claim + '::sha256:' + source['content_sha256'] not in item['metadata'].get('dependencies', [])
+                        or not integration_record(block, source['metadata'], claim, item['path'], source['content_sha256'])):
+                    warnings.append('invalid integration identity or evidence receipt requires review')
+        if warnings:
+            result['workflow_records_needing_review'].append({'path': item['path'], 'issues': sorted(set(warnings))})
     for item in report['records']:
         path, meta = item['path'], item['metadata']
-        body = safe_file(root, path).read_text(encoding='utf-8')
         if item['needs_review']:
             result['needs_review'].append({'path': path, 'result': meta.get('result'), 'freshness': item['freshness'],
                                            'upstream': item.get('upstream_needs_review', [])})
         if meta.get('type') == 'source' and path not in dependencies:
             result['sources_without_claims'].append(path)
         if meta.get('type') == 'claim' and not item['needs_review']:
-            marker = '<!-- KB-INTEGRATION:' + meta['id'] + ':BEGIN -->'
-            if not any(marker in safe_file(root, t['path']).read_text(encoding='utf-8')
-                       for t in report['records'] if t['metadata'].get('type') == 'topic'):
+            expected = path + '::sha256:' + item['content_sha256']
+            if not any(integration_record(block, meta, path, topic['path'], item['content_sha256'])
+                       for topic in report['records'] if topic['metadata'].get('type') == 'topic' and not topic['errors']
+                       if expected in topic['metadata'].get('dependencies', [])
+                       for block in parsed_records[topic['path']]
+                       if block['kind'] == 'INTEGRATION' and block['id'] == meta['id']):
                 result['claims_without_topic_integration'].append(path)
-        for fid in re.findall(r'<!-- KB-FEEDBACK:([0-9a-f]{16}):open -->', body):
-            result['open_feedback'].append({'path': path, 'id': fid})
     return result
 
 

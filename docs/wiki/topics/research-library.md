@@ -9,7 +9,7 @@ scope: "仓库既有研究依据与本次知识流程的有源说明；不代表
 reviewed_at: "2026-10-04"
 reviewed_by: "AI 来源与知识流程核对"
 source_revision: "8ce7c06cc655d027cec6856caa873a1eafa1e51d"
-dependencies: ["docs/research/allocation-methods.md::sha256:8d2f0a79a54005ad165237a9adf504d1a96b36100361a922b4f2f62aad31bad6", "docs/research/cma-model-decisions.md::sha256:66c5decfaf4d686dc0c791fcda43136347bcdc4bbda65c17212e739f61ee10cd", "docs/research/regime-methods.md::sha256:04dbadaddf4a30b1c1fcb9a6a7a36b9c3f8980e1eca554e379b102f4d6ceb4fd", "docs/governance/documentation.md::sha256:2de6ec7df1733848cb8d2c891f37afcd1e4604c6d34983f2c7df41a9a484bca6"]
+dependencies: ["docs/research/allocation-methods.md::sha256:8d2f0a79a54005ad165237a9adf504d1a96b36100361a922b4f2f62aad31bad6", "docs/research/cma-model-decisions.md::sha256:66c5decfaf4d686dc0c791fcda43136347bcdc4bbda65c17212e739f61ee10cd", "docs/research/regime-methods.md::sha256:04dbadaddf4a30b1c1fcb9a6a7a36b9c3f8980e1eca554e379b102f4d6ceb4fd", "docs/governance/documentation.md::sha256:b94507fb7b49883392a0e049325ee98ad1abb33edc969cfb8798c3e76b230316"]
 evidence_kind: "mixed"
 aliases: ["竞品", "研报", "论文", "外部研究", "知识整合"]
 ---

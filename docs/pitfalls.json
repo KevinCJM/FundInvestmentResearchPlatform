@@ -1640,7 +1640,10 @@
         "Intake hashes a file after parsing older bytes, accepting an external edit as the replacement baseline and losing that edit.",
         "Integration substring matches accept a different summary, reviewer or reason as an already persisted audit record; malformed or duplicate blocks can hide this mismatch.",
         "An intact integration receipt bypasses the expected target hash after external topic edits.",
-        "An initial integration embeds reserved receipt markers or ambiguous field delimiters and writes a block that cannot be retried safely."
+        "An initial integration embeds reserved receipt markers or ambiguous field delimiters and writes a block that cannot be retried safely.",
+        "Duplicate feedback bypasses the current target hash and silently accepts an intervening note edit.",
+        "Queue or feedback resolution treats quoted, fenced, imported, malformed, or inline marker text as executable workflow state.",
+        "A claim changes to conflicting or unreviewed evidence after inspection, but a later hash binds those changed bytes to a receipt using the older reviewed metadata."
       ],
       "trigger_actions": [
         "finish a code, config or documentation milestone",
@@ -1689,7 +1692,11 @@
         "Derive the intake replacement guard from the exact raw bytes parsed into metadata/body, never from a later read; inject an external edit after parsing and require preservation plus failure.",
         "Integration idempotence must match exactly one bounded existing record and the requested summary/reviewer/reason plus bound claim evidence; preserve historical receipt date/hash, and reject ambiguous or malformed markers without writing.",
         "Require the exact current target hash before both new integration and idempotent success; use the returned post-write hash for an unchanged retry, and fail on intervening edits.",
-        "Validate the initial rendered receipt and every interpolated field before writing, rejecting reserved integration markers and ambiguous delimiters; reuse the same bounded-record validator for retries."
+        "Validate the initial rendered receipt and every interpolated field before writing, rejecting reserved integration markers and ambiguous delimiters; reuse the same bounded-record validator for retries.",
+        "Apply current-byte hash guards to duplicate feedback as well as integration, and preserve intervening edits.",
+        "Use one top-level bounded Markdown record parser for queue, integration retries, duplicate feedback and resolution; validate identities/audit fields, reject reserved markers at input boundaries, and surface ambiguous legacy text for review instead of promoting it.",
+        "Validate generated records in the complete candidate note before writing so fences, quoting or heading-like text cannot hide new or existing workflow records.",
+        "Bind claim promotion to the exact inspected claim bytes and recheck that snapshot before write or idempotent success; never combine an old reviewed result with a newer claim hash."
       ],
       "safe_observation_methods": [
         "python3 scripts/check_documentation.py --staged --json",

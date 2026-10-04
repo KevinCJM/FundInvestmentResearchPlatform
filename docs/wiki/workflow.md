@@ -16,9 +16,10 @@
 
 ## 环境与入口
 
-从项目根使用Python3.12和原文档依赖 `scripts/requirements-docs.txt`。检索、来源和核验操作使用标准库；catalog/coverage复用原Markdown解析器，需要上述文档依赖，不新增服务或包。
+从项目根使用Python3.12和原文档依赖 `scripts/requirements-docs.txt`。检索、来源和核验操作使用标准库；整合、反馈处理、queue及catalog/coverage复用已声明的Markdown解析器，需要上述文档依赖，不新增服务或包。
 
 ```bash
+python3 -m pip install -r scripts/requirements-docs.txt
 python3 scripts/knowledge_base.py --help
 python3 scripts/knowledge_base.py check --summary
 python3 scripts/knowledge_base.py coverage
@@ -96,9 +97,9 @@ python3 scripts/knowledge_base.py queue
 python3 scripts/knowledge_base.py resolve-feedback docs/wiki/claims/待复核主张.md --feedback-id "返回的ID" --decision resolved --message "处理结果、新证据或不采纳理由" --by "审阅者" --expected-sha256 "重新读取的hash"
 ```
 
-feedback可指source/claim/topic，保旧result并置stale；同作者/内容不重复。处理可resolved/deferred，但不自动清除stale。reviewer须更新正文、证据和受影响下游，不能批量刷新hash冒充复核。
+feedback可指source/claim/topic，保旧result并置stale；同作者/内容不重复，但幂等返回也须核当前hash，不能用写入前的旧hash。处理可resolved/deferred，但不自动清除stale。reviewer须更新正文、证据和受影响下游，不能批量刷新hash冒充复核。
 
-queue展示需复核、无claim使用的source、尚无命令整合回执的已核claim、开放反馈。它是信息清单，不是自动催办或审批。外部撤回、数据vintage或生产变化要明确新证据，不能靠本地hash发现。
+queue展示需复核、无claim使用的source、尚无合法命令整合回执的已核claim、开放反馈。只有顶层完整、有界、身份与证据字段匹配的记录可进入流程；引用/围栏/内联示例、导入材料中的标记和不完整旧记录不得冒充事件，歧义内容提示人工复核。来源摘要、反馈文本等输入拒绝保留的KB工作流标记；正常资料请保留必要摘要或明确可读转述。新反馈含END边界，旧无END记录需核对后人工补全，不自动猜测或执行。它是信息清单，不是自动催办或审批。外部撤回、数据vintage或生产变化要明确新证据，不能靠本地hash发现。
 
 ## 全项目目录与增量维护
 
@@ -162,7 +163,13 @@ python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R04 --mode
 
 新稳定文件尚未进Git时，普通Hermes会如实报未跟踪；可用外部临时索引验证精确候选，不改真实暂存区、不commit、不用artifact白名单掩盖。结构/工具通过不替代金融资格或生产验证。
 
-### 当前验收记录
+### 当前交付验收
+
+本地与独立审核已重跑248项离线测试（171知识工作流、76文档检查器、1 Portable）。105受管文档/1371本地链接、36模块、92附档、4技能覆盖保持通过；22条知识记录无invalid/stale/untracked，保留原2项needs_review。队列没有未解决的工作流记录格式告警。
+
+来源、反馈、整合与队列使用一致的记录边界；引用/围栏/导入文字不是流程事件。完整候选写入前验证新旧事件仍可识别，来源核验快照变化则停止。知识库测试已纳入现有Documentation工作流的同一pytest步骤，无新包或权限。实际远端CI、Bot审核及合并状态以[PR #68](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/68)对应HEAD为准；本地通过不代替这些结果。
+
+### 恢复后首次验收记录
 
 2026-10-04环境曾发生整体快照替换，旧环境的167项测试没有沿用为新机通过。完整内容已按原设计、保留的主题原文、证据和已验收工具契约恢复；恢复代码不声称与丢失版本逐字相同，已重新验收：
 
@@ -188,3 +195,5 @@ python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R04 --mode
 后续审核核实整合幂等的子串判断会误认不同摘要或审阅记录，现改为唯一BEGIN/END边界内的整块精确比较，拒绝不完整、重复或审阅字段边界多解的块，保持旧块格式与原历史日期/hash。新增11项回归在修复前10失败、1通过，修复后201项通过（124知识库、76文档、1 Portable）；不因此宣称金融冲突或生产状态已通过。
 
 再次核对整合写入边界后，幂等成功也执行当前目标hash门禁与返回前复查；旧整合前hash不再作为重试凭据，未变目标可使用上次返回的after_sha256。首次写入与重试共用回执校验，摘要、审阅人、理由和claim标题/范围中的保留整合标记及多解字段会在写入前被拒绝。新增16项回归先复现失败再修复，最终217项通过（140知识库、76文档、1 Portable）；相关安全重试及手工历史块兼容性均重新核对。
+
+工作流状态边界专项核对补充31项回归：解析器复用原markdown-it-py，只接受末尾复核章节之后的顶层完整记录；反馈与处理记录具有明确边界，引用/围栏/旧无END等内容列入workflow_records_needing_review，不作为待处理事件。来源摘要/文本不能通过标记操纵队列，修改后claim快照不会与旧审阅结果拼接。248项完整回归通过；反馈作者使用非空单行文本，处理原因保留在有界回执中。

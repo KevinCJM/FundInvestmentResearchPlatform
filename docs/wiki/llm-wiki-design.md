@@ -134,9 +134,11 @@ integrate仅把已审阅、证据current、无上游待核的claim以有界摘�
 
 ### 反馈与修订
 
-feedback对source/claim/topic记录明确更正、反证或范围变化、提出者和日期，置stale并保留旧result；相同事件不重复写入。resolve-feedback只记录resolved/deferred及原因，不自动清除stale。reviewer需再核正文、来源和下游，逐项更新证据/状态，Git保留修订。
+feedback对source/claim/topic记录明确更正、反证或范围变化、提出者和日期，置stale并保留旧result；相同事件不重复写入，但重试同样须核对当前目标hash。resolve-feedback只记录resolved/deferred及原因，不自动清除stale。reviewer需再核正文、来源和下游，逐项更新证据/状态，Git保留修订。
 
-queue显示需复核、尚无claim使用的source、尚无命令整合回执的已核claim及开放反馈；它是信息清单，不自动催办/关闭/批准。已有人工组织的主题引用仍有效，不要求全部改成自动块。
+队列、幂等判断和反馈处理共用已声明Markdown解析器，只接受顶层完整有界、身份及审核字段可验证的工作流记录；引用、围栏和资料正文中的标记不是流程指令。新反馈具备END边界，旧无边界/歧义记录只提示复核，不自动处理。写入前用同一解析器检查完整候选，不能让未闭合围栏等输入隐藏新旧事件。来源核验结果须绑定实际检查的claim字节，整合前再核对，不把旧结论与新hash拼接。
+
+queue显示需复核、尚无claim使用的source、尚无合法命令整合回执的已核claim及开放反馈；它是信息清单，不自动催办/关闭/批准。已有人工组织的主题引用仍有效，不要求全部改成自动块。
 
 ### 并发与恢复
 
