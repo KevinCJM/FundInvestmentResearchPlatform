@@ -60,6 +60,8 @@ def private_json(path, value):
 
 
 def local_url(value):
+    if not isinstance(value, str) or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value):
+        raise LocalAgentError('本地服务地址不能包含空白或控制字符，请检查端口设置。')
     parsed = urlsplit(value)
     if (parsed.scheme != 'http' or parsed.hostname not in {'127.0.0.1', 'localhost', '::1'}
             or parsed.username or parsed.password or parsed.path not in {'', '/'}

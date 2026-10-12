@@ -219,7 +219,9 @@ to verify provider access. Successful HTTP checks alone do not prove model quali
 independent ETL executors remain governed by their existing task lifecycle.
 Default ports are 5173/8787/8000; overrides are `FRONTEND_PORT`, `AGENT_PORT` and
 `BACKEND_PORT`. Explicit local service ports must be 1–65535; invalid ports
-are rejected before any identity configuration or master key is created. Logs
+and URLs containing whitespace/control characters are rejected before parsing
+or creating any identity configuration or master key. Check copied environment
+values for CR/LF or trailing spaces. Logs
 and process identities are in `.run/`.
 
 The offline integration runner creates temporary business/agent data and a

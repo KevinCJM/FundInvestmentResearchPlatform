@@ -26,7 +26,8 @@ def config(tmp_path):
 
 @pytest.mark.parametrize('url', ['http://0.0.0.0:8787', 'https://127.0.0.1', 'http://example.com',
                                 'http://user:pass@localhost', 'http://localhost/a', 'http://localhost:bad',
-                                'http://localhost:0', 'http://localhost:65536'])
+                                'http://localhost:0', 'http://localhost:65536',
+                                ' http://localhost:8787', '\nhttp://127.0.0.1:8787'])
 def test_local_identity_is_never_enabled_for_public_or_ambiguous_urls(url):
     with pytest.raises(local.LocalAgentError):
         local.local_url(url)
@@ -45,6 +46,18 @@ def test_invalid_local_service_port_cannot_initialize_data(tmp_path, monkeypatch
     urls = ['http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787']
     urls[service] = f'http://127.0.0.1:{port}'
     with pytest.raises(local.LocalAgentError, match='1–65535'):
+        local.prepare(*urls, tmp_path)
+    assert not (tmp_path/'.run').exists()
+    assert not (tmp_path/'.data').exists()
+
+
+@pytest.mark.parametrize('service', [0, 1, 2])
+@pytest.mark.parametrize('control', ['\n', '\r', '\t', ' ', '\u00a0', '\x00', '\x7f'])
+def test_local_service_url_controls_fail_before_initialization(tmp_path, monkeypatch, service, control):
+    monkeypatch.setattr(local.subprocess, 'run', lambda *a, **kw: pytest.fail('Invalid service URL must not run an agent command'))
+    urls = ['http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787']
+    urls[service] += control
+    with pytest.raises(local.LocalAgentError, match='不能包含空白或控制字符'):
         local.prepare(*urls, tmp_path)
     assert not (tmp_path/'.run').exists()
     assert not (tmp_path/'.data').exists()
