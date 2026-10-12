@@ -28,6 +28,19 @@ class LocalAgentError(RuntimeError):
     pass
 
 
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def sync_file(path):
+    with path.open('rb') as handle:
+        os.fsync(handle.fileno())
+
+
 def private_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
@@ -40,6 +53,8 @@ def private_json(path, value):
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        sync_directory(path.parent)
+        sync_directory(path.parent.parent)
     finally:
         Path(temporary).unlink(missing_ok=True)
 
@@ -106,11 +121,11 @@ def read_config(root=ROOT, *, allow_initializing=False):
 
 
 def agent_environment():
-    # Do not inherit a developer source path or an unrelated system SOCKS proxy.
-    env = dict(os.environ)
-    env.pop('PYTHONPATH', None)
-    for key in ('ALL_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'http_proxy', 'https_proxy'):
-        env.pop(key, None)
+    # Only process/locale/TLS basics cross the independent-runtime boundary.
+    allowed = {'PATH', 'HOME', 'USER', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+               'TMPDIR', 'TMP', 'TEMP', 'SYSTEMROOT', 'SSL_CERT_FILE', 'SSL_CERT_DIR'}
+    env = {key: value for key, value in os.environ.items() if key in allowed}
+    env.setdefault('PATH', os.defpath)
     env['NO_PROXY'] = '127.0.0.1,localhost,::1'
     return env
 
@@ -146,6 +161,8 @@ def prepare(backend_url, browser_origin, agent_url, root=ROOT):
     from export_portable_agent_config import configuration
     apps = configuration(backend_url, browser_origin, endpoints)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    sync_directory(directory.parent)
+    sync_directory(root)
     probe = subprocess.run([python, '-c',
         'import json, importlib.metadata; from pathlib import Path; import portable_agent; '
         'p=Path(portable_agent.__file__).parent/"web/manifest.json"; '
@@ -161,7 +178,7 @@ def prepare(backend_url, browser_origin, agent_url, root=ROOT):
                              identity_key=secrets.token_hex(32), service_token=secrets.token_hex(32), initializing=True)
     value.update(urls)
     value['model_endpoints'] = endpoints
-    if previous is None:
+    if value.get('initializing') is True:
         # Persist the paired identity before any key can exist; retries reuse it.
         private_json(path, value)
     if value.get('initializing') is True and not (directory/'master.key').exists():
@@ -169,9 +186,12 @@ def prepare(backend_url, browser_origin, agent_url, root=ROOT):
         # the validated key atomically without ever replacing an existing key.
         with tempfile.TemporaryDirectory(dir=directory, prefix='.initial-key-') as staging:
             key = issuer_key(python, Path(staging))
+            sync_file(Path(staging)/'master.key')
             os.link(Path(staging)/'master.key', directory/'master.key')
     else:
         key = issuer_key(python, directory)
+        sync_file(directory/'master.key')
+    sync_directory(directory)
     if value.get('initializing') is not True and value['issuer_key'] != key:
         raise LocalAgentError('助手数据目录与原签名密钥不一致；请恢复原目录，不要重置密钥。')
     value['issuer_key'] = key

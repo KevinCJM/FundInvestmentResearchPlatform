@@ -51,8 +51,17 @@ def test_separate_agent_process_receives_only_service_auth_not_source_path(confi
     root, value = config
     monkeypatch.setenv('PYTHONPATH', '/unrelated/source')
     monkeypatch.setenv('HTTPS_PROXY', 'socks5://127.0.0.1:9999')
+    secrets = {'TUSHARE_TOKEN', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'OPENAI_API_KEY',
+               'PORTABLE_AGENT_IDENTITY_KEY', 'PORTABLE_AGENT_ISSUER_KEY', 'PORTABLE_AGENT_SERVICE_TOKEN',
+               'PORTABLE_AGENT_HOST_AUTHORIZATION', 'PYTHONHOME'}
+    for key in secrets:
+        monkeypatch.setenv(key, 'platform-private-value')
+    probe_env = local.agent_environment()
+    assert secrets.isdisjoint(probe_env)
+    assert probe_env['PATH'] and probe_env['NO_PROXY'] == '127.0.0.1,localhost,::1'
     env = local.service_environment(root, 'agent')
     assert 'PYTHONPATH' not in env and 'HTTPS_PROXY' not in env
+    assert (secrets - {'PORTABLE_AGENT_HOST_AUTHORIZATION'}).isdisjoint(env)
     assert env['PORTABLE_AGENT_HOST_AUTHORIZATION'] == 'Bearer '+value['service_token']
     host = local.service_environment(root, 'backend')
     assert host['PORTABLE_AGENT_BROWSER_ORIGIN'] == value['browser_origin']
@@ -288,6 +297,54 @@ def test_first_initialization_can_retry_without_changing_paired_identity(tmp_pat
         assert final[field] == pending[field]
     assert final['issuer_key'] == 'a'*64 and 'initializing' not in final
     assert (directory/'master.key').read_bytes() == b'original-master-key'
+    assert local.read_config(tmp_path) == final
+
+
+@pytest.mark.parametrize('failure', ['identity-directory', 'master-file', 'master-directory'])
+def test_durability_failure_stops_setup_and_retry_keeps_identity(tmp_path, monkeypatch, failure):
+    from types import SimpleNamespace
+    monkeypatch.setitem(sys.modules, 'export_portable_agent_config',
+                        SimpleNamespace(configuration=lambda *args: {'apps': []}))
+    monkeypatch.setenv('PORTABLE_AGENT_PYTHON', sys.executable)
+    monkeypatch.setenv('PORTABLE_AGENT_MODEL_ENDPOINTS', 'https://provider.example/v1')
+    data = tmp_path/'.data/portable-agent'
+    original_directory_sync = local.sync_directory
+    original_file_sync = local.sync_file
+    attempt = {'fail': True, 'keys': 0}
+    def directory_sync(path):
+        if attempt['fail'] and (failure == 'identity-directory' and path == tmp_path/'.run'
+                or failure == 'master-directory' and path == data and (data/'master.key').exists()):
+            raise OSError('injected directory fsync failure')
+        original_directory_sync(path)
+    def file_sync(path):
+        if attempt['fail'] and failure == 'master-file':
+            raise OSError('injected key fsync failure')
+        original_file_sync(path)
+    def installed_wheel(args, **kwargs):
+        if 'issuer-key' in args:
+            attempt['keys'] += 1
+            pending = local.read_config(tmp_path, allow_initializing=True)
+            assert pending['initializing'] is True
+            key = Path(args[args.index('--data-dir')+1])/'master.key'
+            if not key.exists():
+                key.write_bytes(b'preserved-master')
+            return SimpleNamespace(returncode=0, stdout='a'*64)
+        return SimpleNamespace(returncode=0, stdout='{"protocol":2,"version":"0.2.0"}')
+    monkeypatch.setattr(local, 'sync_directory', directory_sync)
+    monkeypatch.setattr(local, 'sync_file', file_sync)
+    monkeypatch.setattr(local.subprocess, 'run', installed_wheel)
+    with pytest.raises(OSError):
+        local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
+    pending = local.read_config(tmp_path, allow_initializing=True)
+    if failure == 'identity-directory':
+        assert attempt['keys'] == 0
+    if failure != 'master-directory':
+        assert not (data/'master.key').exists()
+    attempt['fail'] = False
+    final = local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
+    assert final['identity_key'] == pending['identity_key']
+    assert final['service_token'] == pending['service_token']
+    assert (data/'master.key').read_bytes() == b'preserved-master'
     assert local.read_config(tmp_path) == final
 
 

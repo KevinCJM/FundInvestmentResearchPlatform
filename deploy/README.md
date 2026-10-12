@@ -130,7 +130,11 @@ separate Python 3.12 environment. The default interpreter is
 `.venv/portable-agent/bin/python`; to use another independent installation, set
 `PORTABLE_AGENT_PYTHON` on first initialization. Do not install the agent into
 the platform environment or point `PYTHONPATH` at its source tree. Installation
-is explicit; service startup never downloads a moving source branch.
+is explicit; service startup never downloads a moving source branch. Agent and
+probe subprocesses receive only process, locale, temporary-directory and TLS
+certificate environment settings. Platform/provider/cloud credentials, source
+paths and unrelated proxies are not inherited; the running agent receives only
+its explicitly paired host service authorization.
 
 ```bash
 python3.12 -m venv .venv/portable-agent
@@ -171,14 +175,19 @@ control characters, URL credentials, queries or fragments. Invalid input is repo
 correct it in the original source before retrying. Do not commit these private files.
 
 First initialization flushes the paired owner, workspace and service/identity
-credentials before issuing a master key. Its `initializing` record is only
+credentials before issuing a master key. Both file contents and parent directory
+entries are fsynced before moving to the next stage, including newly created
+runtime/data directories and the linked master key. Its `initializing` record is only
 accepted by `prepare`; service launch/status remain blocked until completion.
 The installed CLI creates the new key in a private scratch directory; only a
 successful, validated result is linked into place without overwriting a key.
 If the key command is interrupted or a later config write fails, rerun `start`
 to continue with the same recorded identity and any already published master.
 Incomplete scratch keys cannot become the active key. This recovery does not
-adopt a pre-existing data volume whose paired configuration is missing.
+adopt a pre-existing data volume whose paired configuration is missing. A sync
+failure stops initialization; a retry resyncs the pending identity and retains
+the same published key. Offline fault-injection tests cover these boundaries;
+they are not a physical power-loss or filesystem-hardware certification.
 
 Start checks the managed SSD identity first and refuses local fallback when it
 is offline. Restore the original mounted volume before retrying; the script
