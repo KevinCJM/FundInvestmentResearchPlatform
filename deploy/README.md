@@ -161,14 +161,24 @@ browser origin; the local login does not permit other origins or public access.
 Back up `.data/portable-agent/` and `.run/portable-agent-local.json` together;
 they contain persistent conversations, encrypted profiles and paired credentials.
 Never delete them as routine log cleanup. The virtual environment and generated
-apps file are reproducible. Missing or mismatched issuer data, or existing nonempty agent data without
+apps file are reproducible. For a completed initialization, missing or mismatched issuer data, or existing nonempty agent data without
 its paired local config, fails closed rather than generating another owner or
 credentials. Restore both from the same backup; an empty runtime directory alone
 can be initialized. Every model endpoint from saved configuration, the environment
 or legacy profiles is validated before creating any runtime directory or key.
-Use explicit HTTP(S) endpoints without URL credentials, queries or fragments,
-and with a valid port. Invalid input is reported without echoing its value;
+Use explicit HTTP(S) endpoints with a valid host/port and without whitespace,
+control characters, URL credentials, queries or fragments. Invalid input is reported without echoing its value;
 correct it in the original source before retrying. Do not commit these private files.
+
+First initialization flushes the paired owner, workspace and service/identity
+credentials before issuing a master key. Its `initializing` record is only
+accepted by `prepare`; service launch/status remain blocked until completion.
+The installed CLI creates the new key in a private scratch directory; only a
+successful, validated result is linked into place without overwriting a key.
+If the key command is interrupted or a later config write fails, rerun `start`
+to continue with the same recorded identity and any already published master.
+Incomplete scratch keys cannot become the active key. This recovery does not
+adopt a pre-existing data volume whose paired configuration is missing.
 
 Start checks the managed SSD identity first and refuses local fallback when it
 is offline. Restore the original mounted volume before retrying; the script

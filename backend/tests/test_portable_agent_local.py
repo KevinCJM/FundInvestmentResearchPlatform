@@ -190,7 +190,10 @@ def test_first_install_checks_model_config_before_creating_a_key(tmp_path, monke
 
 @pytest.mark.parametrize('endpoint', ['not-a-url', 'ftp://provider.example/v1', 'https:///v1',
     'https://user:private@provider.example/v1', 'https://provider.example/v1?api_key=private',
-    'https://provider.example/v1#private', 'https://provider.example:bad/v1', 'https://[invalid/v1'])
+    'https://provider.example/v1#private', 'https://provider.example:bad/v1', 'https://[invalid/v1',
+    'https://provider.exa mple/v1', 'https://provider.example\t/v1', 'https://provider.example\n/v1',
+    'https://provider.example\u00a0/v1', 'https://provider.exa%20mple/v1',
+    'https://provider.exa\\mple/v1'])
 @pytest.mark.parametrize('source', ['environment', 'saved', 'legacy'])
 def test_invalid_model_endpoint_has_no_key_or_config_side_effects(config, monkeypatch, endpoint, source):
     root, value = config
@@ -233,7 +236,7 @@ def test_empty_data_directory_can_initialize_and_keep_its_identity(tmp_path, mon
     monkeypatch.setenv('PORTABLE_AGENT_MODEL_ENDPOINTS', 'https://provider.example/v1')
     def installed_wheel(args, **kwargs):
         if 'issuer-key' in args:
-            (directory/'master.key').write_bytes(b'original-key')
+            (Path(args[args.index('--data-dir')+1])/'master.key').write_bytes(b'original-key')
             return SimpleNamespace(returncode=0, stdout='a'*64)
         return SimpleNamespace(returncode=0, stdout='{"protocol":2,"version":"0.2.0"}')
     monkeypatch.setattr(local.subprocess, 'run', installed_wheel)
@@ -241,6 +244,105 @@ def test_empty_data_directory_can_initialize_and_keep_its_identity(tmp_path, mon
     second = local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
     assert first == second
     assert (directory/'master.key').read_bytes() == b'original-key'
+
+
+@pytest.mark.parametrize('failure', ['key-command', 'interrupt', 'apps-write', 'config-commit'])
+def test_first_initialization_can_retry_without_changing_paired_identity(tmp_path, monkeypatch, failure):
+    from types import SimpleNamespace
+    monkeypatch.setitem(sys.modules, 'export_portable_agent_config',
+                        SimpleNamespace(configuration=lambda *args: {'apps': []}))
+    monkeypatch.setenv('PORTABLE_AGENT_PYTHON', sys.executable)
+    monkeypatch.setenv('PORTABLE_AGENT_MODEL_ENDPOINTS', 'https://provider.example/v1')
+    directory = tmp_path/'.data/portable-agent'
+    private_write = local.private_json
+    attempt = {'fail': True}
+    def installed_wheel(args, **kwargs):
+        if 'issuer-key' not in args:
+            return SimpleNamespace(returncode=0, stdout='{"protocol":2,"version":"0.2.0"}')
+        assert local.read_config(tmp_path, allow_initializing=True)['initializing'] is True
+        key_dir = Path(args[args.index('--data-dir')+1])
+        master = key_dir/'master.key'
+        if not master.exists():
+            master.write_bytes(b'original-master-key')
+        if attempt['fail'] and failure == 'interrupt':
+            raise KeyboardInterrupt()
+        return SimpleNamespace(returncode=1 if attempt['fail'] and failure == 'key-command' else 0, stdout='a'*64)
+    def guarded_write(path, value):
+        if attempt['fail'] and (failure == 'apps-write' and path.name == 'portable-agent-apps.json'
+                or failure == 'config-commit' and path.name == 'portable-agent-local.json' and 'issuer_key' in value):
+            raise OSError('injected disk failure')
+        return private_write(path, value)
+    monkeypatch.setattr(local.subprocess, 'run', installed_wheel)
+    monkeypatch.setattr(local, 'private_json', guarded_write)
+    with pytest.raises((local.LocalAgentError, OSError, KeyboardInterrupt)):
+        local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
+    pending = local.read_config(tmp_path, allow_initializing=True)
+    with pytest.raises(local.LocalAgentError, match='初始化未完成'):
+        local.read_config(tmp_path)
+    if (directory/'master.key').exists():
+        assert (directory/'master.key').read_bytes() == b'original-master-key'
+    attempt['fail'] = False
+    monkeypatch.setattr(local.getpass, 'getuser', lambda: pytest.fail('Must reuse persisted owner'))
+    final = local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
+    for field in ('owner', 'workspace', 'identity_key', 'service_token'):
+        assert final[field] == pending[field]
+    assert final['issuer_key'] == 'a'*64 and 'initializing' not in final
+    assert (directory/'master.key').read_bytes() == b'original-master-key'
+    assert local.read_config(tmp_path) == final
+
+
+@pytest.mark.parametrize('flag', ['true', 1, None])
+def test_initialization_marker_cannot_bypass_normal_config_validation(config, flag):
+    root, value = config
+    value['initializing'] = flag
+    local.private_json(root/local.CONFIG_NAME, value)
+    with pytest.raises(local.LocalAgentError, match='配置不完整'):
+        local.read_config(root, allow_initializing=True)
+
+
+def test_retry_ignores_incomplete_scratch_key_without_replacing_data(config, monkeypatch):
+    from types import SimpleNamespace
+    root, value = config
+    value.pop('issuer_key')
+    value['initializing'] = True
+    local.private_json(root/local.CONFIG_NAME, value)
+    directory = root/'.data/portable-agent'
+    orphan = directory/'.initial-key-interrupted/master.key'
+    orphan.parent.mkdir(parents=True)
+    orphan.write_bytes(b'partial-key-from-killed-process')
+    monkeypatch.setitem(sys.modules, 'export_portable_agent_config',
+                        SimpleNamespace(configuration=lambda *args: {'apps': []}))
+    def installed_wheel(args, **kwargs):
+        if 'issuer-key' in args:
+            master = Path(args[args.index('--data-dir')+1])/'master.key'
+            assert master != orphan and master.parent != directory
+            master.write_bytes(b'valid-new-initial-key')
+            return SimpleNamespace(returncode=0, stdout='a'*64)
+        return SimpleNamespace(returncode=0, stdout='{"protocol":2,"version":"0.2.0"}')
+    monkeypatch.setattr(local.subprocess, 'run', installed_wheel)
+    final = local.prepare(value['backend_url'], value['browser_origin'], value['agent_url'], root)
+    assert final['identity_key'] == value['identity_key']
+    assert orphan.read_bytes() == b'partial-key-from-killed-process'
+    assert (directory/'master.key').read_bytes() == b'valid-new-initial-key'
+
+
+def test_initial_identity_write_failure_does_not_create_an_orphan_master(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setitem(sys.modules, 'export_portable_agent_config',
+                        SimpleNamespace(configuration=lambda *args: {'apps': []}))
+    monkeypatch.setenv('PORTABLE_AGENT_PYTHON', sys.executable)
+    monkeypatch.setenv('PORTABLE_AGENT_MODEL_ENDPOINTS', 'https://provider.example/v1')
+    def installed_wheel(args, **kwargs):
+        assert 'issuer-key' not in args
+        return SimpleNamespace(returncode=0, stdout='{"protocol":2,"version":"0.2.0"}')
+    def unwritable(*args):
+        raise OSError('cannot persist initial identity')
+    monkeypatch.setattr(local.subprocess, 'run', installed_wheel)
+    monkeypatch.setattr(local, 'private_json', unwritable)
+    with pytest.raises(OSError):
+        local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
+    assert not (tmp_path/'.data/portable-agent/master.key').exists()
+    assert not (tmp_path/local.CONFIG_NAME).exists()
 
 
 @pytest.mark.parametrize('mismatch', [None, 'disabled', 'identity', 'issuer', 'owner', 'service'])

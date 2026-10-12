@@ -9,6 +9,7 @@ import getpass
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import subprocess
@@ -36,6 +37,8 @@ def private_json(path, value):
         with os.fdopen(fd, 'w') as handle:
             json.dump(value, handle, ensure_ascii=False, indent=2)
             handle.write('\n')
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
@@ -57,17 +60,21 @@ def local_url(value):
 def model_endpoint(value):
     # Mirror the independently installed agent's HTTP(S) endpoint contract.
     try:
+        if not isinstance(value, str) or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError()
         parsed = urlsplit(value)
         if (parsed.scheme not in {'http', 'https'} or not parsed.hostname
                 or parsed.username or parsed.password or parsed.query or parsed.fragment):
             raise ValueError()
         _ = parsed.port
-    except (ValueError, TypeError, AttributeError):
+        if ':' not in parsed.hostname and not re.fullmatch(r'[A-Za-z0-9_.-]+', parsed.hostname.encode('idna').decode('ascii')):
+            raise ValueError()
+    except (ValueError, TypeError, AttributeError, UnicodeError):
         raise LocalAgentError('模型 API 地址无效；请填写完整的 HTTP(S) 地址，不含账号、密码、查询参数或片段。') from None
     return value.rstrip('/')
 
 
-def read_config(root=ROOT):
+def read_config(root=ROOT, *, allow_initializing=False):
     path = Path(root) / CONFIG_NAME
     if path.is_symlink() or not path.is_file():
         raise LocalAgentError('助手尚未初始化，请运行 ./start_services.sh start。')
@@ -80,9 +87,18 @@ def read_config(root=ROOT):
         for key in ('backend_url', 'browser_origin', 'agent_url'):
             local_url(value[key])
         if any(not isinstance(value[k], str) or len(value[k]) < 32
-               for k in ('identity_key', 'service_token', 'issuer_key')):
+               for k in ('identity_key', 'service_token')):
             raise ValueError()
         if not value['owner'] or not value['workspace'] or not Path(value['python']).is_absolute():
+            raise ValueError()
+        if 'initializing' in value and type(value['initializing']) is not bool:
+            raise ValueError()
+        if value.get('initializing') is True:
+            if 'issuer_key' in value:
+                raise ValueError()
+            if not allow_initializing:
+                raise LocalAgentError('助手初始化未完成，请重新运行 ./start_services.sh start；会保留已记录的本机身份。')
+        elif not isinstance(value.get('issuer_key'), str) or len(value['issuer_key']) < 32:
             raise ValueError()
         return value
     except (ValueError, KeyError, TypeError) as exc:
@@ -104,7 +120,7 @@ def prepare(backend_url, browser_origin, agent_url, root=ROOT):
     urls = {key: local_url(value) for key, value in
             [('backend_url', backend_url), ('browser_origin', browser_origin), ('agent_url', agent_url)]}
     path = root / CONFIG_NAME
-    previous = read_config(root) if path.exists() or path.is_symlink() else None
+    previous = read_config(root, allow_initializing=True) if path.exists() or path.is_symlink() else None
     python = (previous or {}).get('python') or os.environ.get('PORTABLE_AGENT_PYTHON') or str(root/'.venv/portable-agent/bin/python')
     if not Path(python).is_file():
         raise LocalAgentError('缺少独立助手运行环境。请先安装 v2 wheel，设置 PORTABLE_AGENT_PYTHON 后重试。')
@@ -114,7 +130,7 @@ def prepare(backend_url, browser_origin, agent_url, root=ROOT):
         raise LocalAgentError('助手持久目录及主密钥不能是软链接。')
     if not previous and directory.exists() and (not directory.is_dir() or any(directory.iterdir())):
         raise LocalAgentError('已有助手数据，但原本机身份配置缺失；请恢复配对的 .run/portable-agent-local.json，不会创建替代身份。')
-    if previous and not (directory/'master.key').is_file():
+    if previous and previous.get('initializing') is not True and not (directory/'master.key').is_file():
         raise LocalAgentError('原助手主密钥缺失；请恢复备份，启动不会生成替代密钥。')
     endpoints = list((previous or {}).get('model_endpoints', []))
     endpoints += [item.strip().rstrip('/') for item in os.environ.get('PORTABLE_AGENT_MODEL_ENDPOINTS', '').split(',') if item.strip()]
@@ -141,21 +157,38 @@ def prepare(backend_url, browser_origin, agent_url, root=ROOT):
             raise ValueError()
     except (ValueError, KeyError):
         raise LocalAgentError('助手运行环境不是完整的 v2 安装包（需包含网页 manifest）。') from None
+    value = previous or dict(schema_version=1, python=python, owner=getpass.getuser(), workspace='local',
+                             identity_key=secrets.token_hex(32), service_token=secrets.token_hex(32), initializing=True)
+    value.update(urls)
+    value['model_endpoints'] = endpoints
+    if previous is None:
+        # Persist the paired identity before any key can exist; retries reuse it.
+        private_json(path, value)
+    if value.get('initializing') is True and not (directory/'master.key').exists():
+        # A killed key command can only leave an incomplete scratch key. Publish
+        # the validated key atomically without ever replacing an existing key.
+        with tempfile.TemporaryDirectory(dir=directory, prefix='.initial-key-') as staging:
+            key = issuer_key(python, Path(staging))
+            os.link(Path(staging)/'master.key', directory/'master.key')
+    else:
+        key = issuer_key(python, directory)
+    if value.get('initializing') is not True and value['issuer_key'] != key:
+        raise LocalAgentError('助手数据目录与原签名密钥不一致；请恢复原目录，不要重置密钥。')
+    value['issuer_key'] = key
+    value.pop('initializing', None)
+    private_json(root/'.run/portable-agent-apps.json', apps)
+    private_json(path, value)
+    return value
+
+
+def issuer_key(python, directory):
     issuer = subprocess.run([python, '-m', 'portable_agent', 'issuer-key', '--data-dir', str(directory),
                              '--app', 'fund-research'], cwd=directory, env=agent_environment(),
                             capture_output=True, text=True)
     key = issuer.stdout.strip()
     if issuer.returncode or len(key) != 64 or any(c not in '0123456789abcdef' for c in key):
         raise LocalAgentError('无法读取助手应用签名密钥；不会重置现有数据。')
-    if previous and previous['issuer_key'] != key:
-        raise LocalAgentError('助手数据目录与原签名密钥不一致；请恢复原目录，不要重置密钥。')
-    value = previous or dict(schema_version=1, python=python, owner=getpass.getuser(), workspace='local',
-                             identity_key=secrets.token_hex(32), service_token=secrets.token_hex(32), issuer_key=key)
-    value.update(urls)
-    value['model_endpoints'] = endpoints
-    private_json(root/'.run/portable-agent-apps.json', apps)
-    private_json(path, value)
-    return value
+    return key
 
 
 def service_environment(root, service):
