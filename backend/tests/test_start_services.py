@@ -459,6 +459,8 @@ BACKEND_LOG_FILE='{tmp_path}/backend.log'
 BACKEND_DIR='{tmp_path}'
 PYTHON_BIN=true
 BACKEND_RELOAD=0
+ASSISTANT_HEALTH_TIMEOUT_SECONDS=3
+read_pid_from_file() {{ echo 12345; }}
 port_open=1
 is_port_listening() {{ [[ "$port_open" == 1 ]]; }}
 service_is_owned() {{ return 0; }}
@@ -473,6 +475,7 @@ start_uvicorn() {{ echo 12345 > "$BACKEND_PID_FILE"; echo 12345; }}
 wait_for_backend_health() {{ echo warmup-checked; return 0; }}
 wait_for_service() {{
   [[ "$1" == backend && "$4" == backend_assistant_is_ready ]] || return 1
+  if [[ "${{6:-0}}" == 1 ]]; then return {0 if case == 'configured' else 3}; fi
   echo new-auth-checked
   return {int(case == 'new-auth-failed')}
 }}
@@ -494,3 +497,54 @@ start_backend
             assert result.stdout.index('safe-stop') < result.stdout.index('warmup-checked') < result.stdout.index('new-auth-checked')
     if case == 'new-auth-failed':
         assert '启动成功' not in result.stdout
+
+
+@pytest.mark.parametrize('case', ['transient', 'timeout', 'foreign', 'exited'])
+def test_reused_backend_is_preserved_after_uncertain_assistant_probe(tmp_path, case):
+    script = 'set -eu\n'+shell_functions('start_backend', 'wait_for_service')+f'''
+BACKEND_PORT=8000
+BACKEND_PID_FILE='{tmp_path}/backend.pid'
+RUN_DIR='{tmp_path}'
+ASSISTANT_HEALTH_TIMEOUT_SECONDS=3
+SECONDS=0
+attempts=0
+owned=1
+alive=1
+read_pid_from_file() {{ echo 12345; }}
+is_port_listening() {{ return 0; }}
+is_pid_running() {{ [[ "$alive" == 1 ]]; }}
+service_is_owned() {{ [[ "$owned" == 1 ]]; }}
+backend_is_ready() {{ return 0; }}
+backend_assistant_is_ready() {{
+  attempts=$((attempts + 1))
+  echo retryable-probe
+  {'[[ "$attempts" -ge 3 ]]' if case == 'transient' else ('owned=0; return 3' if case == 'foreign' else ('alive=0; return 3' if case == 'exited' else 'return 1'))}
+}}
+stop_process_by_pid_file() {{ echo unexpected-stop; return 1; }}
+start_uvicorn() {{ echo unexpected-launch; return 1; }}
+sleep() {{ SECONDS=$((SECONDS + 1)); }}
+start_backend
+'''
+    result = subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True)
+    assert result.returncode == (0 if case == 'transient' else 1), result.stderr
+    assert 'unexpected' not in result.stdout
+    if case == 'transient':
+        assert '助手鉴权均已就绪' in result.stdout
+    else:
+        assert '保留原后端' in result.stdout
+    assert not (tmp_path/'backend.pid').exists()
+
+
+def test_confirmed_mismatch_is_not_swallowed_by_reuse_retry(tmp_path):
+    script = 'set -eu\n'+shell_functions('wait_for_service')+f'''
+RUN_DIR='{tmp_path}'
+ASSISTANT_HEALTH_TIMEOUT_SECONDS=3
+is_port_listening() {{ return 0; }}
+is_pid_running() {{ return 0; }}
+service_is_owned() {{ return 0; }}
+backend_assistant_is_ready() {{ echo confirmed-mismatch; return 3; }}
+wait_for_service backend 8000 12345 backend_assistant_is_ready 3 1
+'''
+    result = subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True)
+    assert result.returncode == 3
+    assert 'confirmed-mismatch' in result.stdout

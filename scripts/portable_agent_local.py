@@ -28,6 +28,11 @@ class LocalAgentError(RuntimeError):
     pass
 
 
+class LocalAgentAuthMismatch(LocalAgentError):
+    """Positive evidence that the owned host needs the current paired config."""
+    pass
+
+
 def sync_directory(path):
     fd = os.open(path, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
     try:
@@ -246,28 +251,42 @@ def agent_command(root=ROOT):
             '--data-dir', str(root/'.data/portable-agent'), '--host', parsed.hostname, '--port', str(parsed.port or 80)]
 
 
-def checked(response, label):
+def checked(response, label, *, auth_probe=False):
     if not response.is_success:
+        if auth_probe:
+            try:
+                code = response.json()['error']['code']
+            except (ValueError, KeyError, TypeError):
+                code = None
+            # Only stable host errors prove configuration incompatibility.
+            if ((label == '本机登录' and response.status_code == 404 and code == 'NOT_FOUND')
+                    or (label == '后端服务凭证' and response.status_code == 401 and code == 'SERVICE_UNAUTHORIZED')
+                    or (response.status_code == 403 and code == 'ORIGIN_FORBIDDEN')
+                    or (response.status_code == 503 and code == 'ASSISTANT_NOT_CONFIGURED')):
+                raise LocalAgentAuthMismatch('运行中的后端鉴权配置与当前助手接入不兼容。')
         # Only expose the status/step, never a provider body that may contain credentials.
         raise LocalAgentError(f'{label}失败（HTTP {response.status_code}）；请检查数据卷、接入配置与服务日志。')
     return response.json()
 
 
-def connect(client, value, host_url):
+def connect(client, value, host_url, *, auth_probe=False):
     base = host_url+'/api/integrations/portable-agent'
-    checked(client.post(base+'/local-session', headers={'X-Portable-Local': '1'}), '本机登录')
-    context = checked(client.post(base+'/contexts', json={'page_context': {
-        'page': 'platform-agent', 'page_instance_id': 'service-readiness', 'context_revision': 0,
-        'view_state': 'inherit', 'calculation': {'context_kind': 'platform'}}}), '助手上下文')
-    bootstrap = checked(client.post(base+'/bootstrap', json={'context_ref': context['ref']}), '助手授权')
-    return {'Authorization': 'Bearer '+bootstrap['token']}, bootstrap
+    checked(client.post(base+'/local-session', headers={'X-Portable-Local': '1'}), '本机登录', auth_probe=auth_probe)
+    try:
+        context = checked(client.post(base+'/contexts', json={'page_context': {
+            'page': 'platform-agent', 'page_instance_id': 'service-readiness', 'context_revision': 0,
+            'view_state': 'inherit', 'calculation': {'context_kind': 'platform'}}}), '助手上下文', auth_probe=auth_probe)
+        bootstrap = checked(client.post(base+'/bootstrap', json={'context_ref': context['ref']}), '助手授权', auth_probe=auth_probe)
+        return {'Authorization': 'Bearer '+bootstrap['token']}, bootstrap
+    except (ValueError, KeyError, TypeError):
+        raise LocalAgentError('后端助手授权响应尚未完整，请重试接入检查。') from None
 
 
 def check_host(root=ROOT):
     """Check the running host against the current paired credentials before reuse."""
     value = read_config(root)
     with httpx.Client(trust_env=False, timeout=10, headers={'Origin': value['browser_origin']}) as client:
-        _, bootstrap = connect(client, value, value['backend_url'])
+        _, bootstrap = connect(client, value, value['backend_url'], auth_probe=True)
         try:
             identity = jwt.decode(client.cookies.get('research_identity'), value['identity_key'],
                 algorithms=['HS256'], audience='fund-research-platform', issuer='fund-research',
@@ -277,16 +296,18 @@ def check_host(root=ROOT):
                 options={'require': ['sub', 'workspace', 'app', 'iat', 'exp']})
             if any(claims['sub'] != value['owner'] or claims['workspace'] != value['workspace']
                    for claims in (identity, grant)) or grant['app'] != 'fund-research':
-                raise ValueError()
+                raise LocalAgentAuthMismatch('运行中的后端主体、工作空间或应用与当前助手配置不一致。')
             context = {key: bootstrap['context'][key]
                        for key in ('ref', 'hash', 'grant_id', 'grant_revision', 'workspace')}
+        except (jwt.InvalidSignatureError, jwt.InvalidIssuerError, jwt.InvalidAudienceError):
+            raise LocalAgentAuthMismatch('运行中的后端身份或应用签名与当前助手配置不一致。') from None
         except (jwt.PyJWTError, ValueError, KeyError, TypeError):
-            raise LocalAgentError('运行中的后端与当前助手身份配置不一致。') from None
+            raise LocalAgentError('尚未取得有效的后端助手身份，请重试接入检查。') from None
         allowed = checked(client.post(value['backend_url']+'/internal/portable-agent/authorize',
             headers={'Authorization': 'Bearer '+value['service_token']}, json={
                 'application': 'fund-research', 'subject': value['owner'], 'context': context,
-                'action': 'metadata', 'identity_only': True}), '后端服务凭证')
-        if allowed.get('allow') is not True:
+                'action': 'metadata', 'identity_only': True}), '后端服务凭证', auth_probe=True)
+        if not isinstance(allowed, dict) or allowed.get('allow') is not True:
             raise LocalAgentError('运行中的后端尚未允许助手接入。')
 
 def check(root=ROOT, *, via_frontend=False, require_model=True):
@@ -371,7 +392,7 @@ def main():
     except (LocalAgentError, OSError, ValueError, httpx.HTTPError) as exc:
         message = str(exc) if isinstance(exc, LocalAgentError) else '助手接入检查失败，请检查私有配置和服务日志。'
         print('[助手未就绪] '+message, file=sys.stderr)
-        return 1
+        return 3 if args.action == 'check-host' and isinstance(exc, LocalAgentAuthMismatch) else 1
     return 0
 
 

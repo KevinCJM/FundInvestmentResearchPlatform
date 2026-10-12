@@ -202,9 +202,15 @@ context/bootstrap authorization, v2 capabilities, the JavaScript component and
 model selection, including the actual `/assistant` proxy through the frontend.
 Before reusing a healthy backend, startup checks its local identity cookie,
 application signature and service credentials against the current paired config.
-An owned backend from before this integration is gracefully restarted if that
-check fails, then warmup and host authorization are checked again. Stop failure
-or a remaining listener blocks replacement; unknown services are never stopped.
+Reuse retries transient timeouts, HTTP 5xx, expired sessions and incomplete
+responses within the assistant wait limit. An uncertain failure preserves the
+running backend and reports the reason; it never triggers warmup again. Only
+explicit host configuration errors, verified signing/identity incompatibility,
+or an explicit service-credential rejection return the dedicated mismatch status
+(exit 3 from `check-host`) and permit an owned backend upgrade. Process ownership
+is rechecked before upgrading; warmup and host authorization are checked again
+thereafter. Stop failure or a remaining listener blocks replacement; unknown
+services are never stopped.
 After a port opens, startup waits for authentication and the component/proxy to
 be ready, retrying transient failures for up to 60 seconds per service. Override
 with `ASSISTANT_HEALTH_TIMEOUT_SECONDS` (`STARTUP_WAIT_SECONDS` remains accepted

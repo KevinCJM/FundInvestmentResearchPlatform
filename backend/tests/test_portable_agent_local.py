@@ -476,7 +476,7 @@ def test_initial_identity_write_failure_does_not_create_an_orphan_master(tmp_pat
     assert not (tmp_path/local.CONFIG_NAME).exists()
 
 
-@pytest.mark.parametrize('mismatch', [None, 'disabled', 'identity', 'issuer', 'owner', 'service'])
+@pytest.mark.parametrize('mismatch', [None, 'disabled', 'identity', 'issuer', 'owner', 'service', 'expired', 'malformed', 'context'])
 def test_host_reuse_checks_the_current_credentials_without_an_agent(config, monkeypatch, mismatch):
     import time
     root, value = config
@@ -484,7 +484,8 @@ def test_host_reuse_checks_the_current_credentials_without_an_agent(config, monk
     now = int(time.time())
     def sign(audience, issuer, key, **extra):
         return local.jwt.encode(dict(sub='other' if mismatch == 'owner' else value['owner'],
-            workspace=value['workspace'], iat=now, exp=now+600, aud=audience, iss=issuer, **extra), key, algorithm='HS256')
+            workspace=value['workspace'], iat=now-1200 if mismatch == 'expired' else now,
+            exp=now-600 if mismatch == 'expired' else now+600, aud=audience, iss=issuer, **extra), key, algorithm='HS256')
     identity = sign('fund-research-platform', 'fund-research',
                     'x'*64 if mismatch == 'identity' else value['identity_key'])
     grant = sign('portable-agent', 'portable-agent-host',
@@ -493,22 +494,71 @@ def test_host_reuse_checks_the_current_credentials_without_an_agent(config, monk
         seen.append(request)
         if request.url.path.endswith('/local-session'):
             if mismatch == 'disabled':
-                return httpx.Response(404, json={'error': 'local login disabled'})
+                return httpx.Response(404, json={'error': {'code': 'NOT_FOUND'}})
             return httpx.Response(200, json={'authenticated': True},
-                headers={'Set-Cookie': f'research_identity={identity}; Path=/api/; HttpOnly'})
+                headers={'Set-Cookie': f'research_identity={"invalid" if mismatch == "malformed" else identity}; Path=/api/; HttpOnly'})
         if request.url.path.endswith('/bootstrap'):
             return httpx.Response(200, json={'token': grant, 'context': {
-                'ref': 'ctx', 'hash': 'hash', 'grant_id': 'grant', 'grant_revision': 1, 'workspace': value['workspace']}})
+                **({} if mismatch == 'context' else {'ref': 'ctx', 'hash': 'hash', 'grant_id': 'grant', 'grant_revision': 1, 'workspace': value['workspace']})}})
         if request.url.path.endswith('/authorize'):
             assert request.headers['Authorization'] == 'Bearer '+value['service_token']
             assert json.loads(request.content)['identity_only'] is True
-            return httpx.Response(401, json={}) if mismatch == 'service' else httpx.Response(200, json={'allow': True})
+            return httpx.Response(401, json={'error': {'code': 'SERVICE_UNAUTHORIZED'}}) if mismatch == 'service' else httpx.Response(200, json={'allow': True})
         return handler(request)
     transport_client(monkeypatch, host)
     if mismatch:
-        with pytest.raises(local.LocalAgentError):
+        with pytest.raises(local.LocalAgentError) as raised:
             local.check_host(root)
+        assert isinstance(raised.value, local.LocalAgentAuthMismatch) == (mismatch not in {'expired', 'malformed', 'context'})
     else:
         local.check_host(root)
         assert seen[-1].url.path == '/internal/portable-agent/authorize'
     assert all(str(r.url).startswith(value['backend_url']) for r in seen)
+
+
+@pytest.mark.parametrize('stage', ['本机登录', '助手上下文', '助手授权', '后端服务凭证'])
+@pytest.mark.parametrize('failure', ['500', 'unknown-503', 'unknown-401', 'forbidden', 'malformed'])
+def test_uncertain_host_errors_never_authorize_a_backend_restart(stage, failure):
+    status = {'500': 500, 'unknown-503': 503, 'unknown-401': 401, 'forbidden': 403, 'malformed': 500}[failure]
+    response = (httpx.Response(status, text='not-json') if failure == 'malformed'
+                else httpx.Response(status, json={'error': {'code': 'FORBIDDEN' if failure == 'forbidden' else 'UNKNOWN'}}))
+    with pytest.raises(local.LocalAgentError) as raised:
+        local.checked(response, stage, auth_probe=True)
+    assert not isinstance(raised.value, local.LocalAgentAuthMismatch)
+
+
+@pytest.mark.parametrize('status,code,stage', [
+    (404, 'NOT_FOUND', '本机登录'), (401, 'SERVICE_UNAUTHORIZED', '后端服务凭证'),
+    (403, 'ORIGIN_FORBIDDEN', '本机登录'), (503, 'ASSISTANT_NOT_CONFIGURED', '助手授权')])
+def test_only_stable_configuration_errors_authorize_host_upgrade(status, code, stage):
+    response = httpx.Response(status, json={'error': {'code': code}})
+    with pytest.raises(local.LocalAgentAuthMismatch):
+        local.checked(response, stage, auth_probe=True)
+    with pytest.raises(local.LocalAgentError) as raised:
+        local.checked(response, stage)
+    assert not isinstance(raised.value, local.LocalAgentAuthMismatch)
+
+
+@pytest.mark.parametrize('failure', ['timeout', '500'])
+def test_host_transport_or_server_failure_remains_retryable(config, monkeypatch, failure):
+    def unavailable(request):
+        if failure == 'timeout':
+            raise httpx.ReadTimeout('temporary', request=request)
+        return httpx.Response(500, json={'error': {'code': 'INTERNAL'}})
+    transport_client(monkeypatch, unavailable)
+    with pytest.raises((httpx.HTTPError, local.LocalAgentError)) as raised:
+        local.check_host(config[0])
+    assert not isinstance(raised.value, local.LocalAgentAuthMismatch)
+
+
+@pytest.mark.parametrize('action,error,expected', [
+    ('check-host', local.LocalAgentAuthMismatch, 3), ('check-host', local.LocalAgentError, 1),
+    ('check', local.LocalAgentAuthMismatch, 1)])
+def test_only_confirmed_host_mismatch_has_a_distinct_exit_status(monkeypatch, capsys, action, error, expected):
+    def failed(*args, **kwargs):
+        raise error('safe reason')
+    monkeypatch.setattr(sys, 'argv', ['helper', action])
+    monkeypatch.setattr(local, 'check_host', failed)
+    monkeypatch.setattr(local, 'check', failed)
+    assert local.main() == expected
+    assert 'safe reason' in capsys.readouterr().err

@@ -68,6 +68,7 @@ wait_for_service() {
   local start_pid="$3"
   local ready_check="$4"
   local timeout="${5:-$ASSISTANT_HEALTH_TIMEOUT_SECONDS}"
+  local stop_on_auth_mismatch="${6:-0}"
   local started_at=$SECONDS
   local next_progress=0
   local check_log="$RUN_DIR/${service}-readiness.log"
@@ -83,6 +84,13 @@ wait_for_service() {
       fi
       if "$ready_check" > "$check_log" 2>&1; then
         return 0
+      else
+        local check_status=$?
+        if [[ "$stop_on_auth_mismatch" == 1 && "$check_status" == 3 ]]; then
+          is_pid_running "$start_pid" && service_is_owned "$service" "$port" || return 1
+          cat "$check_log"
+          return 3
+        fi
       fi
     fi
     local waited=$((SECONDS - started_at))
@@ -252,11 +260,19 @@ start_backend() {
       echo "[失败] :${BACKEND_PORT} 已被占用，但后端健康检查未通过。"
       return 1
     fi
-    if backend_assistant_is_ready; then
+    local reused_pid reuse_status
+    reused_pid="$(read_pid_from_file "$BACKEND_PID_FILE")" || return 1
+    if wait_for_service backend "$BACKEND_PORT" "$reused_pid" backend_assistant_is_ready "$ASSISTANT_HEALTH_TIMEOUT_SECONDS" 1; then
       echo "[就绪] 后端已运行，Numba、worker 与助手鉴权均已就绪。"
       return 0
+    else
+      reuse_status=$?
     fi
-    echo "[升级] 已归属后端的助手鉴权未就绪，正在安全重启以应用本机配置……"
+    if [[ "$reuse_status" != 3 ]]; then
+      echo "[保护] 助手接入检查未通过，保留原后端；请检查提示后重试启动。"
+      return 1
+    fi
+    echo "[升级] 已确认后端鉴权配置不匹配，正在安全重启以应用本机配置……"
     stop_process_by_pid_file "$BACKEND_PID_FILE" || return 1
     if is_port_listening "$BACKEND_PORT"; then
       echo "[失败] 后端端口仍被占用；不会接管或停止未知进程。"
