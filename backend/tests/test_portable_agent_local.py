@@ -159,3 +159,87 @@ def test_partial_profile_import_is_retryable_and_selects_original_active(config,
     assert len(writes) == 2  # Only the missing profile and active selection.
     assert local.read_config(root)['profiles_initialized'] is True
     assert json.loads((root/'data/llm_settings.json').read_text())['profiles'] == source
+
+
+@pytest.mark.parametrize('files', [('master.key',), ('agent.sqlite3',), ('archive/session.json',)])
+def test_existing_data_without_paired_config_cannot_create_new_identity(tmp_path, monkeypatch, files):
+    directory = tmp_path/'.data/portable-agent'
+    originals = {}
+    for name in files:
+        path = directory/name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'preserve-existing-identity-data')
+        originals[path] = path.read_bytes()
+    monkeypatch.setenv('PORTABLE_AGENT_PYTHON', sys.executable)
+    monkeypatch.setattr(local.subprocess, 'run', lambda *a, **kw: pytest.fail('Must not derive/regenerate any key'))
+    with pytest.raises(local.LocalAgentError, match='原本机身份配置缺失'):
+        local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
+    assert not (tmp_path/local.CONFIG_NAME).exists()
+    assert {path: path.read_bytes() for path in originals} == originals
+
+
+def test_first_install_checks_model_config_before_creating_a_key(tmp_path, monkeypatch):
+    monkeypatch.setenv('PORTABLE_AGENT_PYTHON', sys.executable)
+    monkeypatch.delenv('PORTABLE_AGENT_MODEL_ENDPOINTS', raising=False)
+    monkeypatch.setattr(local.subprocess, 'run', lambda *a, **kw: pytest.fail('No key or runtime side effects before configuration'))
+    with pytest.raises(local.LocalAgentError, match='模型 API 地址'):
+        local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
+    assert not (tmp_path/'.data/portable-agent').exists()
+
+
+def test_empty_data_directory_can_initialize_and_keep_its_identity(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    directory = tmp_path/'.data/portable-agent'
+    directory.mkdir(parents=True)
+    monkeypatch.setitem(sys.modules, 'export_portable_agent_config',
+                        SimpleNamespace(configuration=lambda *args: {'apps': []}))
+    monkeypatch.setenv('PORTABLE_AGENT_PYTHON', sys.executable)
+    monkeypatch.setenv('PORTABLE_AGENT_MODEL_ENDPOINTS', 'https://provider.example/v1')
+    def installed_wheel(args, **kwargs):
+        if 'issuer-key' in args:
+            (directory/'master.key').write_bytes(b'original-key')
+            return SimpleNamespace(returncode=0, stdout='a'*64)
+        return SimpleNamespace(returncode=0, stdout='{"protocol":2,"version":"0.2.0"}')
+    monkeypatch.setattr(local.subprocess, 'run', installed_wheel)
+    first = local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
+    second = local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
+    assert first == second
+    assert (directory/'master.key').read_bytes() == b'original-key'
+
+
+@pytest.mark.parametrize('mismatch', [None, 'disabled', 'identity', 'issuer', 'owner', 'service'])
+def test_host_reuse_checks_the_current_credentials_without_an_agent(config, monkeypatch, mismatch):
+    import time
+    root, value = config
+    seen = []
+    now = int(time.time())
+    def sign(audience, issuer, key, **extra):
+        return local.jwt.encode(dict(sub='other' if mismatch == 'owner' else value['owner'],
+            workspace=value['workspace'], iat=now, exp=now+600, aud=audience, iss=issuer, **extra), key, algorithm='HS256')
+    identity = sign('fund-research-platform', 'fund-research',
+                    'x'*64 if mismatch == 'identity' else value['identity_key'])
+    grant = sign('portable-agent', 'portable-agent-host',
+                 b'x'*32 if mismatch == 'issuer' else bytes.fromhex(value['issuer_key']), app='fund-research')
+    def host(request):
+        seen.append(request)
+        if request.url.path.endswith('/local-session'):
+            if mismatch == 'disabled':
+                return httpx.Response(404, json={'error': 'local login disabled'})
+            return httpx.Response(200, json={'authenticated': True},
+                headers={'Set-Cookie': f'research_identity={identity}; Path=/api/; HttpOnly'})
+        if request.url.path.endswith('/bootstrap'):
+            return httpx.Response(200, json={'token': grant, 'context': {
+                'ref': 'ctx', 'hash': 'hash', 'grant_id': 'grant', 'grant_revision': 1, 'workspace': value['workspace']}})
+        if request.url.path.endswith('/authorize'):
+            assert request.headers['Authorization'] == 'Bearer '+value['service_token']
+            assert json.loads(request.content)['identity_only'] is True
+            return httpx.Response(401, json={}) if mismatch == 'service' else httpx.Response(200, json={'allow': True})
+        return handler(request)
+    transport_client(monkeypatch, host)
+    if mismatch:
+        with pytest.raises(local.LocalAgentError):
+            local.check_host(root)
+    else:
+        local.check_host(root)
+        assert seen[-1].url.path == '/internal/portable-agent/authorize'
+    assert all(str(r.url).startswith(value['backend_url']) for r in seen)

@@ -159,8 +159,10 @@ browser origin; the local login does not permit other origins or public access.
 Back up `.data/portable-agent/` and `.run/portable-agent-local.json` together;
 they contain persistent conversations, encrypted profiles and paired credentials.
 Never delete them as routine log cleanup. The virtual environment and generated
-apps file are reproducible. Missing or mismatched issuer data fails closed rather
-than regenerating the paired identity. Do not commit these private files.
+apps file are reproducible. Missing or mismatched issuer data, or existing nonempty agent data without
+its paired local config, fails closed rather than generating another owner or
+credentials. Restore both from the same backup; an empty runtime directory alone
+can be initialized. Model endpoints are validated before initial key creation. Do not commit these private files.
 
 Start checks the managed SSD identity first and refuses local fallback when it
 is offline. Restore the original mounted volume before retrying; the script
@@ -168,6 +170,11 @@ does not create a replacement directory under a missing mount. Backend readiness
 still requires all NJIT/worker warmup. Assistant readiness exercises local login,
 context/bootstrap authorization, v2 capabilities, the JavaScript component and
 model selection, including the actual `/assistant` proxy through the frontend.
+Before reusing a healthy backend, startup checks its local identity cookie,
+application signature and service credentials against the current paired config.
+An owned backend from before this integration is gracefully restarted if that
+check fails, then warmup and host authorization are checked again. Stop failure
+or a remaining listener blocks replacement; unknown services are never stopped.
 After a port opens, startup waits for authentication and the component/proxy to
 be ready, retrying transient failures for up to 60 seconds per service. Override
 with `ASSISTANT_HEALTH_TIMEOUT_SECONDS` (`STARTUP_WAIT_SECONDS` remains accepted

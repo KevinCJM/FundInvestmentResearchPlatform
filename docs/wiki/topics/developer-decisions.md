@@ -5,11 +5,11 @@ title: "为什么采用这些架构决定，哪些旧设计已经被替代？"
 domains: ["developer", "business"]
 review_state: "partial"
 result: "supported"
-scope: "2026-10-04当前工作树原文与实现的有源概述；仅支持本页明确边界，不代表全代码审计、业务测试重跑、投资资格或生产部署证明。"
-reviewed_at: "2026-10-04"
+scope: "2026-10-04当前工作树原文与实现的有源概述；仅支持本页明确边界，不代表全代码审计、业务测试重跑、投资资格或生产部署证明。；2026-10-12 仅复核本次启动差异，其他原文及历史证据保持各自适用日期"
+reviewed_at: "2026-10-12"
 reviewed_by: "AI 原文与实现核对"
-source_revision: "8ce7c06cc655d027cec6856caa873a1eafa1e51d"
-dependencies: ["AGENTS.md::sha256:bcbe79f7c0ad26172c756530a5bbcdadb91322f69e4251da13056d8ba7922416", "docs/data/storage.md::sha256:09eb8831fc27645aed706fea1c5a66ac81c7f13f3f5dcbdbf345822dfb089353", "docs/indicators/computation-graph.md::sha256:18b81da52e84ea290344dd4f9e216d3a5189a93be4539d235b0c245b24fbb906", "docs/indicators/README.md::sha256:b6ab4622f2dcb0dc08b2bdfccc5d6feec0125bc34f2f97770ec35fb3964220a9", "docs/governance/numeric-computing.md::sha256:ed5c01fbd46d8dd2048dfdb4922d853835a9a38f76f77ad9b14d817523ffdb7b", "docs/governance/operator-contracts.md::sha256:c33cc8cb3037d908208906b64ad1135efdb323175d2d946cb640b812f5303d94", "docs/frontend/README.md::sha256:258fc38478f77af14b79f63bba270da51ea3c1382b874be4d58f28d62d611cb6", "docs/research/allocation-methods.md::sha256:8d2f0a79a54005ad165237a9adf504d1a96b36100361a922b4f2f62aad31bad6", "docs/research/regime-methods.md::sha256:04dbadaddf4a30b1c1fcb9a6a7a36b9c3f8980e1eca554e379b102f4d6ceb4fd", "docs/research/ai-functions-design.md::sha256:bfe87a5e27b2e0299df673270801b27476864974009edea4dbb23067e78f2fc6", "docs/research/ai-agent-reusable-architecture-design-2026-09-21.md::sha256:c3361c106abb7776ad8f676f1b944301d262daa8af90d106599acbcddb8a5bd4", "docs/research/ai-agent-context-compaction-design-2026-09-20.md::sha256:3f2ed6d5c48bcdfb378dd97eeb39a1b98ff6b588e87eb0ee3356d82ffb6450f8", "docs/research/portable-agent-platform-integration.md::sha256:aa7052eab7818c2bb91f0f4a1183c48026ad6e39e682f5980740d6ea393e32fe"]
+source_revision: "41719f15893a9d7b767399a5c093589bcf391a8e"
+dependencies: ["AGENTS.md::sha256:bcbe79f7c0ad26172c756530a5bbcdadb91322f69e4251da13056d8ba7922416", "docs/data/storage.md::sha256:09eb8831fc27645aed706fea1c5a66ac81c7f13f3f5dcbdbf345822dfb089353", "docs/indicators/computation-graph.md::sha256:18b81da52e84ea290344dd4f9e216d3a5189a93be4539d235b0c245b24fbb906", "docs/indicators/README.md::sha256:b6ab4622f2dcb0dc08b2bdfccc5d6feec0125bc34f2f97770ec35fb3964220a9", "docs/governance/numeric-computing.md::sha256:ed5c01fbd46d8dd2048dfdb4922d853835a9a38f76f77ad9b14d817523ffdb7b", "docs/governance/operator-contracts.md::sha256:c33cc8cb3037d908208906b64ad1135efdb323175d2d946cb640b812f5303d94", "docs/frontend/README.md::sha256:258fc38478f77af14b79f63bba270da51ea3c1382b874be4d58f28d62d611cb6", "docs/research/allocation-methods.md::sha256:8d2f0a79a54005ad165237a9adf504d1a96b36100361a922b4f2f62aad31bad6", "docs/research/regime-methods.md::sha256:04dbadaddf4a30b1c1fcb9a6a7a36b9c3f8980e1eca554e379b102f4d6ceb4fd", "docs/research/ai-functions-design.md::sha256:bfe87a5e27b2e0299df673270801b27476864974009edea4dbb23067e78f2fc6", "docs/research/ai-agent-reusable-architecture-design-2026-09-21.md::sha256:c3361c106abb7776ad8f676f1b944301d262daa8af90d106599acbcddb8a5bd4", "docs/research/ai-agent-context-compaction-design-2026-09-20.md::sha256:3f2ed6d5c48bcdfb378dd97eeb39a1b98ff6b588e87eb0ee3356d82ffb6450f8", "docs/research/portable-agent-platform-integration.md::sha256:88b5d323dd49365d616395ef531363f520c7d9debd21201fb9a76b0b612615c9"]
 evidence_kind: "mixed"
 aliases: ["架构决定", "历史原因", "技术演进"]
 ---
@@ -70,3 +70,5 @@ Portable方案选择独立服务、固定版本、HTTP工具及同版Web Compone
 明确批准的新取舍、等价性反例或新的部署证据出现时，先更新原主题决定与替代关系，再更新本页。不能为使叙事一致而删除历史证据、重写未获准目标或擅自改变业务算法。
 
 2026-10-04 技能接入复核：完整重读本页与 AGENTS 实际差异；新增的是 Wiki 读取/影响判断协议，既有代码版本治理、授权和本页架构取舍未变，不新增业务或部署结论。只更新经核对的 AGENTS 依赖。
+
+2026-10-12 生命周期决定复核：完整重读本页与迁移契约实际差异；统一启动仅减少本地漏启和接入配置错误，不改变独立服务、固定制品、业务权威和生产身份选择。保留原历史设计/未测量成本边界，本次不推定金融或生产资格。

@@ -122,6 +122,10 @@ frontend_is_ready() {
     "$PYTHON_BIN" "$AGENT_HELPER" check --via-frontend --allow-unconfigured-model
 }
 
+backend_assistant_is_ready() {
+  "$PYTHON_BIN" "$AGENT_HELPER" check-host
+}
+
 agent_is_ready() {
   "$PYTHON_BIN" "$AGENT_HELPER" check
 }
@@ -248,8 +252,16 @@ start_backend() {
       echo "[失败] :${BACKEND_PORT} 已被占用，但后端健康检查未通过。"
       return 1
     fi
-    echo "[就绪] 后端已运行，Numba 与 worker 预热完成。"
-    return 0
+    if backend_assistant_is_ready; then
+      echo "[就绪] 后端已运行，Numba、worker 与助手鉴权均已就绪。"
+      return 0
+    fi
+    echo "[升级] 已归属后端的助手鉴权未就绪，正在安全重启以应用本机配置……"
+    stop_process_by_pid_file "$BACKEND_PID_FILE" || return 1
+    if is_port_listening "$BACKEND_PORT"; then
+      echo "[失败] 后端端口仍被占用；不会接管或停止未知进程。"
+      return 1
+    fi
   fi
 
   if ! command_exists "$PYTHON_BIN"; then
@@ -277,7 +289,8 @@ start_backend() {
       start_pid="$(start_uvicorn "0")" || return 1
     fi
 
-    if wait_for_backend_health "$start_pid"; then
+    if wait_for_backend_health "$start_pid" &&
+      wait_for_service backend "$BACKEND_PORT" "$start_pid" backend_assistant_is_ready; then
       echo "[就绪] 后端启动成功，Numba 与 worker 预热完成（PID=$(cat "$BACKEND_PID_FILE")）。"
       return 0
     fi

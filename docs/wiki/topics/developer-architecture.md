@@ -5,11 +5,11 @@ title: "这个平台怎样分层，哪些能力属于谁？"
 domains: ["developer", "business"]
 review_state: "partial"
 result: "supported"
-scope: "2026-10-04当前工作树原文与实现的有源概述；仅支持本页明确边界，不代表全代码审计、业务测试重跑、投资资格或生产部署证明。"
-reviewed_at: "2026-10-04"
+scope: "2026-10-04当前工作树原文与实现的有源概述；仅支持本页明确边界，不代表全代码审计、业务测试重跑、投资资格或生产部署证明。；2026-10-12 仅复核本次启动差异，其他原文及历史证据保持各自适用日期"
+reviewed_at: "2026-10-12"
 reviewed_by: "AI 原文与实现核对"
-source_revision: "8ce7c06cc655d027cec6856caa873a1eafa1e51d"
-dependencies: ["README.md::sha256:2ca8b5692848b7d1050a30730f12b5b1ea2e2490f7d8a6302c279bfa4e78477e", "backend/app.py::sha256:ed789f9e6f70b6ce5493608e0329cdfc94792bdddeea9bf73aee5de4eab64095", "frontend/src/App.tsx::sha256:87fd236147dda9c10d3936e4befcfed009313ed64e947b759c0be36d0072e922", "frontend/src/app/processRegistry.ts::sha256:b50d1466b8fdb1cf463f3fc5fddf78873b36885098fadae78f29bec6e337eda7", "shared/platform-navigation.json::sha256:781673cb6d0b7099bf116383d804247bd4c756b65b18d004670fdf2aa74a1a09", "docs/product/requirements.md::sha256:39e169152d837e65e8891d3489b6b67f3077fa4539a6a528e41926501dfc05c6", "docs/product/domain-language.md::sha256:f7d328f84c032a3b42a54cfc543a24f392b8781860ca8acc8dc5d8b379a258ce", "docs/indicators/README.md::sha256:b6ab4622f2dcb0dc08b2bdfccc5d6feec0125bc34f2f97770ec35fb3964220a9", "docs/indicators/cpp-aot-contracts.md::sha256:df25aeae098bcd6b50f42121b4f9052d0bd9f8aa3d9122a21f31dc47aab19732", "docs/research/portable-agent-platform-integration.md::sha256:aa7052eab7818c2bb91f0f4a1183c48026ad6e39e682f5980740d6ea393e32fe"]
+source_revision: "41719f15893a9d7b767399a5c093589bcf391a8e"
+dependencies: ["README.md::sha256:afa1e8b266853eabf5073134a347f1956c2014d7f3d364a5e27397d61fc91b1c", "backend/app.py::sha256:ed789f9e6f70b6ce5493608e0329cdfc94792bdddeea9bf73aee5de4eab64095", "frontend/src/App.tsx::sha256:87fd236147dda9c10d3936e4befcfed009313ed64e947b759c0be36d0072e922", "frontend/src/app/processRegistry.ts::sha256:b50d1466b8fdb1cf463f3fc5fddf78873b36885098fadae78f29bec6e337eda7", "shared/platform-navigation.json::sha256:781673cb6d0b7099bf116383d804247bd4c756b65b18d004670fdf2aa74a1a09", "docs/product/requirements.md::sha256:39e169152d837e65e8891d3489b6b67f3077fa4539a6a528e41926501dfc05c6", "docs/product/domain-language.md::sha256:f7d328f84c032a3b42a54cfc543a24f392b8781860ca8acc8dc5d8b379a258ce", "docs/indicators/README.md::sha256:b6ab4622f2dcb0dc08b2bdfccc5d6feec0125bc34f2f97770ec35fb3964220a9", "docs/indicators/cpp-aot-contracts.md::sha256:df25aeae098bcd6b50f42121b4f9052d0bd9f8aa3d9122a21f31dc47aab19732", "docs/research/portable-agent-platform-integration.md::sha256:88b5d323dd49365d616395ef531363f520c7d9debd21201fb9a76b0b612615c9"]
 evidence_kind: "mixed"
 aliases: ["系统分层", "系统架构", "模块职责"]
 ---
@@ -61,3 +61,5 @@ CalMetricsEngine 的 C++ AOT 已有显式单产品标量适配契约，但既有
 ## 复核条件
 
 入口装配、共享能力状态、领域服务归属、助手部署协议或指标后端切换时重读相关调用链。若要把“源码支持”升级为“已运行”或“已部署”，必须补对应提交、环境、输入与实际结果，不能只更新本页日期。
+
+2026-10-12 本地启动分层复核：README 和迁移契约改为统一脚本编排后端、网页与独立 Agent；独立环境、HTTP 宿主权限和生产部署职责不变。运行编排复用现有 v2 接口，没有将通用智能体或数值引擎移入平台；其他架构结论仍沿用 2026-10-04 的限定证据。

@@ -17,6 +17,7 @@ import tempfile
 from urllib.parse import urlsplit
 
 import httpx
+import jwt
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_NAME = '.run/portable-agent-local.json'
@@ -90,16 +91,31 @@ def prepare(backend_url, browser_origin, agent_url, root=ROOT):
     urls = {key: local_url(value) for key, value in
             [('backend_url', backend_url), ('browser_origin', browser_origin), ('agent_url', agent_url)]}
     path = root / CONFIG_NAME
-    previous = read_config(root) if path.exists() else None
+    previous = read_config(root) if path.exists() or path.is_symlink() else None
     python = (previous or {}).get('python') or os.environ.get('PORTABLE_AGENT_PYTHON') or str(root/'.venv/portable-agent/bin/python')
     if not Path(python).is_file():
         raise LocalAgentError('缺少独立助手运行环境。请先安装 v2 wheel，设置 PORTABLE_AGENT_PYTHON 后重试。')
     # Probe from the private runtime directory, never from a source checkout.
     directory = root/'.data/portable-agent'
-    if previous and not (directory/'master.key').is_file():
-        raise LocalAgentError('原助手主密钥缺失；请恢复备份，启动不会生成替代密钥。')
     if directory.is_symlink() or (directory/'master.key').is_symlink():
         raise LocalAgentError('助手持久目录及主密钥不能是软链接。')
+    if not previous and directory.exists() and (not directory.is_dir() or any(directory.iterdir())):
+        raise LocalAgentError('已有助手数据，但原本机身份配置缺失；请恢复配对的 .run/portable-agent-local.json，不会创建替代身份。')
+    if previous and not (directory/'master.key').is_file():
+        raise LocalAgentError('原助手主密钥缺失；请恢复备份，启动不会生成替代密钥。')
+    endpoints = list((previous or {}).get('model_endpoints', []))
+    endpoints += [item.strip().rstrip('/') for item in os.environ.get('PORTABLE_AGENT_MODEL_ENDPOINTS', '').split(',') if item.strip()]
+    legacy = root/'data/llm_settings.json'
+    if legacy.is_file():
+        old = json.loads(legacy.read_text())
+        profiles = old.get('profiles') or ([old['settings']] if old.get('settings') else [])
+        endpoints += [p['base_url'].rstrip('/') for p in profiles if p.get('base_url')]
+    endpoints = list(dict.fromkeys(endpoints))
+    if not endpoints:
+        raise LocalAgentError('尚未指定模型 API 地址，请在本地配置的 model_endpoints 中填写允许接入的地址。')
+    sys.path.insert(0, str(ROOT/'scripts'))
+    from export_portable_agent_config import configuration
+    apps = configuration(backend_url, browser_origin, endpoints)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     probe = subprocess.run([python, '-c',
         'import json, importlib.metadata; from pathlib import Path; import portable_agent; '
@@ -123,20 +139,8 @@ def prepare(backend_url, browser_origin, agent_url, root=ROOT):
     value = previous or dict(schema_version=1, python=python, owner=getpass.getuser(), workspace='local',
                              identity_key=secrets.token_hex(32), service_token=secrets.token_hex(32), issuer_key=key)
     value.update(urls)
-    sys.path.insert(0, str(ROOT/'scripts'))
-    from export_portable_agent_config import configuration
-    endpoints = list(value.get('model_endpoints', []))
-    endpoints += [item.strip().rstrip('/') for item in os.environ.get('PORTABLE_AGENT_MODEL_ENDPOINTS', '').split(',') if item.strip()]
-    legacy = root/'data/llm_settings.json'
-    if legacy.is_file():
-        old = json.loads(legacy.read_text())
-        profiles = old.get('profiles') or ([old['settings']] if old.get('settings') else [])
-        endpoints += [p['base_url'].rstrip('/') for p in profiles if p.get('base_url')]
-    endpoints = list(dict.fromkeys(endpoints))
-    if not endpoints:
-        raise LocalAgentError('尚未指定模型 API 地址，请在本地配置的 model_endpoints 中填写允许接入的地址。')
     value['model_endpoints'] = endpoints
-    private_json(root/'.run/portable-agent-apps.json', configuration(backend_url, browser_origin, endpoints))
+    private_json(root/'.run/portable-agent-apps.json', apps)
     private_json(path, value)
     return value
 
@@ -147,6 +151,8 @@ def service_environment(root, service):
     if service == 'backend':
         env.update(PORTABLE_AGENT_AUTH_MODE='local', PORTABLE_AGENT_BROWSER_ORIGIN=value['browser_origin'],
                    PORTABLE_AGENT_LOCAL_OWNER=value['owner'], PORTABLE_AGENT_WORKSPACE=value['workspace'],
+                   PORTABLE_AGENT_LOCAL_WORKSPACE=value['workspace'], PORTABLE_AGENT_APP='fund-research',
+                   PORTABLE_AGENT_IDENTITY_ISSUER='fund-research',
                    PORTABLE_AGENT_IDENTITY_KEY=value['identity_key'], PORTABLE_AGENT_ISSUER_KEY=value['issuer_key'],
                    PORTABLE_AGENT_SERVICE_TOKEN=value['service_token'])
     elif service == 'agent':
@@ -182,6 +188,32 @@ def connect(client, value, host_url):
     bootstrap = checked(client.post(base+'/bootstrap', json={'context_ref': context['ref']}), '助手授权')
     return {'Authorization': 'Bearer '+bootstrap['token']}, bootstrap
 
+
+def check_host(root=ROOT):
+    """Check the running host against the current paired credentials before reuse."""
+    value = read_config(root)
+    with httpx.Client(trust_env=False, timeout=10, headers={'Origin': value['browser_origin']}) as client:
+        _, bootstrap = connect(client, value, value['backend_url'])
+        try:
+            identity = jwt.decode(client.cookies.get('research_identity'), value['identity_key'],
+                algorithms=['HS256'], audience='fund-research-platform', issuer='fund-research',
+                options={'require': ['sub', 'workspace', 'iat', 'exp']})
+            grant = jwt.decode(bootstrap['token'], bytes.fromhex(value['issuer_key']),
+                algorithms=['HS256'], audience='portable-agent', issuer='portable-agent-host',
+                options={'require': ['sub', 'workspace', 'app', 'iat', 'exp']})
+            if any(claims['sub'] != value['owner'] or claims['workspace'] != value['workspace']
+                   for claims in (identity, grant)) or grant['app'] != 'fund-research':
+                raise ValueError()
+            context = {key: bootstrap['context'][key]
+                       for key in ('ref', 'hash', 'grant_id', 'grant_revision', 'workspace')}
+        except (jwt.PyJWTError, ValueError, KeyError, TypeError):
+            raise LocalAgentError('运行中的后端与当前助手身份配置不一致。') from None
+        allowed = checked(client.post(value['backend_url']+'/internal/portable-agent/authorize',
+            headers={'Authorization': 'Bearer '+value['service_token']}, json={
+                'application': 'fund-research', 'subject': value['owner'], 'context': context,
+                'action': 'metadata', 'identity_only': True}), '后端服务凭证')
+        if allowed.get('allow') is not True:
+            raise LocalAgentError('运行中的后端尚未允许助手接入。')
 
 def check(root=ROOT, *, via_frontend=False, require_model=True):
     value = read_config(root)
@@ -241,7 +273,7 @@ def import_profiles(root=ROOT):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['prepare', 'check', 'import-profiles'])
+    parser.add_argument('action', choices=['prepare', 'check', 'check-host', 'import-profiles'])
     parser.add_argument('--backend-url', default='http://127.0.0.1:8000')
     parser.add_argument('--browser-origin', default='http://127.0.0.1:5173')
     parser.add_argument('--agent-url', default='http://127.0.0.1:8787')
@@ -252,6 +284,9 @@ def main():
         if args.action == 'prepare':
             prepare(args.backend_url, args.browser_origin, args.agent_url)
             print('[配置] 独立助手 v2、本机身份与服务凭证已就绪。')
+        elif args.action == 'check-host':
+            check_host()
+            print('[就绪] 后端助手身份、签名与服务凭证匹配。')
         elif args.action == 'import-profiles':
             count = import_profiles()
             print(f'[配置] 模型接入已初始化（本次导入 {count} 项）；保留既有助手设置。')

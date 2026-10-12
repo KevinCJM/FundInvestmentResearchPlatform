@@ -448,3 +448,49 @@ def test_launchers_do_not_trust_forwarded_headers():
     assert 'VITE_API_TARGET="$BACKEND_URL" launch_detached frontend' in source
     for name in ('backend/run.py', 'backend/app.py'):
         assert 'proxy_headers=False' in (ROOT / name).read_text()
+
+
+@pytest.mark.parametrize('case', ['configured', 'old-auth', 'stop-failed', 'port-still-busy', 'new-auth-failed'])
+def test_owned_backend_upgrade_repairs_auth_without_touching_foreign_ports(tmp_path, case):
+    script = 'set -eu\n'+shell_functions('start_backend')+f'''
+BACKEND_PORT=8000
+BACKEND_PID_FILE='{tmp_path}/backend.pid'
+BACKEND_LOG_FILE='{tmp_path}/backend.log'
+BACKEND_DIR='{tmp_path}'
+PYTHON_BIN=true
+BACKEND_RELOAD=0
+port_open=1
+is_port_listening() {{ [[ "$port_open" == 1 ]]; }}
+service_is_owned() {{ return 0; }}
+backend_is_ready() {{ return 0; }}
+backend_assistant_is_ready() {{ return {0 if case == 'configured' else 1}; }}
+stop_process_by_pid_file() {{
+  echo safe-stop
+  {'return 1' if case == 'stop-failed' else ('port_open=1' if case == 'port-still-busy' else 'port_open=0')}
+}}
+command_exists() {{ return 0; }}
+start_uvicorn() {{ echo 12345 > "$BACKEND_PID_FILE"; echo 12345; }}
+wait_for_backend_health() {{ echo warmup-checked; return 0; }}
+wait_for_service() {{
+  [[ "$1" == backend && "$4" == backend_assistant_is_ready ]] || return 1
+  echo new-auth-checked
+  return {int(case == 'new-auth-failed')}
+}}
+show_log_tail() {{ :; }}
+sleep() {{ :; }}
+start_backend
+'''
+    result = subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True)
+    assert result.returncode == (0 if case in ('configured', 'old-auth') else 1), result.stderr
+    if case == 'configured':
+        assert '助手鉴权均已就绪' in result.stdout and 'safe-stop' not in result.stdout
+        assert not (tmp_path/'backend.pid').exists()
+    else:
+        assert 'safe-stop' in result.stdout
+        if case in ('stop-failed', 'port-still-busy'):
+            assert not (tmp_path/'backend.pid').exists()
+            assert 'warmup-checked' not in result.stdout
+        else:
+            assert result.stdout.index('safe-stop') < result.stdout.index('warmup-checked') < result.stdout.index('new-auth-checked')
+    if case == 'new-auth-failed':
+        assert '启动成功' not in result.stdout

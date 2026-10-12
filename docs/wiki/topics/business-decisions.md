@@ -5,11 +5,11 @@ title: "哪些能力已经接通，关键决定为什么这样做？"
 domains: ["business"]
 review_state: "partial"
 result: "supported"
-scope: "本页有源业务概述；当前实现、目标设计及历史证据分别解释；含指定源码静态核对，不代表全模块金融验证、真实投资或生产部署通过"
-reviewed_at: "2026-10-04"
+scope: "本页有源业务概述；当前实现、目标设计及历史证据分别解释；含指定源码静态核对，不代表全模块金融验证、真实投资或生产部署通过；2026-10-12 仅复核本次启动差异，其他原文及历史证据保持各自适用日期"
+reviewed_at: "2026-10-12"
 reviewed_by: "AI 原文与实现核对"
-source_revision: "8ce7c06cc655d027cec6856caa873a1eafa1e51d"
-dependencies: ["docs/repo_map.json::sha256:b957aa6b9846d87bb44253533e3a7ad9f2e20dd72d995a8389a8f40efdcb3949", "docs/product/requirements.md::sha256:39e169152d837e65e8891d3489b6b67f3077fa4539a6a528e41926501dfc05c6", "docs/research/allocation-methods.md::sha256:8d2f0a79a54005ad165237a9adf504d1a96b36100361a922b4f2f62aad31bad6", "docs/research/cma-model-decisions.md::sha256:66c5decfaf4d686dc0c791fcda43136347bcdc4bbda65c17212e739f61ee10cd", "docs/research/regime-methods.md::sha256:04dbadaddf4a30b1c1fcb9a6a7a36b9c3f8980e1eca554e379b102f4d6ceb4fd", "docs/pre-investment/implementation.md::sha256:1c9ba2c90ed50b08f7219bb9908ef71b40cf2de0447b19976f492a05d34b7394", "docs/verification/allocation.md::sha256:a017eba29c2672f8ecc283a2d89a38b4bae78699176ca9529caa22481db523c5", "docs/research/pre-investment-institutional-gap-analysis-2026-09-19.md::sha256:b67293ea6e4a71fc755e97fc8abed08a50279153c6325aec415019d64991ecfe", "docs/verification/factors.md::sha256:3d341b85e2e9110633acbfb12431cd5ae6586bff03ca08fe7bab15386b9b356e", "docs/research/csi300-reference-recognition-study-2026-09-15.md::sha256:9e72885204e3b3932bbc1847ecee7abefd6811bdebdb339ade5f832fc34e7602", "docs/verification/engineering.md::sha256:676b4ce2c3e9e77cbcaa07f541beb39c4688971efa8c0087d3f1eeb5a380f80b"]
+source_revision: "41719f15893a9d7b767399a5c093589bcf391a8e"
+dependencies: ["docs/repo_map.json::sha256:3e5a9ce59e856234166e4ccdbb2a6f8e4097aea2fbbc7ada8e6aa80ca0f9384a", "docs/product/requirements.md::sha256:39e169152d837e65e8891d3489b6b67f3077fa4539a6a528e41926501dfc05c6", "docs/research/allocation-methods.md::sha256:8d2f0a79a54005ad165237a9adf504d1a96b36100361a922b4f2f62aad31bad6", "docs/research/cma-model-decisions.md::sha256:66c5decfaf4d686dc0c791fcda43136347bcdc4bbda65c17212e739f61ee10cd", "docs/research/regime-methods.md::sha256:04dbadaddf4a30b1c1fcb9a6a7a36b9c3f8980e1eca554e379b102f4d6ceb4fd", "docs/pre-investment/implementation.md::sha256:1c9ba2c90ed50b08f7219bb9908ef71b40cf2de0447b19976f492a05d34b7394", "docs/verification/allocation.md::sha256:a017eba29c2672f8ecc283a2d89a38b4bae78699176ca9529caa22481db523c5", "docs/research/pre-investment-institutional-gap-analysis-2026-09-19.md::sha256:b67293ea6e4a71fc755e97fc8abed08a50279153c6325aec415019d64991ecfe", "docs/verification/factors.md::sha256:3d341b85e2e9110633acbfb12431cd5ae6586bff03ca08fe7bab15386b9b356e", "docs/research/csi300-reference-recognition-study-2026-09-15.md::sha256:9e72885204e3b3932bbc1847ecee7abefd6811bdebdb339ade5f832fc34e7602", "docs/verification/engineering.md::sha256:676b4ce2c3e9e77cbcaa07f541beb39c4688971efa8c0087d3f1eeb5a380f80b"]
 evidence_kind: "mixed"
 aliases: ["业务决定", "当前能力", "规划与实现"]
 ---
@@ -55,3 +55,5 @@ aliases: ["业务决定", "当前能力", "规划与实现"]
 能力交付、决定被替代、旧反例获得复验或来源失效时更新对应认识。外部资料沿用仓库原检索日期，本次未联网复核；未从草稿、测试数字或文档日期推定部署与金融资格。
 
 2026-10-04 技能接入复核：逐项核对 repo_map 的本轮差异，变化仅属 documentation_maintenance 的技能入口、测试与回归登记；documentation.documents 的业务文档 active 语义及本页所列业务能力/决定未改变。原业务证据未重跑，保留原范围；只更新实际复核过的目录依赖。
+
+2026-10-12 目录差异复核：本轮 repo_map 仅登记 backend_api_shell/portable_agent 的本地三进程编排、就绪检查、脚本和回归；业务能力状态、金融决定及批准范围未变。逐项对照本页正文后保留原业务结论和未重跑限制，仅更新已核对的目录依赖。

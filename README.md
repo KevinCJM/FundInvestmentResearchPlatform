@@ -69,7 +69,7 @@ npm install
 ./start_services.sh stop
 ```
 
-先按[本地助手运行说明](deploy/README.md#local-development-with-the-assistant)安装独立 v2 wheel。日常只需 `./start_services.sh`（默认 start），会自动启动后端、网页和 AI 智能体；网页 AI 助手同步可用。重复启动复用健康服务，并补启缺失的智能体。脚本检查原数据卷、数值预热、助手鉴权与组件、网页代理和已选择的模型；任一未就绪不会报告启动成功。本机入口为 `http://127.0.0.1:5173`，智能体入口为 `/settings/ai-agent`，行情指标中心右下角可打开 AI 助手。
+先按[本地助手运行说明](deploy/README.md#local-development-with-the-assistant)安装独立 v2 wheel。日常只需 `./start_services.sh`（默认 start），会自动启动后端、网页和 AI 智能体；网页 AI 助手同步可用。重复启动复用鉴权配置匹配的健康服务，并补启缺失的智能体；升级前的已归属后端缺少助手鉴权时，会安全重启后继续。脚本检查原数据卷、数值预热、助手鉴权与组件、网页代理和已选择的模型；任一未就绪不会报告启动成功。本机入口为 `http://127.0.0.1:5173`，智能体入口为 `/settings/ai-agent`，行情指标中心右下角可打开 AI 助手。
 
 下面的手动命令可单独调试前后端，不包含智能体：
 
