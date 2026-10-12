@@ -69,7 +69,7 @@ flowchart LR
 - 网关转发 SSE 时关闭缓冲，保留流式响应、心跳和取消请求；断线只重连观察，不重放任务。业务工具路径只在服务网络开放，浏览器使用单独的用户业务接口。
 - 网关成为唯一公共入口：生产Compose移除当前投研服务的宿主机 `ports` 映射，Agent也不直接发布端口；网关仅白名单转发公开路径并拒绝 `/internal/`，两后端仍验证身份。开发直连仅绑定回环地址。新增网关不能保留一个绕过网关的公网8000端口；从宿主机外部验证不能直达内部工具/准入接口。
 - Agent 不挂载市场数据、业务数据库或平台源码；平台不挂载 Agent 数据卷或解密主密钥。当前单节点 SQLite 模型保持单执行实例，不能通过增加 worker 扩容。
-- 本地开发两个独立虚拟环境/进程；平台 `start_services.sh` 只管理平台服务；先另行启动Agent，Vite通过 `VITE_PORTABLE_AGENT_TARGET` 代理其地址，固定镜像部署使用Compose覆盖文件，不下载 main 最新源码、不在平台虚拟环境安装 LangChain/LangGraph。
+- 本地开发使用两个独立虚拟环境；`start_services.sh` 统一管理后端、网页及独立安装的 v2 Agent 进程，不下载 main 最新源码、不在平台虚拟环境安装 LangChain/LangGraph。仅接管自己记录的独立 session，不接管端口上未确认归属的服务。受限本机身份、首次模型配置导入、数据与密钥备份、网页代理就绪条件见[本地运行说明](../../deploy/README.md#local-development-with-the-assistant)。生产仍使用固定镜像与正式身份，不能沿用本机登录。
 - 建议交付时增加 `config/portable-agent/release.json`，记录 source commit、image digest、协议版本和兼容能力集合。初始提交只有原型源码，本设计不虚构已存在的可部署镜像。
 - 框架增加只读兼容元数据：协议主版本、组件版本、部署ID、已支持能力。挂载前核验目标协议和必要能力；不兼容则仅禁用助手，业务页面仍可独立使用。
 

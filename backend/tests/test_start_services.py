@@ -195,11 +195,12 @@ def shell_functions(*names):
     return '\n'.join(re.search(rf'^{name}\(\) \{{\n.*?^\}}', source, re.M | re.S).group() for name in names)
 
 
-@pytest.mark.parametrize('service', ['backend', 'frontend'])
+@pytest.mark.parametrize('service', ['backend', 'frontend', 'agent'])
 def test_foreign_healthy_port_is_not_adopted_or_killed(service):
     script = shell_functions(f'start_{service}') + '''
 BACKEND_PORT=8000
 FRONTEND_PORT=5173
+AGENT_PORT=8787
 is_port_listening() { return 0; }
 service_is_owned() { return 1; }
 backend_is_ready() { echo unexpected-health-check; return 0; }
@@ -218,8 +219,10 @@ def test_restart_stops_on_uncertain_ownership_or_foreign_listener(stop_failed, p
     script = shell_functions('stop_services', 'restart_services') + f'''
 BACKEND_PID_FILE=backend.pid
 FRONTEND_PID_FILE=frontend.pid
+AGENT_PID_FILE=agent.pid
 BACKEND_PORT=8000
 FRONTEND_PORT=5173
+AGENT_PORT=8787
 stop_process_by_pid_file() {{ return {int(stop_failed)}; }}
 is_port_listening() {{ return {int(not port_busy)}; }}
 start_services() {{ echo unexpected-start; }}
@@ -237,8 +240,10 @@ def test_successful_restart_proceeds_only_after_safe_stop():
     script = shell_functions('stop_services', 'restart_services') + '''
 BACKEND_PID_FILE=backend.pid
 FRONTEND_PID_FILE=frontend.pid
+AGENT_PID_FILE=agent.pid
 BACKEND_PORT=8000
 FRONTEND_PORT=5173
+AGENT_PORT=8787
 stop_process_by_pid_file() { echo "stopped $1"; }
 is_port_listening() { return 1; }
 start_services() { echo restarted; }
@@ -249,6 +254,142 @@ restart_services
     assert result.returncode == 0
     assert result.stdout.index('stopped backend.pid') < result.stdout.index('restarted')
     assert result.stdout.index('stopped frontend.pid') < result.stdout.index('restarted')
+    assert result.stdout.index('stopped agent.pid') < result.stdout.index('restarted')
+
+
+def test_agent_ownership_requires_the_recorded_config_and_data(owned, monkeypatch):
+    root, record, signals = owned
+    processes.clear(root, 'backend')
+    record.update(service='agent', cwd=str(root/'.data/portable-agent'),
+                  argv=[sys.executable, '-m', 'portable_agent', 'serve', '--config', '/original/apps.json'])
+    pid, identity = processes.paths(root, 'agent')
+    pid.write_text(str(record['pid']))
+    identity.write_text(json.dumps(record))
+    monkeypatch.setattr(processes, 'process_command_and_cwd', lambda _: (record['argv'][:-1]+['/other/apps.json'], record['cwd']))
+    with pytest.raises(processes.OwnershipError, match='配置或数据目录'):
+        processes.stop(root, 'agent')
+    assert signals == []
+    monkeypatch.setattr(processes, 'process_command_and_cwd', lambda _: (record['argv'], record['cwd']))
+    processes.stop(root, 'agent')
+    assert signals == [('group', record['pid'], signal.SIGTERM)]
+
+
+def test_no_start_success_when_agent_or_browser_proxy_fails():
+    script = shell_functions('start_services') + '''
+PYTHON_BIN=true
+PROJECT_ROOT=/fixture
+AGENT_HELPER=/fixture/helper
+BACKEND_HOST=127.0.0.1
+FRONTEND_HOST=127.0.0.1
+BACKEND_URL=http://127.0.0.1:8000
+FRONTEND_URL=http://127.0.0.1:5173
+AGENT_URL=http://127.0.0.1:8787
+command_exists() { return 0; }
+start_backend() { return 0; }
+start_agent() { return 1; }
+start_frontend() { echo unexpected-frontend; }
+status_services() { echo unexpected-status; }
+start_services
+'''
+    result = subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True)
+    assert result.returncode == 1
+    assert '启动失败' in result.stdout
+    assert 'SUCCESS' not in result.stdout and 'unexpected' not in result.stdout
+
+
+def test_agent_start_completes_with_strict_shell_variables():
+    script = 'set -eu\n'+shell_functions('start_agent')+'''
+AGENT_PORT=8787
+AGENT_LOG_FILE=agent.log
+AGENT_PID_FILE=agent.pid
+AGENT_HELPER=helper.py
+PYTHON_BIN=true
+is_port_listening() { return 1; }
+launch_detached() { echo 12345; }
+wait_for_service() { return 0; }
+service_is_owned() { return 0; }
+start_agent
+'''
+    result = subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert 'PID=12345' in result.stdout
+
+
+@pytest.mark.parametrize('case', ['delayed', 'timeout', 'exited', 'foreign'])
+def test_startup_waits_for_assistant_connection_not_only_the_port(tmp_path, case):
+    script = 'set -eu\n'+shell_functions('wait_for_service')+f'''
+RUN_DIR='{tmp_path}'
+ASSISTANT_HEALTH_TIMEOUT_SECONDS=3
+SECONDS=0
+attempts=0
+is_port_listening() {{ return 0; }}
+is_pid_running() {{ return {int(case == 'exited')}; }}
+service_is_owned() {{ return {int(case == 'foreign')}; }}
+connection_ready() {{
+  attempts=$((attempts + 1))
+  echo '助手授权尚未就绪'
+  {'[[ "$attempts" -ge 3 ]]' if case == 'delayed' else 'return 1'}
+}}
+sleep() {{ SECONDS=$((SECONDS + 1)); }}
+wait_for_service agent 8787 12345 connection_ready
+'''
+    result = subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True)
+    assert result.returncode == (0 if case == 'delayed' else 1), result.stderr
+    if case == 'delayed':
+        assert '正在等待' in result.stdout
+        assert '助手授权尚未就绪' not in result.stdout
+    elif case == 'timeout':
+        assert '等待超过 3 秒' in result.stdout
+        assert '助手授权尚未就绪' in result.stdout
+    else:
+        assert not (tmp_path/'agent-readiness.log').exists()
+
+
+def test_start_repairs_missing_agent_without_restarting_healthy_services(tmp_path):
+    script = 'set -eu\n'+shell_functions('start_services', 'start_agent')+f'''
+PYTHON_BIN=true
+PROJECT_ROOT='{tmp_path}'
+AGENT_HELPER=helper.py
+BACKEND_HOST=127.0.0.1
+FRONTEND_HOST=127.0.0.1
+BACKEND_URL=http://127.0.0.1:8000
+FRONTEND_URL=http://127.0.0.1:5173
+AGENT_URL=http://127.0.0.1:8787
+AGENT_PORT=8787
+AGENT_LOG_FILE=agent.log
+command_exists() {{ return 0; }}
+start_backend() {{ echo reused-backend; }}
+start_frontend() {{ echo reused-frontend; }}
+status_services() {{ return 0; }}
+is_port_listening() {{ return 1; }}
+launch_detached() {{ echo 12345; }}
+wait_for_service() {{ echo assistant-connected; return 0; }}
+start_services
+'''
+    result = subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.index('reused-backend') < result.stdout.index('assistant-connected')
+    assert result.stdout.index('assistant-connected') < result.stdout.index('reused-frontend')
+    assert 'AI 智能体与 AI 助手均已就绪' in result.stdout
+
+
+def test_existing_agent_is_reused_after_connection_is_ready():
+    script = 'set -eu\n'+shell_functions('start_agent')+'''
+PYTHON_BIN=true
+AGENT_HELPER=helper.py
+AGENT_PID_FILE=agent.pid
+AGENT_PORT=8787
+is_port_listening() { return 0; }
+service_is_owned() { return 0; }
+read_pid_from_file() { echo 12345; }
+wait_for_service() { echo assistant-connected; return 0; }
+launch_detached() { echo unexpected-launch; }
+start_agent
+'''
+    result = subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert 'assistant-connected' in result.stdout
+    assert 'unexpected' not in result.stdout
 
 
 def test_launch_records_identity_and_supports_second_launch_after_stop(owned, monkeypatch):

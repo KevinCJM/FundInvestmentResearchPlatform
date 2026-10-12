@@ -60,6 +60,19 @@ npm install
 
 ### 开发模式
 
+日常使用统一命令，同时管理网页、后端和独立智能体：
+
+```bash
+./start_services.sh start
+./start_services.sh status
+./start_services.sh restart
+./start_services.sh stop
+```
+
+先按[本地助手运行说明](deploy/README.md#local-development-with-the-assistant)安装独立 v2 wheel。日常只需 `./start_services.sh`（默认 start），会自动启动后端、网页和 AI 智能体；网页 AI 助手同步可用。重复启动复用健康服务，并补启缺失的智能体。脚本检查原数据卷、数值预热、助手鉴权与组件、网页代理和已选择的模型；任一未就绪不会报告启动成功。本机入口为 `http://127.0.0.1:5173`，智能体入口为 `/settings/ai-agent`，行情指标中心右下角可打开 AI 助手。
+
+下面的手动命令可单独调试前后端，不包含智能体：
+
 启动后端：
 
 ```bash
@@ -78,7 +91,7 @@ npm run dev
 
 前端默认通过 Vite 将 `/api` 代理到后端。
 
-AI 助手由独立的 Portable Web Agent 服务提供；平台只保留业务工具和页面接入。开发时还需启动独立服务并配置 `/assistant` 代理与登录身份，步骤见[独立助手接入](deploy/README.md#independent-assistant-candidate)，当前开发验收和生产切换边界见[迁移设计](docs/research/portable-agent-platform-integration.md#182-2026-10-01-dev整合与验收收尾)。
+AI 助手由独立的 Portable Web Agent 服务提供；平台只保留业务工具、页面接入和本地进程管理。统一命令配置 `/assistant` 代理与受限本机身份，使用独立环境运行助手，不向平台 Python 安装 LangChain/LangGraph。生产配置见[独立助手接入](deploy/README.md#independent-assistant-candidate)，生产切换边界见[迁移设计](docs/research/portable-agent-platform-integration.md#182-2026-10-01-dev整合与验收收尾)。
 
 ### 一体化运行
 

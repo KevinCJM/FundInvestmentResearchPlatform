@@ -5,11 +5,11 @@ title: "怎样启动与部署，哪些门槛必须单独验证？"
 domains: ["developer"]
 review_state: "partial"
 result: "supported"
-scope: "2026-10-04当前工作树原文与实现的有源概述；仅支持本页明确边界，不代表全代码审计、业务测试重跑、投资资格或生产部署证明。"
-reviewed_at: "2026-10-04"
+scope: "2026-10-04原文概述；2026-10-12仅复核本地助手启动链路及其依赖字节，其余历史证据和生产边界保留。"
+reviewed_at: "2026-10-12"
 reviewed_by: "AI 原文与实现核对"
-source_revision: "8ce7c06cc655d027cec6856caa873a1eafa1e51d"
-dependencies: ["README.md::sha256:2ca8b5692848b7d1050a30730f12b5b1ea2e2490f7d8a6302c279bfa4e78477e", "Dockerfile::sha256:36bcdcfcb0253387a6eff89c1017b742280719f4eeb17c3971bc8db416df3472", "docker-compose.yml::sha256:cf441918fa1f2bf1a7a6f13d19858adc63c568276197a2aed5b8a4f360f80458", "deploy/README.md::sha256:1be51d8fcff3951555a9421e2f990006ba05f701b4fc0b7a0c6ec9f79ca61377", "deploy/portable-agent.compose.yml::sha256:1edcb9dcef1d5dda13c24f1f353e8f5a6a2721a92c8bf8312ef40850209c024c", "backend/app.py::sha256:ed789f9e6f70b6ce5493608e0329cdfc94792bdddeea9bf73aee5de4eab64095", "backend/integrations/portable_agent/service.py::sha256:d64119e0a26e53617a686417a13d8fbb5cab3aa200b59c9c81615bb0ebaa0d6c", "docs/data/storage.md::sha256:09eb8831fc27645aed706fea1c5a66ac81c7f13f3f5dcbdbf345822dfb089353", "docs/data/acquisition-protocol.md::sha256:74b6148b3d575859a67ac42da42f2c56027bac2efd2cb125be173828ffb5f1cc", "docs/indicators/cpp-aot-contracts.md::sha256:df25aeae098bcd6b50f42121b4f9052d0bd9f8aa3d9122a21f31dc47aab19732", "docs/research/portable-agent-platform-integration.md::sha256:aa7052eab7818c2bb91f0f4a1183c48026ad6e39e682f5980740d6ea393e32fe", "start_services.sh::sha256:d38ac48a99fcc4ced24e68f87bd111d05eac4355217acf7224dc829b2a4f9f57"]
+source_revision: "24ac20ad1d23bd5f6e7c6408dd306e75003a8c3e"
+dependencies: ["README.md::sha256:0047733bf75c50e07b4b0d0f024453faaf916e1f503a9291afe73c518a94f7d7", "Dockerfile::sha256:36bcdcfcb0253387a6eff89c1017b742280719f4eeb17c3971bc8db416df3472", "docker-compose.yml::sha256:cf441918fa1f2bf1a7a6f13d19858adc63c568276197a2aed5b8a4f360f80458", "deploy/README.md::sha256:7fe082f080ff529764bf639ac928e9d2c84904569363640bf7ead40ff05005d3", "deploy/portable-agent.compose.yml::sha256:1edcb9dcef1d5dda13c24f1f353e8f5a6a2721a92c8bf8312ef40850209c024c", "backend/app.py::sha256:ed789f9e6f70b6ce5493608e0329cdfc94792bdddeea9bf73aee5de4eab64095", "backend/integrations/portable_agent/service.py::sha256:d64119e0a26e53617a686417a13d8fbb5cab3aa200b59c9c81615bb0ebaa0d6c", "docs/data/storage.md::sha256:09eb8831fc27645aed706fea1c5a66ac81c7f13f3f5dcbdbf345822dfb089353", "docs/data/acquisition-protocol.md::sha256:74b6148b3d575859a67ac42da42f2c56027bac2efd2cb125be173828ffb5f1cc", "docs/indicators/cpp-aot-contracts.md::sha256:df25aeae098bcd6b50f42121b4f9052d0bd9f8aa3d9122a21f31dc47aab19732", "docs/research/portable-agent-platform-integration.md::sha256:88b5d323dd49365d616395ef531363f520c7d9debd21201fb9a76b0b612615c9", "start_services.sh::sha256:39ebbc09f0f93838aea89c1da1261edf7e3afb6bbe041045acb8ee522d107e05"]
 evidence_kind: "mixed"
 aliases: ["部署", "运行", "生产门槛"]
 ---
@@ -48,13 +48,13 @@ aliases: ["部署", "运行", "生产门槛"]
 
 生产需要已审阅固定镜像digest和release文件，绑定源码提交、协议主版本、widget、manifest与能力集合；身份来源、当前权限查询及内部服务凭据另行配置。`release_contract()`在production缺锁或锁不匹配时失败关闭，不能换成demo凭据或浮动latest绕过。
 
-开发时Agent另起进程，平台`start_services.sh`只管理平台。`VITE_PORTABLE_AGENT_TARGET`只是代理地址，不自动建立可信登录。迁移历史业务数据需要独立授权、dry-run、幂等/中断恢复与权限复核，离线夹具通过不能代替真实迁移。
+本地开发使用`./start_services.sh`统一启动平台后端、网页和独立安装的v2 Agent；两个Python环境保持隔离。脚本生成受限本机身份与服务凭证，一次性导入原模型配置，重复启动保留后续用户设置并补启缺失服务。接入检查覆盖登录、上下文授权、v2能力、网页组件、模型选择及同源`/assistant`代理；暂时未就绪会重试，失败会说明原因。公开部署仍走正式身份与固定镜像，不能沿用本机登录。迁移历史业务数据需要独立授权、dry-run、幂等/中断恢复与权限复核，离线夹具通过不能代替真实迁移。
 
 ## 当前与边界
 
 平台已有Portable接入源码及带版本的历史离线工程证据；独立框架当前HEAD、最终受审固定制品、生产HTTPS/身份/外部端口/SSE和真实数据迁移在本知识整理中均未确认。C++ AOT只提供显式局部适配，不能据此宣布平台NJIT启动成本已消失。
 
-本页未启动服务、构建镜像、访问生产或执行任何登录。生产切换是独立动作，不能从写文档、安装Obsidian或源码发布推定已获授权或已完成。
+本次候选的启动/接入离线回归73项通过；原本机工作区已验证补启缺失Agent和浏览器助手回复。后者覆盖同一份启动/接入代码，不代表冷启动全量重启或生产验收。本页未构建镜像或访问生产。生产切换是独立动作，不能从写文档、安装Obsidian或源码发布推定已获授权或已完成。
 
 ## 依据与继续阅读
 
