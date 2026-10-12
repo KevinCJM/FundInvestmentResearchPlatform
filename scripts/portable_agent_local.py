@@ -81,7 +81,9 @@ def model_endpoint(value):
         if (parsed.scheme not in {'http', 'https'} or not parsed.hostname
                 or parsed.username or parsed.password or parsed.query or parsed.fragment):
             raise ValueError()
-        _ = parsed.port
+        port = parsed.port
+        if port is not None and not 1 <= port <= 65535:
+            raise ValueError()
         if ':' not in parsed.hostname and not re.fullmatch(r'[A-Za-z0-9_.-]+', parsed.hostname.encode('idna').decode('ascii')):
             raise ValueError()
     except (ValueError, TypeError, AttributeError, UnicodeError):

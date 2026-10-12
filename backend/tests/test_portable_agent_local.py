@@ -200,6 +200,7 @@ def test_first_install_checks_model_config_before_creating_a_key(tmp_path, monke
 @pytest.mark.parametrize('endpoint', ['not-a-url', 'ftp://provider.example/v1', 'https:///v1',
     'https://user:private@provider.example/v1', 'https://provider.example/v1?api_key=private',
     'https://provider.example/v1#private', 'https://provider.example:bad/v1', 'https://[invalid/v1',
+    'https://provider.example:0/v1', 'https://provider.example:65536/v1',
     'https://provider.exa mple/v1', 'https://provider.example\t/v1', 'https://provider.example\n/v1',
     'https://provider.example\u00a0/v1', 'https://provider.exa%20mple/v1',
     'https://provider.exa\\mple/v1'])
@@ -230,7 +231,8 @@ def test_invalid_model_endpoint_has_no_key_or_config_side_effects(config, monkey
     assert directory.exists() is (source == 'saved')
 
 
-@pytest.mark.parametrize('endpoint', ['https://provider.example/v1/', 'http://127.0.0.1:19000/v1', 'https://[::1]:9443/v1'])
+@pytest.mark.parametrize('endpoint', ['https://provider.example/v1/', 'http://127.0.0.1:19000/v1', 'https://[::1]:9443/v1',
+                                'https://provider.example:1/v1', 'https://provider.example:65535/v1'])
 def test_valid_model_endpoints_keep_the_agent_contract(endpoint):
     assert local.model_endpoint(endpoint) == endpoint.rstrip('/')
 
