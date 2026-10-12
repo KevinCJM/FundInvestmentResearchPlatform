@@ -146,7 +146,9 @@ is derived by the installed agent CLI from `.data/portable-agent`; the master
 key stays there. Existing `data/llm_settings.json` endpoints are allowed and its
 profiles are copied once over authenticated HTTP, encrypted by the agent. The
 old file and conversation archives are untouched. Partial profile imports are
-retryable; later startup does not overwrite user changes.
+retryable; later startup does not overwrite user changes. The copy preserves
+model timeout, reasoning effort and `context_window_tokens`; 0 retains the
+agent's automatic context budget.
 
 For a new installation without legacy model settings, set
 `PORTABLE_AGENT_MODEL_ENDPOINTS=https://your-approved-provider/v1` on first start
@@ -162,7 +164,11 @@ Never delete them as routine log cleanup. The virtual environment and generated
 apps file are reproducible. Missing or mismatched issuer data, or existing nonempty agent data without
 its paired local config, fails closed rather than generating another owner or
 credentials. Restore both from the same backup; an empty runtime directory alone
-can be initialized. Model endpoints are validated before initial key creation. Do not commit these private files.
+can be initialized. Every model endpoint from saved configuration, the environment
+or legacy profiles is validated before creating any runtime directory or key.
+Use explicit HTTP(S) endpoints without URL credentials, queries or fragments,
+and with a valid port. Invalid input is reported without echoing its value;
+correct it in the original source before retrying. Do not commit these private files.
 
 Start checks the managed SSD identity first and refuses local fallback when it
 is offline. Restore the original mounted volume before retrying; the script

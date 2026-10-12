@@ -54,6 +54,19 @@ def local_url(value):
     return value.rstrip('/')
 
 
+def model_endpoint(value):
+    # Mirror the independently installed agent's HTTP(S) endpoint contract.
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in {'http', 'https'} or not parsed.hostname
+                or parsed.username or parsed.password or parsed.query or parsed.fragment):
+            raise ValueError()
+        _ = parsed.port
+    except (ValueError, TypeError, AttributeError):
+        raise LocalAgentError('模型 API 地址无效；请填写完整的 HTTP(S) 地址，不含账号、密码、查询参数或片段。') from None
+    return value.rstrip('/')
+
+
 def read_config(root=ROOT):
     path = Path(root) / CONFIG_NAME
     if path.is_symlink() or not path.is_file():
@@ -110,7 +123,7 @@ def prepare(backend_url, browser_origin, agent_url, root=ROOT):
         old = json.loads(legacy.read_text())
         profiles = old.get('profiles') or ([old['settings']] if old.get('settings') else [])
         endpoints += [p['base_url'].rstrip('/') for p in profiles if p.get('base_url')]
-    endpoints = list(dict.fromkeys(endpoints))
+    endpoints = list(dict.fromkeys(model_endpoint(item) for item in endpoints))
     if not endpoints:
         raise LocalAgentError('尚未指定模型 API 地址，请在本地配置的 model_endpoints 中填写允许接入的地址。')
     sys.path.insert(0, str(ROOT/'scripts'))
@@ -261,6 +274,7 @@ def import_profiles(root=ROOT):
                     'name': profile.get('name', profile['id']), 'base_url': profile['base_url'], 'model': profile['model'],
                     'api_key': profile.get('api_key'), 'provider': profile.get('provider', 'openai-compatible'),
                     'timeout': profile.get('timeout_seconds') or 60, 'reasoning_effort': profile.get('reasoning_effort') or 'default',
+                    'context_window_tokens': profile.get('context_window_tokens') or 0,
                     'expected_revision': 0, 'request_id': pid}), '导入模型配置')
             if profile['id'] == old.get('active_profile_id', 'default'):
                 active = record['id']

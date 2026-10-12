@@ -136,7 +136,7 @@ def test_missing_original_master_key_never_generates_replacement(config, monkeyp
 def test_partial_profile_import_is_retryable_and_selects_original_active(config, monkeypatch):
     root, value = config
     source = [{'id': 'first', 'name': 'One', 'base_url': value['model_endpoints'][0], 'model': 'm', 'api_key': 'private'},
-              {'id': 'second', 'name': 'Two', 'base_url': value['model_endpoints'][0], 'model': 'n', 'api_key': 'private'}]
+              {'id': 'second', 'name': 'Two', 'base_url': value['model_endpoints'][0], 'model': 'n', 'api_key': 'private', 'context_window_tokens': 131072}]
     (root/'data').mkdir()
     local.private_json(root/'data/llm_settings.json', {'profiles': source, 'active_profile_id': 'second'})
     first = 'legacy-'+local.hashlib.sha256(b'first').hexdigest()[:32]
@@ -157,6 +157,7 @@ def test_partial_profile_import_is_retryable_and_selects_original_active(config,
     transport_client(monkeypatch, wire)
     assert local.import_profiles(root) == 2
     assert len(writes) == 2  # Only the missing profile and active selection.
+    assert writes[0]['context_window_tokens'] == 131072
     assert local.read_config(root)['profiles_initialized'] is True
     assert json.loads((root/'data/llm_settings.json').read_text())['profiles'] == source
 
@@ -185,6 +186,41 @@ def test_first_install_checks_model_config_before_creating_a_key(tmp_path, monke
     with pytest.raises(local.LocalAgentError, match='模型 API 地址'):
         local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
     assert not (tmp_path/'.data/portable-agent').exists()
+
+
+@pytest.mark.parametrize('endpoint', ['not-a-url', 'ftp://provider.example/v1', 'https:///v1',
+    'https://user:private@provider.example/v1', 'https://provider.example/v1?api_key=private',
+    'https://provider.example/v1#private', 'https://provider.example:bad/v1', 'https://[invalid/v1'])
+@pytest.mark.parametrize('source', ['environment', 'saved', 'legacy'])
+def test_invalid_model_endpoint_has_no_key_or_config_side_effects(config, monkeypatch, endpoint, source):
+    root, value = config
+    directory = root/'.data/portable-agent'
+    monkeypatch.setenv('PORTABLE_AGENT_PYTHON', sys.executable)
+    monkeypatch.delenv('PORTABLE_AGENT_MODEL_ENDPOINTS', raising=False)
+    if source == 'saved':
+        directory.mkdir(parents=True)
+        (directory/'master.key').write_bytes(b'preserve-master-key')
+        value['model_endpoints'] = [endpoint]
+        local.private_json(root/local.CONFIG_NAME, value)
+    else:
+        (root/local.CONFIG_NAME).unlink()
+        if source == 'environment':
+            monkeypatch.setenv('PORTABLE_AGENT_MODEL_ENDPOINTS', endpoint)
+        else:
+            (root/'data').mkdir()
+            local.private_json(root/'data/llm_settings.json', {'settings': {'base_url': endpoint}})
+    before = {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    monkeypatch.setattr(local.subprocess, 'run', lambda *a, **kw: pytest.fail('Invalid endpoint must not reach runtime/key generation'))
+    with pytest.raises(local.LocalAgentError, match='模型 API 地址无效') as error:
+        local.prepare(value['backend_url'], value['browser_origin'], value['agent_url'], root)
+    assert 'private' not in str(error.value)
+    assert {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()} == before
+    assert directory.exists() is (source == 'saved')
+
+
+@pytest.mark.parametrize('endpoint', ['https://provider.example/v1/', 'http://127.0.0.1:19000/v1', 'https://[::1]:9443/v1'])
+def test_valid_model_endpoints_keep_the_agent_contract(endpoint):
+    assert local.model_endpoint(endpoint) == endpoint.rstrip('/')
 
 
 def test_empty_data_directory_can_initialize_and_keep_its_identity(tmp_path, monkeypatch):
