@@ -8,7 +8,7 @@ result: "supported"
 scope: "当前平台宿主装配、历史文档定位及本次静态边界检查；不证明外部发布或生产迁移；2026-10-12 仅复核本次启动差异，其他原文及历史证据保持各自适用日期"
 reviewed_at: "2026-10-12"
 reviewed_by: "AI"
-source_revision: "5fea8e862a7080c134868170937a15ea9d6d2a9e"
+source_revision: "c3660cca9d45506a3349ca440bd13211f97a6ed3"
 evidence_kind: "mixed"
 watch_globs: ["backend/**", "frontend/src/**", "backend/requirements.txt", "frontend/package.json", "frontend/package-lock.json", "Dockerfile", "docker-compose.yml", ".gitmodules", "deploy/**", "config/portable-agent/**", "scripts/check_portable_agent_boundary.py", "start_services.sh", "scripts/service_process.py", "scripts/portable_agent_local.py"]
 dependencies: ["docs/research/portable-agent-platform-integration.md::sha256:88b5d323dd49365d616395ef531363f520c7d9debd21201fb9a76b0b612615c9", "docs/research/ai-functions-design.md::sha256:bfe87a5e27b2e0299df673270801b27476864974009edea4dbb23067e78f2fc6", "docs/research/ai-agent-harness-progress-design-2026-09-20.md::sha256:5a706c6e849bdc8a6adbf84d3f0c7b7f882ecf408b604ae3d2f69289af764e53", "backend/app.py::sha256:ed789f9e6f70b6ce5493608e0329cdfc94792bdddeea9bf73aee5de4eab64095", "backend/integrations/portable_agent/service.py::sha256:d64119e0a26e53617a686417a13d8fbb5cab3aa200b59c9c81615bb0ebaa0d6c", "frontend/src/integrations/portable-agent/PortableAgentMount.tsx::sha256:0dd8cf72030a6fb233b269414d7e3b2334c85ed7b3c4992c75b76a05dacbe01f", "scripts/check_portable_agent_boundary.py::sha256:db0f9b600f05d82aaca8e30dcd8a95c6082ca56525f62881f1504a87e9558d82"]
@@ -47,7 +47,7 @@ dependencies: ["docs/research/portable-agent-platform-integration.md::sha256:88b
 
 watch_globs覆盖backend、frontend/src、依赖/部署配置及Portable配置目录；这些范围新增、删除或修改文件均需重跑边界脚本。脚本自身变化也使旧结果失效。单个既有文件hash不变不能维持全树检查的有效性。外部发行锁、制品、身份、网关或数据切换需取得对应独立运行证据，不能由静态passed关闭生产门槛。
 
-2026-10-12 本地生命周期复核：重读迁移契约、本页及当前启动差异，并通过宿主/边界补充回归 70 项。平台新增本地编排独立安装的 v2 Agent，仍使用独立环境和宿主权限；启动不下载源码或内嵌通用运行器。修复后的启动/接入回归另有 229 项通过，不与旧金融验收相加；外部生产制品、正式身份与 MIG-07 门槛仍未关闭。另外核对本轮配对配置缺失保护与旧后端鉴权重启修复：复用前校验当前身份、签名和服务凭证，已有数据缺配对配置要求恢复；新脚本仍只编排独立服务，未改变上述业务职责边界。
+2026-10-12 本地生命周期复核：重读迁移契约、本页及当前启动差异，并通过宿主/边界补充回归 70 项。平台新增本地编排独立安装的 v2 Agent，仍使用独立环境和宿主权限；启动不下载源码或内嵌通用运行器。修复后的启动/接入回归另有 271 项通过，不与旧金融验收相加；外部生产制品、正式身份与 MIG-07 门槛仍未关闭。另外核对本轮配对配置缺失保护与旧后端鉴权重启修复：复用前校验当前身份、签名和服务凭证，已有数据缺配对配置要求恢复；新脚本仍只编排独立服务，未改变上述业务职责边界。
 
 本轮 Bot 修复复核：核对所有模型地址的 HTTP(S)/主机/端口及无凭据、查询、片段校验，在运行目录与密钥创建前完成；导入提交保留旧模型上下文窗口，131072 token 非默认值已覆盖。第三轮另复核主机空白/控制字符拒绝以及可恢复初始化：密钥命令前已保存配对身份，临时密钥验证后原子发布；失败重试不换身份或正式主密钥，未完成状态阻止服务启动。新增地址来源、无副作用及中断恢复反例仅验证本机启动适配，不改变独立运行器、业务授权或生产边界。
 
@@ -62,3 +62,5 @@ watch_globs覆盖backend、frontend/src、依赖/部署配置及Portable配置�
 第八轮 Bot 修复复核：本机 URL 在解析前拒绝空白和控制字符，防止 urlsplit 静默规范化与实际启动参数不一致。重读三个服务的 CR/LF、tab、空格/NBSP、NUL/DEL 无副作用反例及前导空白测试；本轮 192 项启动/接入回归通过，未改变合法本机地址或生产边界。
 
 第九轮 Bot 修复复核：重读宿主稳定错误码、JWT 核验、专用退出码及复用重试/归属复核路径；临时超时、500、过期或不完整会话不会误停健康后端，仅确认鉴权不兼容才升级。229 项启动/接入回归通过，业务授权与生产边界未变。
+
+第十轮 Bot 修复复核：重读模型环境变量的原始分项校验和三来源首尾空白/控制字符反例、空/纯空白分项反例；校验前不 strip 或丢弃分项，非法输入无初始化副作用。271 项启动/接入回归通过，业务与生产边界保留。
