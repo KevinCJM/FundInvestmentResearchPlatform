@@ -27,7 +27,8 @@ def config(tmp_path):
 @pytest.mark.parametrize('url', ['http://0.0.0.0:8787', 'https://127.0.0.1', 'http://example.com',
                                 'http://user:pass@localhost', 'http://localhost/a', 'http://localhost:bad',
                                 'http://localhost:0', 'http://localhost:65536',
-                                ' http://localhost:8787', '\nhttp://127.0.0.1:8787'])
+                                ' http://localhost:8787', '\nhttp://127.0.0.1:8787',
+                                'http://localhost?', 'http://localhost#', 'http://@localhost', 'http://:@localhost'])
 def test_local_identity_is_never_enabled_for_public_or_ambiguous_urls(url):
     with pytest.raises(local.LocalAgentError):
         local.local_url(url)
@@ -590,3 +591,40 @@ def test_environment_list_never_discards_invalid_raw_items(tmp_path, monkeypatch
         local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
     assert not (tmp_path/'.data').exists()
     assert not (tmp_path/'.run').exists()
+
+
+@pytest.mark.parametrize('supplied,expected', [
+    ('HTTP://LOCALHOST:5173/', 'http://localhost:5173'),
+    ('http://127.0.0.1:80/', 'http://127.0.0.1'),
+    ('http://localhost:080', 'http://localhost'),
+    ('http://[::1]:80/', 'http://[::1]'),
+    ('http://localhost:5173/', 'http://localhost:5173')])
+def test_local_roots_match_standard_http_origin_rendering(supplied, expected):
+    assert local.local_url(supplied) == expected
+
+
+def test_prepare_exports_standard_browser_origin_with_default_port(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    calls = []
+    def configuration(backend, origin, endpoints):
+        calls.append((backend, origin))
+        return {'apps': [{'origins': [origin], 'host': backend}]}
+    monkeypatch.setitem(sys.modules, 'export_portable_agent_config', SimpleNamespace(configuration=configuration))
+    monkeypatch.setenv('PORTABLE_AGENT_PYTHON', sys.executable)
+    monkeypatch.setenv('PORTABLE_AGENT_MODEL_ENDPOINTS', 'https://provider.example/v1')
+    def installed_wheel(args, **kwargs):
+        if 'issuer-key' in args:
+            key = Path(args[args.index('--data-dir')+1])/'master.key'
+            if not key.exists():
+                key.write_bytes(b'original-key')
+            return SimpleNamespace(returncode=0, stdout='a'*64)
+        return SimpleNamespace(returncode=0, stdout='{"protocol":2}')
+    monkeypatch.setattr(local.subprocess, 'run', installed_wheel)
+    supplied = ('HTTP://LOCALHOST:8000/', 'HTTP://LOCALHOST:80/', 'http://127.0.0.1:8787/')
+    first = local.prepare(*supplied, tmp_path)
+    assert local.prepare(*supplied, tmp_path) == first
+    assert first['backend_url'] == 'http://localhost:8000'
+    assert first['browser_origin'] == 'http://localhost'
+    assert calls == [('http://localhost:8000', 'http://localhost')] * 2
+    apps = json.loads((tmp_path/'.run/portable-agent-apps.json').read_text())
+    assert apps['apps'][0]['origins'] == ['http://localhost']

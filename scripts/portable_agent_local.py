@@ -69,8 +69,8 @@ def local_url(value):
         raise LocalAgentError('本地服务地址不能包含空白或控制字符，请检查端口设置。')
     parsed = urlsplit(value)
     if (parsed.scheme != 'http' or parsed.hostname not in {'127.0.0.1', 'localhost', '::1'}
-            or parsed.username or parsed.password or parsed.path not in {'', '/'}
-            or parsed.query or parsed.fragment):
+            or parsed.username is not None or parsed.password is not None or parsed.path not in {'', '/'}
+            or '?' in value or '#' in value):
         raise LocalAgentError('本地助手仅支持明确的本机 HTTP 地址；公共部署请使用独立部署配置。')
     try:
         port = parsed.port
@@ -78,7 +78,9 @@ def local_url(value):
             raise ValueError()
     except ValueError as exc:
         raise LocalAgentError('本地服务端口必须在 1–65535 之间。') from exc
-    return value.rstrip('/')
+    host = f'[{parsed.hostname}]' if ':' in parsed.hostname else parsed.hostname
+    authority = host if port in {None, 80} else f'{host}:{port}'
+    return 'http://'+authority
 
 
 def model_endpoint(value):
