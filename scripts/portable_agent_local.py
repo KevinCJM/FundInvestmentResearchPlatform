@@ -174,7 +174,7 @@ def prepare(backend_url, browser_origin, agent_url, root=ROOT):
         raise LocalAgentError('尚未指定模型 API 地址，请在本地配置的 model_endpoints 中填写允许接入的地址。')
     sys.path.insert(0, str(ROOT/'scripts'))
     from export_portable_agent_config import configuration
-    apps = configuration(backend_url, browser_origin, endpoints)
+    apps = configuration(urls['backend_url'], urls['browser_origin'], endpoints)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     sync_directory(directory.parent)
     sync_directory(root)

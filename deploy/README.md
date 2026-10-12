@@ -225,6 +225,9 @@ to verify provider access. Successful HTTP checks alone do not prove model quali
 
 `stop` closes the recorded frontend, agent and backend sessions in that order;
 independent ETL executors remain governed by their existing task lifecycle.
+The local `prepare` helper normalizes an optional trailing slash on service root
+URLs before both saving paired URLs and exporting backend/browser-origin settings;
+the Agent origin matches the browser Origin header.
 Default ports are 5173/8787/8000; overrides are `FRONTEND_PORT`, `AGENT_PORT` and
 `BACKEND_PORT`. Explicit local service ports must be 1–65535; invalid ports
 and URLs containing whitespace/control characters are rejected before parsing

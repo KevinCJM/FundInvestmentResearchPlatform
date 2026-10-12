@@ -272,12 +272,16 @@ def test_valid_model_endpoints_keep_the_agent_contract(endpoint):
     assert local.model_endpoint(endpoint) == endpoint.rstrip('/')
 
 
-def test_empty_data_directory_can_initialize_and_keep_its_identity(tmp_path, monkeypatch):
+@pytest.mark.parametrize('trailing_slash', ['', '/'])
+def test_empty_data_directory_can_initialize_and_keep_its_identity(tmp_path, monkeypatch, trailing_slash):
     from types import SimpleNamespace
     directory = tmp_path/'.data/portable-agent'
     directory.mkdir(parents=True)
-    monkeypatch.setitem(sys.modules, 'export_portable_agent_config',
-                        SimpleNamespace(configuration=lambda *args: {'apps': []}))
+    exported = []
+    def configuration(backend, origin, endpoints):
+        exported.append((backend, origin, endpoints))
+        return {'apps': [{'origins': [origin], 'host': backend}]}
+    monkeypatch.setitem(sys.modules, 'export_portable_agent_config', SimpleNamespace(configuration=configuration))
     monkeypatch.setenv('PORTABLE_AGENT_PYTHON', sys.executable)
     monkeypatch.setenv('PORTABLE_AGENT_MODEL_ENDPOINTS', 'https://provider.example/v1')
     def installed_wheel(args, **kwargs):
@@ -286,10 +290,18 @@ def test_empty_data_directory_can_initialize_and_keep_its_identity(tmp_path, mon
             return SimpleNamespace(returncode=0, stdout='a'*64)
         return SimpleNamespace(returncode=0, stdout='{"protocol":2,"version":"0.2.0"}')
     monkeypatch.setattr(local.subprocess, 'run', installed_wheel)
-    first = local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
-    second = local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
+    urls = ('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787')
+    supplied = tuple(url+trailing_slash for url in urls)
+    first = local.prepare(*supplied, tmp_path)
+    second = local.prepare(*supplied, tmp_path)
     assert first == second
+    assert tuple(first[k] for k in ('backend_url', 'browser_origin', 'agent_url')) == urls
+    assert exported == [(urls[0], urls[1], ['https://provider.example/v1'])] * 2
+    apps = json.loads((tmp_path/'.run/portable-agent-apps.json').read_text())
+    assert apps['apps'][0]['origins'] == [first['browser_origin']]
+    assert apps['apps'][0]['host'] == first['backend_url']
     assert (directory/'master.key').read_bytes() == b'original-key'
+
 
 
 @pytest.mark.parametrize('relative', [True, False])
