@@ -218,7 +218,9 @@ to verify provider access. Successful HTTP checks alone do not prove model quali
 `stop` closes the recorded frontend, agent and backend sessions in that order;
 independent ETL executors remain governed by their existing task lifecycle.
 Default ports are 5173/8787/8000; overrides are `FRONTEND_PORT`, `AGENT_PORT` and
-`BACKEND_PORT`. Logs and process identities are in `.run/`.
+`BACKEND_PORT`. Explicit local service ports must be 1–65535; invalid ports
+are rejected before any identity configuration or master key is created. Logs
+and process identities are in `.run/`.
 
 The offline integration runner creates temporary business/agent data and a
 local deterministic OpenAI wire endpoint. It never contacts a model provider:

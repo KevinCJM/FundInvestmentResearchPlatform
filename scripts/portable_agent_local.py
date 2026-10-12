@@ -66,9 +66,11 @@ def local_url(value):
             or parsed.query or parsed.fragment):
         raise LocalAgentError('本地助手仅支持明确的本机 HTTP 地址；公共部署请使用独立部署配置。')
     try:
-        _ = parsed.port
+        port = parsed.port
+        if port is not None and not 1 <= port <= 65535:
+            raise ValueError()
     except ValueError as exc:
-        raise LocalAgentError('本地助手端口无效。') from exc
+        raise LocalAgentError('本地服务端口必须在 1–65535 之间。') from exc
     return value.rstrip('/')
 
 

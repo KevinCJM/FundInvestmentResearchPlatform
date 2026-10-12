@@ -25,10 +25,29 @@ def config(tmp_path):
 
 
 @pytest.mark.parametrize('url', ['http://0.0.0.0:8787', 'https://127.0.0.1', 'http://example.com',
-                                'http://user:pass@localhost', 'http://localhost/a', 'http://localhost:bad'])
+                                'http://user:pass@localhost', 'http://localhost/a', 'http://localhost:bad',
+                                'http://localhost:0', 'http://localhost:65536'])
 def test_local_identity_is_never_enabled_for_public_or_ambiguous_urls(url):
     with pytest.raises(local.LocalAgentError):
         local.local_url(url)
+
+
+@pytest.mark.parametrize('port', [1, 65535])
+def test_local_service_port_boundaries_are_allowed(port):
+    url = f'http://127.0.0.1:{port}'
+    assert local.local_url(url) == url
+
+
+@pytest.mark.parametrize('service', [0, 1, 2])
+@pytest.mark.parametrize('port', [0, 65536])
+def test_invalid_local_service_port_cannot_initialize_data(tmp_path, monkeypatch, service, port):
+    monkeypatch.setattr(local.subprocess, 'run', lambda *a, **kw: pytest.fail('Invalid service port must not run an agent command'))
+    urls = ['http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787']
+    urls[service] = f'http://127.0.0.1:{port}'
+    with pytest.raises(local.LocalAgentError, match='1–65535'):
+        local.prepare(*urls, tmp_path)
+    assert not (tmp_path/'.run').exists()
+    assert not (tmp_path/'.data').exists()
 
 
 def test_secret_config_permissions_and_no_link_overwrite(config, tmp_path):
