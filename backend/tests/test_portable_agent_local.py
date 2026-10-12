@@ -235,7 +235,10 @@ def test_first_install_checks_model_config_before_creating_a_key(tmp_path, monke
     'https://provider.example:0/v1', 'https://provider.example:65536/v1',
     'https://provider.exa mple/v1', 'https://provider.example\t/v1', 'https://provider.example\n/v1',
     'https://provider.example\u00a0/v1', 'https://provider.exa%20mple/v1',
-    'https://provider.exa\\mple/v1'])
+    'https://provider.exa\\mple/v1'] + [
+        prefix+'https://provider.example/v1'+suffix
+        for control in [' ', '\t', '\n', '\r', '\u00a0', '\x7f']
+        for prefix, suffix in [(control, ''), ('', control)]])
 @pytest.mark.parametrize('source', ['environment', 'saved', 'legacy'])
 def test_invalid_model_endpoint_has_no_key_or_config_side_effects(config, monkeypatch, endpoint, source):
     root, value = config
@@ -562,3 +565,16 @@ def test_only_confirmed_host_mismatch_has_a_distinct_exit_status(monkeypatch, ca
     monkeypatch.setattr(local, 'check', failed)
     assert local.main() == expected
     assert 'safe reason' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('endpoints', [' ', '\t\n', 'https://provider.example/v1, ',
+    'https://provider.example/v1,', 'https://provider.example/v1,,https://other.example/v1',
+    ',https://provider.example/v1'])
+def test_environment_list_never_discards_invalid_raw_items(tmp_path, monkeypatch, endpoints):
+    monkeypatch.setenv('PORTABLE_AGENT_PYTHON', sys.executable)
+    monkeypatch.setenv('PORTABLE_AGENT_MODEL_ENDPOINTS', endpoints)
+    monkeypatch.setattr(local.subprocess, 'run', lambda *args, **kwargs: pytest.fail('Invalid raw item must fail before probe/key'))
+    with pytest.raises(local.LocalAgentError, match='模型 API 地址无效'):
+        local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
+    assert not (tmp_path/'.data').exists()
+    assert not (tmp_path/'.run').exists()

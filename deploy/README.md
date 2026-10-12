@@ -176,7 +176,9 @@ can be initialized. Every model endpoint from saved configuration, the environme
 or legacy profiles is validated before creating any runtime directory or key.
 Use explicit HTTP(S) endpoints with a valid host and optional port 1–65535
 (omitted ports use the protocol default), without whitespace,
-control characters, URL credentials, queries or fragments. Invalid input is reported without echoing its value;
+control characters, URL credentials, queries or fragments. Environment lists
+are comma-separated raw URLs: leading/trailing whitespace or empty items are
+rejected instead of stripped/skipped. Invalid input is reported without echoing its value;
 correct it in the original source before retrying. Do not commit these private files.
 
 First initialization flushes the paired owner, workspace and service/identity

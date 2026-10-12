@@ -161,7 +161,9 @@ def prepare(backend_url, browser_origin, agent_url, root=ROOT):
     if previous and previous.get('initializing') is not True and not (directory/'master.key').is_file():
         raise LocalAgentError('原助手主密钥缺失；请恢复备份，启动不会生成替代密钥。')
     endpoints = list((previous or {}).get('model_endpoints', []))
-    endpoints += [item.strip().rstrip('/') for item in os.environ.get('PORTABLE_AGENT_MODEL_ENDPOINTS', '').split(',') if item.strip()]
+    environment_endpoints = os.environ.get('PORTABLE_AGENT_MODEL_ENDPOINTS', '')
+    if environment_endpoints:
+        endpoints += environment_endpoints.split(',')
     legacy = root/'data/llm_settings.json'
     if legacy.is_file():
         old = json.loads(legacy.read_text())
