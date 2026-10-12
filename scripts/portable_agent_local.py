@@ -131,12 +131,14 @@ def agent_environment():
 
 
 def prepare(backend_url, browser_origin, agent_url, root=ROOT):
-    root = Path(root)
+    root = Path(os.path.abspath(root))
     urls = {key: local_url(value) for key, value in
             [('backend_url', backend_url), ('browser_origin', browser_origin), ('agent_url', agent_url)]}
     path = root / CONFIG_NAME
     previous = read_config(root, allow_initializing=True) if path.exists() or path.is_symlink() else None
     python = (previous or {}).get('python') or os.environ.get('PORTABLE_AGENT_PYTHON') or str(root/'.venv/portable-agent/bin/python')
+    # Keep the venv's executable link; resolving it can select system Python.
+    python = os.path.abspath(root / python)
     if not Path(python).is_file():
         raise LocalAgentError('缺少独立助手运行环境。请先安装 v2 wheel，设置 PORTABLE_AGENT_PYTHON 后重试。')
     # Probe from the private runtime directory, never from a source checkout.

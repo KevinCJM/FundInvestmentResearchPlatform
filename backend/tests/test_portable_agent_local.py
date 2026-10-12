@@ -255,6 +255,46 @@ def test_empty_data_directory_can_initialize_and_keep_its_identity(tmp_path, mon
     assert (directory/'master.key').read_bytes() == b'original-key'
 
 
+@pytest.mark.parametrize('relative', [True, False])
+@pytest.mark.parametrize('outside_cwd', [True, False])
+def test_interpreter_is_persisted_absolute_without_resolving_venv_link(tmp_path, monkeypatch, relative, outside_cwd):
+    from types import SimpleNamespace
+    interpreter = tmp_path/'.venv/agent/bin/python'
+    interpreter.parent.mkdir(parents=True)
+    interpreter.symlink_to(sys.executable)
+    other = tmp_path/'another-working-directory'
+    other.mkdir()
+    monkeypatch.chdir(other if outside_cwd else tmp_path)
+    monkeypatch.setenv('PORTABLE_AGENT_PYTHON', '.venv/agent/bin/python' if relative else str(interpreter))
+    monkeypatch.setenv('PORTABLE_AGENT_MODEL_ENDPOINTS', 'https://provider.example/v1')
+    monkeypatch.setitem(sys.modules, 'export_portable_agent_config',
+                        SimpleNamespace(configuration=lambda *args: {'apps': []}))
+    def installed_wheel(args, **kwargs):
+        assert args[0] == str(interpreter)
+        if 'issuer-key' in args:
+            key = Path(args[args.index('--data-dir')+1])/'master.key'
+            if not key.exists():
+                key.write_bytes(b'original-master')
+            return SimpleNamespace(returncode=0, stdout='a'*64)
+        return SimpleNamespace(returncode=0, stdout='{"protocol":2,"version":"0.2.0"}')
+    monkeypatch.setattr(local.subprocess, 'run', installed_wheel)
+    urls = ('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787')
+    first = local.prepare(*urls, tmp_path)
+    assert local.read_config(tmp_path) == first
+    assert first['python'] == str(interpreter)
+    assert local.agent_command(tmp_path)[0] == str(interpreter)
+    assert local.prepare(*urls, tmp_path) == first
+
+
+def test_missing_relative_interpreter_fails_before_initialization(tmp_path, monkeypatch):
+    monkeypatch.setenv('PORTABLE_AGENT_PYTHON', '.venv/missing/bin/python')
+    monkeypatch.setattr(local.subprocess, 'run', lambda *a, **kw: pytest.fail('Missing interpreter must have no runtime effects'))
+    with pytest.raises(local.LocalAgentError, match='缺少独立助手运行环境'):
+        local.prepare('http://127.0.0.1:8000', 'http://127.0.0.1:5173', 'http://127.0.0.1:8787', tmp_path)
+    assert not (tmp_path/local.CONFIG_NAME).exists()
+    assert not (tmp_path/'.data').exists()
+
+
 @pytest.mark.parametrize('failure', ['key-command', 'interrupt', 'apps-write', 'config-commit'])
 def test_first_initialization_can_retry_without_changing_paired_identity(tmp_path, monkeypatch, failure):
     from types import SimpleNamespace

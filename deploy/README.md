@@ -128,7 +128,11 @@ indicator center load the AI assistant automatically at the bottom right.
 Install a reviewed v2 wheel and its matching hash-locked dependencies in a
 separate Python 3.12 environment. The default interpreter is
 `.venv/portable-agent/bin/python`; to use another independent installation, set
-`PORTABLE_AGENT_PYTHON` on first initialization. Do not install the agent into
+`PORTABLE_AGENT_PYTHON` on first initialization. A relative interpreter path is
+anchored to the project root and saved as an absolute path before initialization;
+the virtual-environment executable link is preserved rather than resolved to
+system Python. A missing executable fails before creating config or agent data.
+Do not install the agent into
 the platform environment or point `PYTHONPATH` at its source tree. Installation
 is explicit; service startup never downloads a moving source branch. Agent and
 probe subprocesses receive only process, locale, temporary-directory and TLS
