@@ -8,7 +8,7 @@ result: "supported"
 scope: "显式单产品标量适配、当前平台NJIT装配及历史证据范围；不覆盖本次原生构建、性能或生产切换；2026-10-12 仅复核本次启动差异，其他原文及历史证据保持各自适用日期"
 reviewed_at: "2026-10-12"
 reviewed_by: "AI"
-source_revision: "41719f15893a9d7b767399a5c093589bcf391a8e"
+source_revision: "6e134023589c9c4e1054625e60ebab11dd7240df"
 evidence_kind: "mixed"
 watch_globs: ["backend/**", "frontend/src/**", "backend/requirements.txt", "frontend/package.json", "frontend/package-lock.json", "Dockerfile", "docker-compose.yml", "deploy/**"]
 dependencies: ["docs/indicators/cpp-aot-contracts.md::sha256:df25aeae098bcd6b50f42121b4f9052d0bd9f8aa3d9122a21f31dc47aab19732", "docs/verification/cpp-aot-contracts.md::sha256:6cd66af34b1a7fe836f50348357d12a82cf118eed7412441583ffc61bef8e3a4", "backend/cal_indicators/cpp_aot.py::sha256:b31d9f87e277bf429d2f6233a5b548b5416a6a793110cdad74eb7df80b554b6a", "backend/app.py::sha256:ed789f9e6f70b6ce5493608e0329cdfc94792bdddeea9bf73aee5de4eab64095", "backend/custom_indicators/service.py::sha256:2011a5cc40a1b3a21fe5340383bd6125134c7ab90afd730e0d8846e662a80e20", "backend/custom_indicators/typed_service.py::sha256:aabd173589399866bd4e2de2b5ca4d815f9c3d822ce1091c8322bd3bef84b2db"]
@@ -44,4 +44,4 @@ dependencies: ["docs/indicators/cpp-aot-contracts.md::sha256:df25aeae098bcd6b50f
 
 依赖文件变化、服务后端选择、预热或适配范围变化必须复核。watch_globs覆盖backend、frontend/src及相关配置，以捕捉新增调用者；仅既有文件hash不变不能排除全树新增路径。外部引擎版本、工具链或制品身份变化也需人工触发复核。性能结论须按新版本和真实负载重测。
 
-2026-10-12 启动提交影响复核：逐项核对 8ce7c06 至 41719f1 的受监视差异，只有两个本地启动测试和 deploy/README.md；未修改 C++ 适配、业务数值调用或后端预热。正文所引数值源码与契约依赖字节未变，保留 2026-10-04 的静态结论和全部原生构建、性能、生产未验证限制；本次启动回归不作为 C++ 验收。
+2026-10-12 启动提交影响复核：逐项核对 8ce7c06 至 6e13402 的受监视差异，只有两个本地启动测试和 deploy/README.md；未修改 C++ 适配、业务数值调用或后端预热。正文所引数值源码与契约依赖字节未变，保留 2026-10-04 的静态结论和全部原生构建、性能、生产未验证限制；本次启动回归不作为 C++ 验收。

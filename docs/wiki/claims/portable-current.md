@@ -8,7 +8,7 @@ result: "supported"
 scope: "当前平台宿主装配、历史文档定位及本次静态边界检查；不证明外部发布或生产迁移；2026-10-12 仅复核本次启动差异，其他原文及历史证据保持各自适用日期"
 reviewed_at: "2026-10-12"
 reviewed_by: "AI"
-source_revision: "41719f15893a9d7b767399a5c093589bcf391a8e"
+source_revision: "6e134023589c9c4e1054625e60ebab11dd7240df"
 evidence_kind: "mixed"
 watch_globs: ["backend/**", "frontend/src/**", "backend/requirements.txt", "frontend/package.json", "frontend/package-lock.json", "Dockerfile", "docker-compose.yml", ".gitmodules", "deploy/**", "config/portable-agent/**", "scripts/check_portable_agent_boundary.py", "start_services.sh", "scripts/service_process.py", "scripts/portable_agent_local.py"]
 dependencies: ["docs/research/portable-agent-platform-integration.md::sha256:88b5d323dd49365d616395ef531363f520c7d9debd21201fb9a76b0b612615c9", "docs/research/ai-functions-design.md::sha256:bfe87a5e27b2e0299df673270801b27476864974009edea4dbb23067e78f2fc6", "docs/research/ai-agent-harness-progress-design-2026-09-20.md::sha256:5a706c6e849bdc8a6adbf84d3f0c7b7f882ecf408b604ae3d2f69289af764e53", "backend/app.py::sha256:ed789f9e6f70b6ce5493608e0329cdfc94792bdddeea9bf73aee5de4eab64095", "backend/integrations/portable_agent/service.py::sha256:d64119e0a26e53617a686417a13d8fbb5cab3aa200b59c9c81615bb0ebaa0d6c", "frontend/src/integrations/portable-agent/PortableAgentMount.tsx::sha256:0dd8cf72030a6fb233b269414d7e3b2334c85ed7b3c4992c75b76a05dacbe01f", "scripts/check_portable_agent_boundary.py::sha256:db0f9b600f05d82aaca8e30dcd8a95c6082ca56525f62881f1504a87e9558d82"]
@@ -47,4 +47,4 @@ dependencies: ["docs/research/portable-agent-platform-integration.md::sha256:88b
 
 watch_globs覆盖backend、frontend/src、依赖/部署配置及Portable配置目录；这些范围新增、删除或修改文件均需重跑边界脚本。脚本自身变化也使旧结果失效。单个既有文件hash不变不能维持全树检查的有效性。外部发行锁、制品、身份、网关或数据切换需取得对应独立运行证据，不能由静态passed关闭生产门槛。
 
-2026-10-12 本地生命周期复核：重读迁移契约、本页及当前启动差异，并通过宿主/边界补充回归 70 项。平台新增本地编排独立安装的 v2 Agent，仍使用独立环境和宿主权限；启动不下载源码或内嵌通用运行器。启动/接入回归另有 73 项通过，不与旧金融验收相加；外部生产制品、正式身份与 MIG-07 门槛仍未关闭。受监视范围中的两个启动测试及运行说明不改变上述职责边界。
+2026-10-12 本地生命周期复核：重读迁移契约、本页及当前启动差异，并通过宿主/边界补充回归 70 项。平台新增本地编排独立安装的 v2 Agent，仍使用独立环境和宿主权限；启动不下载源码或内嵌通用运行器。修复后的启动/接入回归另有 89 项通过，不与旧金融验收相加；外部生产制品、正式身份与 MIG-07 门槛仍未关闭。另外核对本轮配对配置缺失保护与旧后端鉴权重启修复：复用前校验当前身份、签名和服务凭证，已有数据缺配对配置要求恢复；新脚本仍只编排独立服务，未改变上述业务职责边界。
