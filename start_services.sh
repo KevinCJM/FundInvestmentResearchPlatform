@@ -12,8 +12,9 @@ BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+AGENT_PORT="${AGENT_PORT:-8787}"
 BACKEND_RELOAD="${BACKEND_RELOAD:-0}"
-STARTUP_WAIT_SECONDS="${STARTUP_WAIT_SECONDS:-20}"
+ASSISTANT_HEALTH_TIMEOUT_SECONDS="${ASSISTANT_HEALTH_TIMEOUT_SECONDS:-${STARTUP_WAIT_SECONDS:-60}}"
 # 首次启动需要编译全部 NJIT 内核并预热 worker，可能耗时数分钟。
 BACKEND_HEALTH_TIMEOUT_SECONDS="${BACKEND_HEALTH_TIMEOUT_SECONDS:-600}"
 BACKEND_HEALTH_PATH="${BACKEND_HEALTH_PATH:-/api/health}"
@@ -21,14 +22,18 @@ BACKEND_READY_HOST="${BACKEND_READY_HOST:-127.0.0.1}"
 FRONTEND_READY_HOST="${FRONTEND_READY_HOST:-127.0.0.1}"
 BACKEND_URL="http://${BACKEND_READY_HOST}:${BACKEND_PORT}"
 FRONTEND_URL="http://${FRONTEND_READY_HOST}:${FRONTEND_PORT}"
+AGENT_URL="http://127.0.0.1:${AGENT_PORT}"
 
 mkdir -p "$RUN_DIR"
 
 BACKEND_PID_FILE="$RUN_DIR/backend.pid"
 FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
+AGENT_PID_FILE="$RUN_DIR/agent.pid"
 BACKEND_LOG_FILE="$RUN_DIR/backend.log"
 FRONTEND_LOG_FILE="$RUN_DIR/frontend.log"
+AGENT_LOG_FILE="$RUN_DIR/agent.log"
 PROCESS_HELPER="$PROJECT_ROOT/scripts/service_process.py"
+AGENT_HELPER="$PROJECT_ROOT/scripts/portable_agent_local.py"
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1 || [[ -x "$1" ]]
@@ -57,23 +62,48 @@ is_pid_running() {
   kill -0 "$pid" >/dev/null 2>&1
 }
 
-wait_for_port() {
-  local port="$1"
-  local start_pid="${2:-}"
-  local timeout="${3:-$STARTUP_WAIT_SECONDS}"
-  local waited=0
+wait_for_service() {
+  local service="$1"
+  local port="$2"
+  local start_pid="$3"
+  local ready_check="$4"
+  local timeout="${5:-$ASSISTANT_HEALTH_TIMEOUT_SECONDS}"
+  local stop_on_auth_mismatch="${6:-0}"
+  local started_at=$SECONDS
+  local next_progress=0
+  local check_log="$RUN_DIR/${service}-readiness.log"
   while true; do
+    if ! is_pid_running "$start_pid"; then
+      echo "[失败] ${service} 进程已退出，未完成接入。"
+      return 1
+    fi
     if is_port_listening "$port"; then
-      return 0
+      if ! service_is_owned "$service" "$port"; then
+        echo "[失败] :${port} 的监听进程不属于当前项目。"
+        return 1
+      fi
+      if "$ready_check" > "$check_log" 2>&1; then
+        return 0
+      else
+        local check_status=$?
+        if [[ "$stop_on_auth_mismatch" == 1 && "$check_status" == 3 ]]; then
+          is_pid_running "$start_pid" && service_is_owned "$service" "$port" || return 1
+          cat "$check_log"
+          return 3
+        fi
+      fi
     fi
-    if [[ -n "$start_pid" ]] && ! is_pid_running "$start_pid"; then
-      return 1
-    fi
+    local waited=$((SECONDS - started_at))
     if [[ "$waited" -ge "$timeout" ]]; then
+      echo "[失败] ${service} 接入等待超过 ${timeout} 秒。"
+      [[ ! -f "$check_log" ]] || cat "$check_log"
       return 1
+    fi
+    if [[ "$waited" -ge "$next_progress" ]]; then
+      echo "[启动中] 正在等待 ${service} 接入完成，已等待 ${waited} 秒……"
+      next_progress=$((waited + 15))
     fi
     sleep 1
-    waited=$((waited + 1))
   done
 }
 
@@ -96,7 +126,25 @@ sys.exit(0 if ready else 1)
 frontend_is_ready() {
   curl --noproxy '*' -fsS --max-time 3 "$FRONTEND_URL/" 2>/dev/null |
     "$PYTHON_BIN" -c 'import sys; sys.exit(0 if "id=\"root\"" in sys.stdin.read() else 1)' &&
-    backend_is_ready "$FRONTEND_URL"
+    backend_is_ready "$FRONTEND_URL" &&
+    "$PYTHON_BIN" "$AGENT_HELPER" check --via-frontend --allow-unconfigured-model
+}
+
+backend_assistant_is_ready() {
+  "$PYTHON_BIN" "$AGENT_HELPER" check-host
+}
+
+agent_is_ready() {
+  "$PYTHON_BIN" "$AGENT_HELPER" check
+}
+
+agent_connection_is_ready() {
+  "$PYTHON_BIN" "$AGENT_HELPER" check --allow-unconfigured-model
+}
+
+storage_is_ready() {
+  "$PYTHON_BIN" "$PROJECT_ROOT/scripts/manage_data_storage.py" status |
+    "$PYTHON_BIN" -c 'import json, sys; sys.exit(0 if json.load(sys.stdin).get("online") is True else 1)'
 }
 
 wait_for_backend_health() {
@@ -175,8 +223,31 @@ stop_process_by_pid_file() {
   case "$pid_file" in
     "$BACKEND_PID_FILE") "$PYTHON_BIN" "$PROCESS_HELPER" stop backend ;;
     "$FRONTEND_PID_FILE") "$PYTHON_BIN" "$PROCESS_HELPER" stop frontend ;;
+    "$AGENT_PID_FILE") "$PYTHON_BIN" "$PROCESS_HELPER" stop agent ;;
     *) echo "[服务保护] 未知 PID 文件，拒绝停止。"; return 1 ;;
   esac
+}
+
+start_agent() {
+  if is_port_listening "$AGENT_PORT"; then
+    if ! service_is_owned agent "$AGENT_PORT"; then
+      echo "[失败] :${AGENT_PORT} 被未验证归属的进程占用；不会接管或停止它。"
+      return 1
+    fi
+    wait_for_service agent "$AGENT_PORT" "$(read_pid_from_file "$AGENT_PID_FILE")" agent_connection_is_ready &&
+      "$PYTHON_BIN" "$AGENT_HELPER" import-profiles
+    return
+  fi
+  echo "[启动中] 正在启动独立智能体……"
+  local pid
+  pid="$(launch_detached agent "$AGENT_LOG_FILE")" || return 1
+  if ! wait_for_service agent "$AGENT_PORT" "$pid" agent_connection_is_ready; then
+    echo "[失败] 智能体未能就绪，请检查 $AGENT_LOG_FILE。"
+    stop_process_by_pid_file "$AGENT_PID_FILE" || return 1
+    return 1
+  fi
+  echo "[就绪] AI 智能体已启动，助手接入正常（PID=${pid}）。"
+  "$PYTHON_BIN" "$AGENT_HELPER" import-profiles
 }
 
 start_backend() {
@@ -189,8 +260,24 @@ start_backend() {
       echo "[失败] :${BACKEND_PORT} 已被占用，但后端健康检查未通过。"
       return 1
     fi
-    echo "[就绪] 后端已运行，Numba 与 worker 预热完成。"
-    return 0
+    local reused_pid reuse_status
+    reused_pid="$(read_pid_from_file "$BACKEND_PID_FILE")" || return 1
+    if wait_for_service backend "$BACKEND_PORT" "$reused_pid" backend_assistant_is_ready "$ASSISTANT_HEALTH_TIMEOUT_SECONDS" 1; then
+      echo "[就绪] 后端已运行，Numba、worker 与助手鉴权均已就绪。"
+      return 0
+    else
+      reuse_status=$?
+    fi
+    if [[ "$reuse_status" != 3 ]]; then
+      echo "[保护] 助手接入检查未通过，保留原后端；请检查提示后重试启动。"
+      return 1
+    fi
+    echo "[升级] 已确认后端鉴权配置不匹配，正在安全重启以应用本机配置……"
+    stop_process_by_pid_file "$BACKEND_PID_FILE" || return 1
+    if is_port_listening "$BACKEND_PORT"; then
+      echo "[失败] 后端端口仍被占用；不会接管或停止未知进程。"
+      return 1
+    fi
   fi
 
   if ! command_exists "$PYTHON_BIN"; then
@@ -218,7 +305,8 @@ start_backend() {
       start_pid="$(start_uvicorn "0")" || return 1
     fi
 
-    if wait_for_backend_health "$start_pid"; then
+    if wait_for_backend_health "$start_pid" &&
+      wait_for_service backend "$BACKEND_PORT" "$start_pid" backend_assistant_is_ready; then
       echo "[就绪] 后端启动成功，Numba 与 worker 预热完成（PID=$(cat "$BACKEND_PID_FILE")）。"
       return 0
     fi
@@ -240,7 +328,7 @@ start_frontend() {
       echo "[失败] :${FRONTEND_PORT} 被未验证归属的进程占用；不会接管或停止它。"
       return 1
     fi
-    if ! frontend_is_ready; then
+    if ! wait_for_service frontend "$FRONTEND_PORT" "$(read_pid_from_file "$FRONTEND_PID_FILE")" frontend_is_ready; then
       echo "[失败] :${FRONTEND_PORT} 已被占用，但前端页面或 API 转发检查未通过。"
       return 1
     fi
@@ -258,13 +346,7 @@ start_frontend() {
   cd "$FRONTEND_DIR"
   local pid
   pid="$(VITE_API_TARGET="$BACKEND_URL" launch_detached frontend "$FRONTEND_LOG_FILE" npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" --strictPort)" || return 1
-  if ! wait_for_port "$FRONTEND_PORT" "$(read_pid_from_file "$FRONTEND_PID_FILE")"; then
-    echo "[失败] 前端未能在 :$FRONTEND_PORT 就绪。"
-    show_log_tail "$FRONTEND_LOG_FILE"
-    stop_process_by_pid_file "$FRONTEND_PID_FILE" || return 1
-    return 1
-  fi
-  if ! service_is_owned frontend "$FRONTEND_PORT" || ! frontend_is_ready; then
+  if ! wait_for_service frontend "$FRONTEND_PORT" "$pid" frontend_is_ready; then
     echo "[失败] 前端已监听，但页面或 API 转发检查未通过。"
     show_log_tail "$FRONTEND_LOG_FILE"
     stop_process_by_pid_file "$FRONTEND_PID_FILE" || return 1
@@ -275,14 +357,24 @@ start_frontend() {
 
 status_services() {
   local ready=0
+  if ! storage_is_ready; then
+    echo "[未就绪] 数据卷不可用。"
+    ready=1
+  fi
   if service_is_owned backend "$BACKEND_PORT" && backend_is_ready; then
     echo "[就绪] 后端正常，Numba 与 worker 预热完成。"
   else
     echo "[未就绪] 后端未运行或仍在预热。"
     ready=1
   fi
+  if service_is_owned agent "$AGENT_PORT" && agent_is_ready; then
+    echo "[就绪] AI 智能体正常，模型已配置。"
+  else
+    echo "[未就绪] 智能体或模型接入不可用。"
+    ready=1
+  fi
   if service_is_owned frontend "$FRONTEND_PORT" && frontend_is_ready; then
-    echo "[就绪] 前端正常，页面及 API 转发可访问。"
+    echo "[就绪] 网页与 AI 助手正常，页面及 API 转发可访问。"
   else
     echo "[未就绪] 前端页面或 API 转发不可用。"
     ready=1
@@ -291,6 +383,7 @@ status_services() {
   echo "后端 API 文档：$BACKEND_URL/docs"
   echo "后端日志：$BACKEND_LOG_FILE"
   echo "前端日志：$FRONTEND_LOG_FILE"
+  echo "智能体日志：$AGENT_LOG_FILE"
   return "$ready"
 }
 
@@ -304,14 +397,23 @@ start_services() {
     echo "[启动阻止] 数据存储检查或迁移未完成。请处理上方提示，再重试；不会回退到本机。"
     return 1
   fi
-  if ! start_backend || ! start_frontend || ! status_services; then
-    echo "[启动失败] 前后端尚未全部就绪，请查看上方错误和 .run/ 中的日志。"
+  if [[ "$BACKEND_HOST" != "127.0.0.1" || "$FRONTEND_HOST" != "127.0.0.1" ]]; then
+    echo "[启动阻止] 本机助手登录仅适用于 loopback；公共部署请使用 deploy/ 中的鉴权配置。"
+    return 1
+  fi
+  if ! "$PYTHON_BIN" "$AGENT_HELPER" prepare --backend-url "$BACKEND_URL" --browser-origin "$FRONTEND_URL" --agent-url "$AGENT_URL"; then
+    return 1
+  fi
+  if ! start_backend || ! start_agent || ! start_frontend || ! status_services; then
+    echo "[启动失败] 网页、后端和智能体尚未全部就绪，请查看上方错误和 .run/ 中的日志。"
     return 1
   fi
   echo
   echo "========== 启动成功 / SUCCESS =========="
-  echo "前后端均已就绪，Numba 预热已完成（耗时 $((SECONDS - started_at)) 秒）。"
+  echo "网页、后端、AI 智能体与 AI 助手均已就绪（耗时 $((SECONDS - started_at)) 秒）。"
   echo "请在浏览器打开：$FRONTEND_URL/"
+  echo "AI 智能体：$FRONTEND_URL/settings/ai-agent"
+  echo "AI 助手：行情指标中心等支持页面的右下角。"
   echo "服务已在后台运行，可以关闭当前终端。"
   echo "新版 ETL 下载由独立执行器运行，重启 API 后自动重连；下载进度请看运行记录。"
   echo "管理命令：./start_services.sh {status|stop|restart}"
@@ -319,9 +421,10 @@ start_services() {
 
 stop_services() {
   local failed=0
-  stop_process_by_pid_file "$BACKEND_PID_FILE" || failed=1
   stop_process_by_pid_file "$FRONTEND_PID_FILE" || failed=1
-  if is_port_listening "$BACKEND_PORT" || is_port_listening "$FRONTEND_PORT"; then
+  stop_process_by_pid_file "$AGENT_PID_FILE" || failed=1
+  stop_process_by_pid_file "$BACKEND_PID_FILE" || failed=1
+  if is_port_listening "$BACKEND_PORT" || is_port_listening "$FRONTEND_PORT" || is_port_listening "$AGENT_PORT"; then
     echo "[停止阻止] 端口仍被占用；不会按端口停止未知进程。"
     failed=1
   fi
@@ -329,7 +432,7 @@ stop_services() {
     echo "[停止失败] 请核验进程归属后重试；不会继续自动重启。"
     return 1
   fi
-  echo "[停止] 本项目已记录的前后端服务均已停止。"
+  echo "[停止] 本项目已记录的网页、后端和智能体服务均已停止。"
   echo "[任务保留] 不终止独立 ETL 执行器；如需停止下载，请在网页运行记录中取消任务。"
 }
 

@@ -114,9 +114,127 @@ Production bootstrap fails closed if the lock is absent or invalid. The SDK
 checks metadata and the loaded component manifest on every connection and
 retains the original request identity when versions differ.
 
-For development, run the independently installed agent on loopback and set
-`VITE_PORTABLE_AGENT_TARGET` before `./start_services.sh start`. That script
-owns only the platform processes; agent lifecycle remains independent. The proxy URL alone does not enable authentication: the host identity authority, signing/service credentials and grants described above must be configured through the approved deployment flow. Never substitute demo credentials for production.
+## Local development with the assistant
+
+Use `./start_services.sh {start|status|stop|restart}` for the local platform and
+the independently installed agent. All three processes bind to loopback. The
+script refuses to adopt or kill an unrelated process on any of their ports.
+The production Compose/authentication contract above remains separate.
+Running `./start_services.sh` without an action defaults to `start`. Repeated
+start reuses healthy managed services and starts a missing agent automatically.
+The AI agent page is `/settings/ai-agent`; supported workbenches such as the
+indicator center load the AI assistant automatically at the bottom right.
+
+Install a reviewed v2 wheel and its matching hash-locked dependencies in a
+separate Python 3.12 environment. The default interpreter is
+`.venv/portable-agent/bin/python`; to use another independent installation, set
+`PORTABLE_AGENT_PYTHON` on first initialization. A relative interpreter path is
+anchored to the project root and saved as an absolute path before initialization;
+the virtual-environment executable link is preserved rather than resolved to
+system Python. A missing executable fails before creating config or agent data.
+Do not install the agent into
+the platform environment or point `PYTHONPATH` at its source tree. Installation
+is explicit; service startup never downloads a moving source branch. Agent and
+probe subprocesses receive only process, locale, temporary-directory and TLS
+certificate environment settings. Platform/provider/cloud credentials, source
+paths and unrelated proxies are not inherited; the running agent receives only
+its explicitly paired host service authorization.
+
+```bash
+python3.12 -m venv .venv/portable-agent
+.venv/portable-agent/bin/python -m pip install --require-hashes -r /absolute/agent-release/requirements.lock
+.venv/portable-agent/bin/python -m pip install --no-deps /absolute/agent-release/portable_web_agent-0.2.0-py3-none-any.whl
+./start_services.sh start
+```
+
+First startup creates owner-only `.run/portable-agent-local.json` with stable
+local identity/service credentials, and generates `.run/portable-agent-apps.json`
+from the platform's current tool/capability catalog. The application issuer key
+is derived by the installed agent CLI from `.data/portable-agent`; the master
+key stays there. Existing `data/llm_settings.json` endpoints are allowed and its
+profiles are copied once over authenticated HTTP, encrypted by the agent. The
+old file and conversation archives are untouched. Partial profile imports are
+retryable; later startup does not overwrite user changes. The copy preserves
+model timeout, reasoning effort and `context_window_tokens`; 0 retains the
+agent's automatic context budget.
+
+For a new installation without legacy model settings, set
+`PORTABLE_AGENT_MODEL_ENDPOINTS=https://your-approved-provider/v1` on first start
+(comma-separated for several endpoints), then configure the model in the web
+settings. The UI remains available for this repair, but overall startup/status
+does not report success until a model with a key is selected. Additional allowed
+endpoints can be added with that variable and `restart`. Use the exact printed
+browser origin; the local login does not permit other origins or public access.
+
+Back up `.data/portable-agent/` and `.run/portable-agent-local.json` together;
+they contain persistent conversations, encrypted profiles and paired credentials.
+Never delete them as routine log cleanup. The virtual environment and generated
+apps file are reproducible. For a completed initialization, missing or mismatched issuer data, or existing nonempty agent data without
+its paired local config, fails closed rather than generating another owner or
+credentials. Restore both from the same backup; an empty runtime directory alone
+can be initialized. Every model endpoint from saved configuration, the environment
+or legacy profiles is validated before creating any runtime directory or key.
+Use explicit HTTP(S) endpoints with a valid host and optional port 1–65535
+(omitted ports use the protocol default), without whitespace,
+control characters, URL credentials, queries or fragments. Environment lists
+are comma-separated raw URLs: leading/trailing whitespace or empty items are
+rejected instead of stripped/skipped. Invalid input is reported without echoing its value;
+correct it in the original source before retrying. Do not commit these private files.
+
+First initialization flushes the paired owner, workspace and service/identity
+credentials before issuing a master key. Both file contents and parent directory
+entries are fsynced before moving to the next stage, including newly created
+runtime/data directories and the linked master key. Its `initializing` record is only
+accepted by `prepare`; service launch/status remain blocked until completion.
+The installed CLI creates the new key in a private scratch directory; only a
+successful, validated result is linked into place without overwriting a key.
+If the key command is interrupted or a later config write fails, rerun `start`
+to continue with the same recorded identity and any already published master.
+Incomplete scratch keys cannot become the active key. This recovery does not
+adopt a pre-existing data volume whose paired configuration is missing. A sync
+failure stops initialization; a retry resyncs the pending identity and retains
+the same published key. Offline fault-injection tests cover these boundaries;
+they are not a physical power-loss or filesystem-hardware certification.
+
+Start checks the managed SSD identity first and refuses local fallback when it
+is offline. Restore the original mounted volume before retrying; the script
+does not create a replacement directory under a missing mount. Backend readiness
+still requires all NJIT/worker warmup. Assistant readiness exercises local login,
+context/bootstrap authorization, v2 capabilities, the JavaScript component and
+model selection, including the actual `/assistant` proxy through the frontend.
+Before reusing a healthy backend, startup checks its local identity cookie,
+application signature and service credentials against the current paired config.
+Reuse retries transient timeouts, HTTP 5xx, expired sessions and incomplete
+responses within the assistant wait limit. An uncertain failure preserves the
+running backend and reports the reason; it never triggers warmup again. Only
+explicit host configuration errors, verified signing/identity incompatibility,
+or an explicit service-credential rejection return the dedicated mismatch status
+(exit 3 from `check-host`) and permit an owned backend upgrade. Process ownership
+is rechecked before upgrading; warmup and host authorization are checked again
+thereafter. Stop failure or a remaining listener blocks replacement; unknown
+services are never stopped.
+After a port opens, startup waits for authentication and the component/proxy to
+be ready, retrying transient failures for up to 60 seconds per service. Override
+with `ASSISTANT_HEALTH_TIMEOUT_SECONDS` (`STARTUP_WAIT_SECONDS` remains accepted
+as its fallback). A timeout or an exited/foreign process fails startup with a
+reason; the repair settings page remains available if model configuration is
+missing. The final success message includes both AI entry points.
+It does not send a billable model request on every status check. After initial
+setup or provider changes, open the AI agent page and send a short benign message
+to verify provider access. Successful HTTP checks alone do not prove model quality.
+
+`stop` closes the recorded frontend, agent and backend sessions in that order;
+independent ETL executors remain governed by their existing task lifecycle.
+The local `prepare` helper normalizes scheme/host case, the default HTTP port 80
+and an optional trailing slash on service root URLs before both saving paired URLs and exporting backend/browser-origin settings;
+the Agent origin matches the browser Origin header.
+Default ports are 5173/8787/8000; overrides are `FRONTEND_PORT`, `AGENT_PORT` and
+`BACKEND_PORT`. Explicit local service ports must be 1–65535; invalid ports
+and URLs containing whitespace/control characters are rejected before parsing
+or creating any identity configuration or master key. Check copied environment
+values for CR/LF or trailing spaces. Local roots also reject user-info and query/fragment
+markers even when their values are empty; they must identify only a service origin. Logs
+and process identities are in `.run/`.
 
 The offline integration runner creates temporary business/agent data and a
 local deterministic OpenAI wire endpoint. It never contacts a model provider:

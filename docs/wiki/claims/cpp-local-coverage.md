@@ -5,10 +5,10 @@ title: "C++ AOT：局部标量适配不等于全平台迁移"
 domains: ["business", "developer"]
 review_state: "reviewed"
 result: "supported"
-scope: "显式单产品标量适配、当前平台NJIT装配及历史证据范围；不覆盖本次原生构建、性能或生产切换"
-reviewed_at: "2026-10-04"
+scope: "显式单产品标量适配、当前平台NJIT装配及历史证据范围；不覆盖本次原生构建、性能或生产切换；2026-10-12 仅复核本次启动差异，其他原文及历史证据保持各自适用日期"
+reviewed_at: "2026-10-12"
 reviewed_by: "AI"
-source_revision: "8ce7c06cc655d027cec6856caa873a1eafa1e51d"
+source_revision: "a556470b52c2194e508a37262cd8ecaa8a54cf06"
 evidence_kind: "mixed"
 watch_globs: ["backend/**", "frontend/src/**", "backend/requirements.txt", "frontend/package.json", "frontend/package-lock.json", "Dockerfile", "docker-compose.yml", "deploy/**"]
 dependencies: ["docs/indicators/cpp-aot-contracts.md::sha256:df25aeae098bcd6b50f42121b4f9052d0bd9f8aa3d9122a21f31dc47aab19732", "docs/verification/cpp-aot-contracts.md::sha256:6cd66af34b1a7fe836f50348357d12a82cf118eed7412441583ffc61bef8e3a4", "backend/cal_indicators/cpp_aot.py::sha256:b31d9f87e277bf429d2f6233a5b548b5416a6a793110cdad74eb7df80b554b6a", "backend/app.py::sha256:ed789f9e6f70b6ce5493608e0329cdfc94792bdddeea9bf73aee5de4eab64095", "backend/custom_indicators/service.py::sha256:2011a5cc40a1b3a21fe5340383bd6125134c7ab90afd730e0d8846e662a80e20", "backend/custom_indicators/typed_service.py::sha256:aabd173589399866bd4e2de2b5ca4d815f9c3d822ce1091c8322bd3bef84b2db"]
@@ -43,3 +43,27 @@ dependencies: ["docs/indicators/cpp-aot-contracts.md::sha256:df25aeae098bcd6b50f
 ## 复核条件
 
 依赖文件变化、服务后端选择、预热或适配范围变化必须复核。watch_globs覆盖backend、frontend/src及相关配置，以捕捉新增调用者；仅既有文件hash不变不能排除全树新增路径。外部引擎版本、工具链或制品身份变化也需人工触发复核。性能结论须按新版本和真实负载重测。
+
+2026-10-12 启动提交影响复核：逐项核对 8ce7c06 至 6e13402 的受监视差异，只有两个本地启动测试和 deploy/README.md；未修改 C++ 适配、业务数值调用或后端预热。正文所引数值源码与契约依赖字节未变，保留 2026-10-04 的静态结论和全部原生构建、性能、生产未验证限制；本次启动回归不作为 C++ 验收。
+
+后续 Bot 修复影响复核：3a052c2 至本页 source_revision 的受监视差异仅为本地助手测试和 deploy 说明，分别覆盖地址校验无副作用与上下文窗口迁移；未改变数值源码、C++ 适配和预热。本页数值依赖仍未变，原生与性能证据限制继续保留。
+
+第三轮初始化修复影响复核：d47c8e2 至当前 source_revision 的受监视差异仍仅为助手离线测试与 deploy 说明；数值代码/依赖及预热均未修改，未新增 C++ 运行或性能证据。
+
+第四轮启动修复影响复核：9b45919 至当前 source_revision 的受监视变化只有助手环境/同步故障测试与 deploy 说明；重读差异并核对本页数值依赖字节均未变。未修改数值调用、C++ 适配或预热，本轮回归不新增原生或性能证据。
+
+第五轮启动修复影响复核：2416ef1 至当前 source_revision 的受监视变化仍只涉及助手路径配置回归及 deploy 说明；已重读该差异，本页数值依赖字节未变，未新增数值调用、原生或性能验收。
+
+第六轮启动修复影响复核：7fef2d9 至当前 source_revision 的受监视差异仅为助手端口边界测试与 deploy 说明；已重读这些差异，本页数值依赖仍未变，没有新增数值、原生或性能验收。
+
+第七轮启动修复影响复核：701ca83 至当前 source_revision 仅新增本机服务端口助手回归及 deploy 说明；已重读差异和本页数值依赖，数值调用/预热未变，未新增原生或性能证据。
+
+第八轮启动修复影响复核：08a51cf 至当前 source_revision 仅为本机 URL 控制字符助手回归与 deploy 说明；重读差异及本页不变的数值依赖，未新增原生、数值或性能证据。
+
+第九轮启动修复影响复核：8241c2e 至当前 source_revision 的受监视差异只有本机探测/重试测试和 deploy 说明；逐项核对数值依赖字节仍未变。调整仅保护既有后端免于临时失败误停，未修改 NJIT 预热、C++ 或业务计算，没有新增原生或性能验收。
+
+第十轮启动修复影响复核：a955cb9 至当前 source_revision 的受监视差异只有模型地址助手回归和 deploy 说明；数值依赖字节未变，未调整 C++、业务计算或 NJIT 预热，没有新增原生/性能验收。
+
+第十一轮启动修复影响复核：e101bae 至当前 source_revision 的受监视差异只有地址规范化助手回归和 deploy 说明；数值依赖字节未变，未改变计算或预热，也无新增原生/性能验收。
+
+第十二轮及补充自审影响复核：667a44f 至当前 source_revision 的受监视差异只有标准 Origin 助手回归和 deploy 说明；数值依赖字节未变，未修改预热、数值业务或 C++，不新增原生/性能证据。

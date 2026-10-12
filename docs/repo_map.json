@@ -925,7 +925,7 @@
       "name": "FastAPI app shell and static hosting",
       "path": "backend/app.py",
       "kind": "backend_api_entrypoint",
-      "purpose": "Creates the FastAPI app, configures a bounded development CORS allowlist with explicit production origins, includes modular routers, retains legacy inline endpoints, exposes ETF product APIs, and mounts the built Vite app from frontend/dist. start_services.sh manages local backend/frontend start, stop, restart and status; readiness checks NJIT and worker warmup plus the frontend page and API proxy before printing Chinese success feedback and the browser URL. Integrates the server-held PIT convention, dataset clock declarations and release fingerprints through one request context; explicit tab headers override the viewing context without writing system settings. Release name, note, as_of and run_mode are editable convention metadata, while table fingerprints stay immutable evidence; these controls do not certify historical data vintages.",
+      "purpose": "Creates the FastAPI app, configures a bounded development CORS allowlist with explicit production origins, includes modular routers, retains legacy inline endpoints, exposes ETF product APIs, and mounts the built Vite app from frontend/dist. start_services.sh manages local backend/frontend/independently installed agent start, stop, restart and status; readiness checks the data volume, NJIT and worker warmup, host authentication, agent v2 capabilities/widget/model selection, and frontend page/API/assistant proxies before printing Chinese success feedback and the browser URL. Integrates the server-held PIT convention, dataset clock declarations and release fingerprints through one request context; explicit tab headers override the viewing context without writing system settings. Release name, note, as_of and run_mode are editable convention metadata, while table fingerprints stay immutable evidence; these controls do not certify historical data vintages.",
       "module_tags": [
         "backend",
         "fastapi",
@@ -5418,7 +5418,8 @@
         "backend/integrations/portable_agent",
         "backend/research_access",
         "frontend/src/integrations/portable-agent",
-        "frontend/src/components/indicators/ResearchDraftArtifact.tsx"
+        "frontend/src/components/indicators/ResearchDraftArtifact.tsx",
+        "scripts/portable_agent_local.py"
       ],
       "key_symbols": [
         "HostIntegration",
@@ -5457,7 +5458,10 @@
         "docs/research/ai-agent-harness-progress-design-2026-09-20.md",
         "docs/research/ai-agent-indicator-product-research-implementation-design-2026-09-19.md",
         "docs/research/ai-agent-reusable-architecture-design-2026-09-21.md",
-        "docs/research/ai-assistant-conversation-ui-design-2026-09-20.md"
+        "docs/research/ai-assistant-conversation-ui-design-2026-09-20.md",
+        "start_services.sh",
+        "scripts/service_process.py",
+        "scripts/portable_agent_local.py"
       ],
       "upstream_dependencies": [
         "backend_api_shell",
@@ -5498,7 +5502,9 @@
         "frontend/src/services/researchPageEvidence.test.ts",
         "scripts/tests/test_research_archive.py",
         "backend/tests/probe_portable_host.py",
-        "frontend/src/pages/PlatformAgent.test.tsx"
+        "frontend/src/pages/PlatformAgent.test.tsx",
+        "backend/tests/test_portable_agent_local.py",
+        "backend/tests/test_start_services.py"
       ],
       "related_configs": [
         "frontend/playwright.portable.config.ts",
@@ -5513,7 +5519,9 @@
         "npm run test --prefix frontend -- --run --maxWorkers=2 --minWorkers=2",
         "npm run build --prefix frontend",
         "npm run test:e2e --prefix frontend -- --config=playwright.portable.config.ts",
-        "python3 scripts/check_portable_agent_boundary.py"
+        "python3 scripts/check_portable_agent_boundary.py",
+        "python3 -m pytest backend/tests/test_portable_agent_local.py backend/tests/test_start_services.py -q",
+        "bash -n start_services.sh"
       ],
       "pitfall_ids": [
         "P01",

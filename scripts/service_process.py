@@ -80,10 +80,16 @@ def process_command_and_cwd(pid):
 def command_matches(service, command):
     if service == 'backend':
         return len(command) >= 4 and command[1:4] == ['-m', 'uvicorn', 'app:app']
+    if service == 'agent':
+        return len(command) >= 4 and command[1:4] == ['-m', 'portable_agent', 'serve']
     # npm changes its process title after its Node entrypoint has loaded.
     return (command[:3] == ['npm', 'run', 'dev']
             or (len(command) >= 4 and Path(command[1]).name in {'npm', 'npm-cli.js'}
                 and command[2:4] == ['run', 'dev']))
+
+
+def service_cwd(root, service):
+    return Path(root) / ('.data/portable-agent' if service == 'agent' else service)
 
 
 def verify(record):
@@ -103,6 +109,8 @@ def verify(record):
     command, cwd = process_command_and_cwd(pid)
     if cwd != record['cwd'] or not command_matches(record['service'], command):
         raise OwnershipError('活进程命令或工作目录不属于本项目服务，未发送停止信号。')
+    if record['service'] == 'agent' and command[1:] != record['argv'][1:]:
+        raise OwnershipError('助手实际配置或数据目录与启动记录不同，未发送停止信号。')
     return True
 
 
@@ -144,7 +152,7 @@ def inspect(root, service):
                 or not isinstance(record.get('birth'), str) or not record['birth']
                 or record.get('project') != str(Path(root).resolve())
                 or record.get('service') != service
-                or record.get('cwd') != str((Path(root) / service).resolve())
+                or record.get('cwd') != str(service_cwd(root, service).resolve())
                 or not isinstance(record.get('argv'), list) or not record['argv']):
             raise OwnershipError('服务身份记录不匹配当前项目，未继续操作。')
         if verify(record):
@@ -173,7 +181,7 @@ def atomic_write(path, content):
         Path(temporary).unlink(missing_ok=True)
 
 
-def launch(root, service, log_path, argv):
+def launch(root, service, log_path, argv, env=None):
     if inspect(root, service) is not None:
         raise OwnershipError('已记录的服务仍在运行；请等待就绪或先安全停止。')
     clear(root, service)
@@ -183,7 +191,7 @@ def launch(root, service, log_path, argv):
     try:
         with open(log_path, 'ab', buffering=0) as log:
             process = subprocess.Popen(
-                argv, cwd=Path(root) / service, stdin=subprocess.DEVNULL,
+                argv, cwd=service_cwd(root, service), env=env, stdin=subprocess.DEVNULL,
                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
                 close_fds=True,
             )
@@ -192,7 +200,7 @@ def launch(root, service, log_path, argv):
             raise OwnershipError('新服务出生标识不可读，启动已撤销。')
         record = dict(protocol=1, pid=process.pid, birth=birth,
                       project=str(Path(root).resolve()), service=service,
-                      cwd=str((Path(root) / service).resolve()), argv=list(argv))
+                      cwd=str(service_cwd(root, service).resolve()), argv=list(argv))
         if not verify(record):
             raise OwnershipError('新服务已退出，未记录为运行中。')
         atomic_write(identity_path, json.dumps(record) + '\n')
@@ -232,15 +240,18 @@ def stop(root, service, timeout=15):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('launch', 'check', 'stop'))
-    parser.add_argument('service', choices=('backend', 'frontend'))
+    parser.add_argument('service', choices=('backend', 'frontend', 'agent'))
     parser.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:
         if args.action == 'launch':
-            if len(args.arguments) < 2:
+            if len(args.arguments) < (1 if args.service == 'agent' else 2):
                 parser.error('launch requires a log path and command')
             signal.signal(signal.SIGHUP, signal.SIG_IGN)
-            print(launch(PROJECT_ROOT, args.service, args.arguments[0], args.arguments[1:]))
+            from portable_agent_local import agent_command, service_environment
+            argv = agent_command(PROJECT_ROOT) if args.service == 'agent' else args.arguments[1:]
+            print(launch(PROJECT_ROOT, args.service, args.arguments[0], argv,
+                         env=service_environment(PROJECT_ROOT, args.service)))
         elif args.action == 'stop':
             stop(PROJECT_ROOT, args.service)
         else:
